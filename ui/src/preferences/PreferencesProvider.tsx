@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useCallback, useState, type ReactNode } from "react";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { usePrefersDarkMode } from "@/hooks/useMediaQuery";
 import type { UserPreferences, Theme } from "./types";
@@ -15,6 +15,15 @@ const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 
 const STORAGE_KEY = "hadrian-preferences";
 
+const isTheme = (value: unknown): value is Theme =>
+  value === "light" || value === "dark" || value === "system";
+
+function readThemeFromUrl(): Theme | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("theme");
+  return isTheme(value) ? value : null;
+}
+
 interface PreferencesProviderProps {
   children: ReactNode;
 }
@@ -25,10 +34,29 @@ export function PreferencesProvider({ children }: PreferencesProviderProps) {
     defaultPreferences
   );
 
+  // Non-persisting theme override sourced from `?theme=` on load and
+  // `postMessage({ type: "hadrian-theme", theme: "light"|"dark"|"system"|null })`
+  // from a parent frame. Intentionally never written to localStorage.
+  const [themeOverride, setThemeOverride] = useState<Theme | null>(readThemeFromUrl);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== "object" || data.type !== "hadrian-theme") return;
+      if (data.theme === null) {
+        setThemeOverride(null);
+      } else if (isTheme(data.theme)) {
+        setThemeOverride(data.theme);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   const prefersDark = usePrefersDarkMode();
 
-  const resolvedTheme =
-    preferences.theme === "system" ? (prefersDark ? "dark" : "light") : preferences.theme;
+  const activeTheme = themeOverride ?? preferences.theme;
+  const resolvedTheme = activeTheme === "system" ? (prefersDark ? "dark" : "light") : activeTheme;
 
   // Apply theme to document
   useEffect(() => {
@@ -44,8 +72,10 @@ export function PreferencesProvider({ children }: PreferencesProviderProps) {
     [setStoredPreferences]
   );
 
+  // Explicit in-app toggle clears any active override so the user regains control.
   const setTheme = useCallback(
     (theme: Theme) => {
+      setThemeOverride(null);
       setPreferences({ theme });
     },
     [setPreferences]
