@@ -17,6 +17,7 @@
     "generate:schema": "cd .. && ./scripts/generate-schema.sh"
   },
   "dependencies": {
+    "@lobehub/icons": "^5.8.0",
     "@orama/orama": "^3.1.18",
     "fumadocs-core": "16.4.4",
     "fumadocs-mdx": "14.2.4",

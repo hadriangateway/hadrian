@@ -3,9 +3,28 @@
 import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Server, Shield, Users, Zap, Eye, Code, Brain } from "lucide-react";
-import { StoryEmbed } from "@/components/story-embed";
+import { Brain, Code, Eye, Server, Shield, Users, Zap } from "lucide-react";
+import {
+  Anthropic,
+  AzureAI,
+  Bedrock,
+  Cerebras,
+  Cohere,
+  DeepSeek,
+  Fireworks,
+  Groq,
+  LmStudio,
+  Mistral,
+  Ollama,
+  OpenAI,
+  OpenRouter,
+  Perplexity,
+  Together,
+  VertexAI,
+  Vllm,
+} from "@lobehub/icons";
 import { QuickStartSelector } from "@/components/quick-start-selector";
+import { StoryEmbed } from "@/components/story-embed";
 
 function GitHubIcon({ className }: { className?: string }) {
   return (
@@ -102,46 +121,59 @@ const demos = [
 
 function DemoGallery() {
   const [active, setActive] = useState("chat");
+  const current = demos.find((d) => d.id === active) ?? demos[0];
 
   return (
     <div className="mx-auto max-w-screen-2xl px-4">
-      <div className="flex flex-col lg:flex-row lg:items-stretch lg:gap-4">
-        <div
-          className="scrollbar-none mb-4 flex gap-2 overflow-x-auto pb-2 sm:flex-wrap sm:justify-center sm:overflow-visible sm:pb-0 lg:mb-0 lg:w-72 lg:shrink-0 lg:flex-col lg:justify-start lg:overflow-y-auto lg:pb-0"
-          role="tablist"
-          aria-label="Demo gallery"
-          tabIndex={0}
-        >
-          {demos.map((demo) => (
-            <button
-              key={demo.id}
-              role="tab"
-              aria-selected={active === demo.id}
-              aria-controls={`demo-panel-${demo.id}`}
-              onClick={() => setActive(demo.id)}
-              className={`shrink-0 cursor-pointer rounded-lg border px-4 py-3 text-left transition-colors ${
-                active === demo.id
-                  ? "border-fd-primary bg-fd-primary/10 text-fd-foreground"
-                  : "border-fd-border bg-fd-card text-fd-muted-foreground hover:border-fd-primary/50 hover:text-fd-foreground"
-              }`}
-            >
-              <span className="block text-sm font-semibold">{demo.title}</span>
-              <span className="mt-0.5 block max-w-48 text-xs">{demo.description}</span>
-            </button>
+      <div className="flex flex-col gap-6 lg:flex-row lg:gap-10">
+        <ol className="lg:w-72 lg:shrink-0" role="tablist" aria-label="Demo gallery">
+          {demos.map((demo, i) => (
+            <li key={demo.id}>
+              <button
+                role="tab"
+                aria-selected={active === demo.id}
+                aria-controls={`demo-panel-${demo.id}`}
+                onClick={() => setActive(demo.id)}
+                className={`group flex w-full cursor-pointer items-baseline gap-4 border-b border-fd-border py-3 text-left transition-colors ${
+                  active === demo.id
+                    ? "text-fd-foreground"
+                    : "text-fd-muted-foreground hover:text-fd-foreground"
+                }`}
+              >
+                <span
+                  className={`font-mono text-2xl tabular-nums ${
+                    active === demo.id ? "text-fd-primary" : "text-fd-muted-foreground/60"
+                  }`}
+                >
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <span className="text-base font-semibold tracking-tight">{demo.title}</span>
+                {active === demo.id && (
+                  <span aria-hidden="true" className="ml-auto text-fd-primary">
+                    ▸
+                  </span>
+                )}
+              </button>
+            </li>
           ))}
-        </div>
-        <div className="relative h-[500px] overflow-hidden rounded-xl border border-fd-border shadow-lg sm:h-[700px] lg:h-auto lg:flex-1">
-          {demos.map((demo) => (
-            <div
-              key={demo.id}
-              id={`demo-panel-${demo.id}`}
-              role="tabpanel"
-              aria-label={demo.title}
-              className={active === demo.id ? "h-full" : "invisible absolute inset-0"}
-            >
-              <StoryEmbed storyId={demo.storyId} height="100%" />
-            </div>
-          ))}
+        </ol>
+        <div className="flex-1">
+          <p className="mb-4 text-sm text-fd-muted-foreground">{current.description}</p>
+          <div
+            id={`demo-panel-${current.id}`}
+            role="tabpanel"
+            aria-label={current.title}
+            className="relative h-[600px] overflow-hidden rounded-xl border border-fd-border shadow-lg sm:h-[800px] lg:h-[860px]"
+          >
+            {demos.map((demo) => (
+              <div
+                key={demo.id}
+                className={active === demo.id ? "h-full" : "invisible absolute inset-0"}
+              >
+                <StoryEmbed storyId={demo.storyId} height="100%" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -150,33 +182,116 @@ function DemoGallery() {
 
 // --- Providers ---
 
-const providers = [
+type ProviderIcon = React.ComponentType<{
+  size?: number | string;
+  title?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}>;
+
+type Provider = { name: string; Icon: ProviderIcon; href: string };
+
+const providerCategories: {
+  name: string;
+  description: string;
+  cols: string;
+  providers: Provider[];
+}[] = [
   {
-    name: "OpenAI",
-    description: "GPT-5.3, o3, DALL-E, TTS, Whisper, embeddings",
+    name: "Native integrations",
+    description: "Purpose-built clients with cloud-native auth and prompt caching",
+    cols: "sm:grid-cols-3 lg:grid-cols-5",
+    providers: [
+      {
+        name: "OpenAI",
+        Icon: OpenAI.Text,
+        href: "/docs/configuration/providers#openai",
+      },
+      {
+        name: "Anthropic",
+        Icon: Anthropic.Text,
+        href: "/docs/configuration/providers#anthropic",
+      },
+      {
+        name: "AWS Bedrock",
+        Icon: Bedrock.Text,
+        href: "/docs/configuration/providers#aws-bedrock",
+      },
+      {
+        name: "Google Vertex AI",
+        Icon: VertexAI.Text,
+        href: "/docs/configuration/providers#google-vertex-ai",
+      },
+      {
+        name: "Azure OpenAI",
+        Icon: AzureAI.Text,
+        href: "/docs/configuration/providers#azure-openai",
+      },
+    ],
   },
   {
-    name: "Anthropic",
-    description: "Claude Opus 4.6, Sonnet 4.5, Haiku 4.5 with prompt caching",
-  },
-  {
-    name: "AWS Bedrock",
-    description: "Claude, Nova, Llama via AWS IAM auth",
-  },
-  {
-    name: "Google Vertex AI",
-    description: "Gemini 2.5 models via GCP service accounts",
-  },
-  {
-    name: "Azure OpenAI",
-    description: "OpenAI models on Azure infrastructure",
-  },
-  {
-    name: "OpenAI Compatible",
-    description:
-      "OpenRouter, Ollama, Together AI, Groq, Fireworks AI, vLLM, LM Studio, Cerebras, DeepSeek, Mistral, Cohere, Perplexity, and more",
+    name: "OpenAI-compatible",
+    description: "Drop-in adapter for any compatible endpoint, hosted or self-hosted",
+    cols: "sm:grid-cols-3 lg:grid-cols-4",
+    providers: (
+      [
+        ["OpenRouter", OpenRouter.Text],
+        ["Ollama", Ollama.Text],
+        ["Together AI", Together.Text],
+        ["Groq", Groq.Text],
+        ["Fireworks", Fireworks.Text],
+        ["Cerebras", Cerebras.Text],
+        ["vLLM", Vllm.Text],
+        ["LM Studio", LmStudio.Text],
+        ["DeepSeek", DeepSeek.Text],
+        ["Mistral", Mistral.Text],
+        ["Cohere", Cohere.Text],
+        ["Perplexity", Perplexity.Text],
+      ] as const
+    ).map(([name, Icon]) => ({
+      name,
+      Icon,
+      href: "/docs/configuration/providers#openai-compatible-providers",
+    })),
   },
 ];
+
+function ProviderCategory({
+  name,
+  description,
+  cols,
+  providers,
+}: {
+  name: string;
+  description: string;
+  cols: string;
+  providers: Provider[];
+}) {
+  return (
+    <div>
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-3">
+        <h3 className="text-sm font-semibold uppercase tracking-widest text-fd-foreground">
+          {name}
+        </h3>
+        <span className="text-xs text-fd-muted-foreground">{description}</span>
+      </div>
+      <div
+        className={`grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-fd-border bg-fd-border ${cols}`}
+      >
+        {providers.map(({ name: providerName, Icon, href }) => (
+          <Link
+            key={providerName}
+            href={href}
+            aria-label={`${providerName} configuration documentation`}
+            className="flex h-24 items-center justify-center bg-fd-card px-3 text-fd-foreground transition-colors hover:bg-fd-muted"
+          >
+            <Icon size={28} title={providerName} className="max-w-full" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // --- Everything Included ---
 
@@ -349,7 +464,9 @@ export default function HomePage() {
 
       {/* See it in Action */}
       <section className="border-b bg-fd-muted/30 py-16 md:py-24">
-        <h2 className="mb-8 text-center text-3xl font-bold">See it in Action</h2>
+        <div className="mx-auto mb-8 max-w-6xl px-4 text-center">
+          <h2 className="text-3xl font-bold">See it in Action</h2>
+        </div>
         <DemoGallery />
       </section>
 
@@ -361,13 +478,9 @@ export default function HomePage() {
             Route to any provider through a unified API. Automatic failover, health checks, and
             circuit breakers included.
           </p>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {providers.map((p) => (
-              <div key={p.name} className="rounded-lg border border-fd-border bg-fd-card px-4 py-3">
-                <p className="font-medium">{p.name}</p>
-                <p className="mt-0.5 text-sm text-fd-muted-foreground">{p.description}</p>
-              </div>
+          <div className="space-y-12">
+            {providerCategories.map((cat) => (
+              <ProviderCategory key={cat.name} {...cat} />
             ))}
           </div>
         </div>
@@ -380,17 +493,16 @@ export default function HomePage() {
           <p className="mx-auto mb-12 max-w-2xl text-center text-fd-muted-foreground">
             Every feature is included in the open-source release. No asterisks, no upgrade walls.
           </p>
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-x-12 gap-y-10 md:grid-cols-2 lg:grid-cols-3">
             {featureCategories.map((cat) => (
-              <div key={cat.title} className="rounded-lg border border-fd-border bg-fd-card p-6">
-                <cat.icon className="mb-3 h-6 w-6 text-fd-primary" />
-                <h3 className="mb-3 text-lg font-semibold">{cat.title}</h3>
+              <div key={cat.title} className="text-center">
+                <cat.icon className="mx-auto mb-3 h-6 w-6 text-fd-primary" />
+                <h3 className="mb-4 text-sm font-semibold uppercase tracking-widest text-fd-foreground">
+                  {cat.title}
+                </h3>
                 <ul className="space-y-1.5 text-sm text-fd-muted-foreground">
                   {cat.items.map((item) => (
-                    <li key={item} className="flex items-start gap-2">
-                      <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-fd-muted-foreground" />
-                      {item}
-                    </li>
+                    <li key={item}>{item}</li>
                   ))}
                 </ul>
               </div>
