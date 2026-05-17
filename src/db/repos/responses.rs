@@ -12,6 +12,78 @@ use uuid::Uuid;
 
 use crate::db::error::DbResult;
 
+/// Ownership scope for a stored response. Mirrors the pattern used
+/// by `skills`, `templates`, `conversations` etc.: every row is owned
+/// by one of organization/team/project/user/service-account, and
+/// reads cascade through the org-scope filter so any caller in the
+/// same org with the right RBAC can retrieve it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseOwnerType {
+    Organization,
+    Team,
+    Project,
+    User,
+    ServiceAccount,
+}
+
+impl ResponseOwnerType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Organization => "organization",
+            Self::Team => "team",
+            Self::Project => "project",
+            Self::User => "user",
+            Self::ServiceAccount => "service_account",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "organization" => Some(Self::Organization),
+            "team" => Some(Self::Team),
+            "project" => Some(Self::Project),
+            "user" => Some(Self::User),
+            "service_account" => Some(Self::ServiceAccount),
+            _ => None,
+        }
+    }
+}
+
+/// Tagged owner specification — the canonical way to express
+/// "<scope, id>" in code. Repos consume the flat
+/// (`owner_type`, `owner_id`) pair; this enum is what handlers build
+/// when deriving an owner from the calling principal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseOwner {
+    Organization(Uuid),
+    Team(Uuid),
+    Project(Uuid),
+    User(Uuid),
+    ServiceAccount(Uuid),
+}
+
+impl ResponseOwner {
+    pub fn owner_type(&self) -> ResponseOwnerType {
+        match self {
+            Self::Organization(_) => ResponseOwnerType::Organization,
+            Self::Team(_) => ResponseOwnerType::Team,
+            Self::Project(_) => ResponseOwnerType::Project,
+            Self::User(_) => ResponseOwnerType::User,
+            Self::ServiceAccount(_) => ResponseOwnerType::ServiceAccount,
+        }
+    }
+
+    pub fn owner_id(&self) -> Uuid {
+        match self {
+            Self::Organization(id)
+            | Self::Team(id)
+            | Self::Project(id)
+            | Self::User(id)
+            | Self::ServiceAccount(id) => *id,
+        }
+    }
+}
+
 /// Lifecycle states for a stored response, mirroring OpenAI's
 /// `ResponsesResponseStatus`. The wire-format strings match exactly so
 /// the column can be deserialized directly into the API type.
@@ -69,6 +141,14 @@ impl ResponseStatus {
 pub struct ResponseRecord {
     pub id: String,
     pub org_id: Uuid,
+    /// Ownership scope. Determines which scope's listing the row
+    /// shows up in; reads / writes / deletes cascade through the org
+    /// the owner belongs to.
+    pub owner_type: ResponseOwnerType,
+    pub owner_id: Uuid,
+    /// Audit field: which project's API key (if any) made the call.
+    /// Distinct from ownership — an API key bound to a project can
+    /// submit a response owned by the user, for instance.
     pub project_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,
@@ -95,6 +175,8 @@ pub struct ResponseRecord {
 pub struct NewResponse {
     pub id: String,
     pub org_id: Uuid,
+    pub owner_type: ResponseOwnerType,
+    pub owner_id: Uuid,
     pub project_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,

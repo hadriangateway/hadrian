@@ -37,6 +37,10 @@ pub struct WireResponse {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    /// **Hadrian Extension:** ownership scope of the response —
+    /// `organization`, `team`, `project`, `user`, or `service_account`.
+    /// Mirrors the pattern used by skills, templates, and conversations.
+    owner: WireOwner,
     /// Unix timestamp in seconds, matching OpenAI's integer encoding.
     created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +56,13 @@ pub struct WireResponse {
     /// OpenAI's Retrieve endpoint.
     #[serde(flatten)]
     echoed: Map<String, Value>,
+}
+
+#[derive(Serialize)]
+pub struct WireOwner {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    id: String,
 }
 
 fn record_to_wire(record: &ResponseRecord) -> WireResponse {
@@ -90,6 +101,10 @@ fn record_to_wire(record: &ResponseRecord) -> WireResponse {
         background: record.background,
         model: record.model.clone(),
         provider: record.provider.clone(),
+        owner: WireOwner {
+            type_: record.owner_type.as_str(),
+            id: record.owner_id.to_string(),
+        },
         created_at: record.created_at.timestamp(),
         completed_at: record.completed_at.map(|t| t.timestamp()),
         output: record.output.clone().unwrap_or(Value::Null),

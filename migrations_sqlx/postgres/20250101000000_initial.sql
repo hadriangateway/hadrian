@@ -1298,10 +1298,25 @@ CREATE INDEX IF NOT EXISTS idx_oauth_authz_codes_expires ON oauth_authorization_
 -- Responses (Responses API persistence)
 -- ======================================================================
 
+DO $$ BEGIN
+    CREATE TYPE response_owner_type AS ENUM ('organization', 'team', 'project', 'user', 'service_account');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 -- See SQLite migration for documentation. Mirror schema.
+--
+-- `owner_type`/`owner_id` follow the same pattern as `skills` /
+-- `templates` / `conversations`: they record which scope a response
+-- belongs to (so it can be listed/retrieved as an org/team/project/
+-- user/service-account resource). `org_id` is the tenant boundary;
+-- the audit columns (`user_id`, `api_key_id`, `project_id`,
+-- `service_account_id`) record who actually made the call.
 CREATE TABLE IF NOT EXISTS responses (
     id VARCHAR(64) PRIMARY KEY,
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type response_owner_type NOT NULL,
+    owner_id UUID NOT NULL,
     project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
@@ -1322,7 +1337,7 @@ CREATE TABLE IF NOT EXISTS responses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_responses_org_status ON responses(org_id, status);
-CREATE INDEX IF NOT EXISTS idx_responses_user_created ON responses(user_id, created_at DESC) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_responses_owner_created ON responses(owner_type, owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_responses_retention ON responses(retention_expires_at);
 
 -- Append-only event log; see SQLite migration. The composite PRIMARY

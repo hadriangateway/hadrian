@@ -21,7 +21,8 @@ use crate::{
     api_types::CreateResponsesPayload,
     auth::AuthenticatedRequest,
     config::ProviderConfig,
-    models::SKILL_MAIN_FILE,
+    db::repos::ResponseOwner,
+    models::{ApiKeyOwner, SKILL_MAIN_FILE},
     routes::{
         api::wrap_streaming_with_guardrails,
         execution::{ProviderExecutor, ResponsesExecutor},
@@ -68,6 +69,40 @@ impl PipelinePrincipal {
             service_account_id: api_key.and_then(|k| k.service_account_id),
         }
     }
+}
+
+/// Derive the canonical owner for a persisted response from the
+/// calling principal. Mirrors the ownership semantics used by other
+/// Hadrian resources (skills, templates, conversations): the response
+/// is owned by whatever scope its API key is bound to, falling back
+/// to the user for identity-based auth or the organization for
+/// anonymous / default-principal deployments.
+///
+/// Returns `None` only when no auth context is available and no
+/// `default_org_id` is configured — i.e., the gateway can't safely
+/// place the row anywhere. Callers turn that into a 401 or skip
+/// persistence, depending on the surface.
+pub fn derive_response_owner(
+    state: &AppState,
+    auth: Option<&AuthenticatedRequest>,
+) -> Option<ResponseOwner> {
+    if let Some(auth) = auth {
+        if let Some(api_key) = auth.api_key() {
+            return Some(match &api_key.key.owner {
+                ApiKeyOwner::Organization { org_id } => ResponseOwner::Organization(*org_id),
+                ApiKeyOwner::Team { team_id } => ResponseOwner::Team(*team_id),
+                ApiKeyOwner::Project { project_id } => ResponseOwner::Project(*project_id),
+                ApiKeyOwner::User { user_id } => ResponseOwner::User(*user_id),
+                ApiKeyOwner::ServiceAccount { service_account_id } => {
+                    ResponseOwner::ServiceAccount(*service_account_id)
+                }
+            });
+        }
+        if let Some(user_id) = auth.user_id() {
+            return Some(ResponseOwner::User(user_id));
+        }
+    }
+    state.default_org_id.map(ResponseOwner::Organization)
 }
 
 impl From<PipelinePrincipal> for crate::services::shell_tool::ShellPrincipal {

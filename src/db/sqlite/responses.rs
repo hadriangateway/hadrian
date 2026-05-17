@@ -12,10 +12,45 @@ use super::{
 use crate::db::{
     error::DbResult,
     repos::{
-        NewResponse, ResponseCompletion, ResponseRecord, ResponseStatus, ResponsesRepo,
-        truncate_to_millis,
+        NewResponse, ResponseCompletion, ResponseOwnerType, ResponseRecord, ResponseStatus,
+        ResponsesRepo, truncate_to_millis,
     },
 };
+
+/// Org-scope filter for reads/updates/deletes against `responses`.
+/// Mirrors `skills::ORG_SCOPE_FILTER` and the postgres counterpart.
+/// Each `?` is bound to the caller's org id — five times, once per
+/// owner type. Prefixed with `AND` so it appends to an existing
+/// `WHERE id = ?` predicate.
+const ORG_SCOPE_FILTER: &str = r#"
+    AND (
+        (responses.owner_type = 'organization' AND responses.owner_id = ?)
+        OR (responses.owner_type = 'team' AND EXISTS (
+            SELECT 1 FROM teams t WHERE t.id = responses.owner_id AND t.org_id = ?
+        ))
+        OR (responses.owner_type = 'project' AND EXISTS (
+            SELECT 1 FROM projects pr WHERE pr.id = responses.owner_id AND pr.org_id = ?
+        ))
+        OR (responses.owner_type = 'user' AND EXISTS (
+            SELECT 1 FROM org_memberships om WHERE om.user_id = responses.owner_id AND om.org_id = ?
+        ))
+        OR (responses.owner_type = 'service_account' AND EXISTS (
+            SELECT 1 FROM service_accounts sa WHERE sa.id = responses.owner_id AND sa.org_id = ?
+        ))
+    )
+"#;
+
+/// Number of `?` placeholders in [`ORG_SCOPE_FILTER`] that resolve
+/// to the caller's org id. Used by callers when chaining binds.
+const ORG_SCOPE_BINDS: usize = 5;
+
+/// Canonical column list for SELECT / RETURNING.
+const RESPONSE_COLUMNS: &str = "id, org_id, owner_type, owner_id, \
+    project_id, user_id, api_key_id, service_account_id, \
+    status, background, model, provider, \
+    created_at, started_at, completed_at, \
+    request_payload, output, usage, error, \
+    retention_expires_at, last_sequence_number";
 
 pub struct SqliteResponsesRepo {
     pool: Pool,
@@ -30,6 +65,12 @@ impl SqliteResponsesRepo {
 fn parse_status(s: &str) -> DbResult<ResponseStatus> {
     ResponseStatus::parse(s)
         .ok_or_else(|| crate::db::error::DbError::Internal(format!("unknown response status: {s}")))
+}
+
+fn parse_owner_type(s: &str) -> DbResult<ResponseOwnerType> {
+    ResponseOwnerType::parse(s).ok_or_else(|| {
+        crate::db::error::DbError::Internal(format!("unknown response owner_type: {s}"))
+    })
 }
 
 fn parse_json(s: Option<String>) -> DbResult<Option<Value>> {
@@ -48,6 +89,8 @@ fn row_to_record(row: &super::backend::Row) -> DbResult<ResponseRecord> {
     Ok(ResponseRecord {
         id: row.col("id"),
         org_id: parse_uuid(&row.col::<String>("org_id"))?,
+        owner_type: parse_owner_type(&row.col::<String>("owner_type"))?,
+        owner_id: parse_uuid(&row.col::<String>("owner_id"))?,
         project_id: parse_optional_uuid(row.col("project_id"))?,
         user_id: parse_optional_uuid(row.col("user_id"))?,
         api_key_id: parse_optional_uuid(row.col("api_key_id"))?,
@@ -79,15 +122,18 @@ impl ResponsesRepo for SqliteResponsesRepo {
         query(
             r#"
             INSERT INTO responses (
-                id, org_id, project_id, user_id, api_key_id, service_account_id,
+                id, org_id, owner_type, owner_id,
+                project_id, user_id, api_key_id, service_account_id,
                 status, background, model, provider,
                 created_at, request_payload, retention_expires_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&input.id)
         .bind(input.org_id.to_string())
+        .bind(input.owner_type.as_str())
+        .bind(input.owner_id.to_string())
         .bind(input.project_id.map(|id| id.to_string()))
         .bind(input.user_id.map(|id| id.to_string()))
         .bind(input.api_key_id.map(|id| id.to_string()))
@@ -105,6 +151,8 @@ impl ResponsesRepo for SqliteResponsesRepo {
         Ok(ResponseRecord {
             id: input.id,
             org_id: input.org_id,
+            owner_type: input.owner_type,
+            owner_id: input.owner_id,
             project_id: input.project_id,
             user_id: input.user_id,
             api_key_id: input.api_key_id,
@@ -126,21 +174,17 @@ impl ResponsesRepo for SqliteResponsesRepo {
     }
 
     async fn get_by_id_and_org(&self, id: &str, org_id: Uuid) -> DbResult<Option<ResponseRecord>> {
-        let result = query(
-            r#"
-            SELECT id, org_id, project_id, user_id, api_key_id, service_account_id,
-                   status, background, model, provider,
-                   created_at, started_at, completed_at,
-                   request_payload, output, usage, error,
-                   retention_expires_at, last_sequence_number
-            FROM responses
-            WHERE id = ? AND org_id = ?
-            "#,
-        )
-        .bind(id)
-        .bind(org_id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let sql = format!(
+            "SELECT {cols} FROM responses WHERE id = ?{scope}",
+            cols = RESPONSE_COLUMNS,
+            scope = ORG_SCOPE_FILTER,
+        );
+        let mut q = query(&sql).bind(id);
+        let org_str = org_id.to_string();
+        for _ in 0..ORG_SCOPE_BINDS {
+            q = q.bind(org_str.clone());
+        }
+        let result = q.fetch_optional(&self.pool).await?;
         match result {
             Some(row) => Ok(Some(row_to_record(&row)?)),
             None => Ok(None),
@@ -182,12 +226,10 @@ impl ResponsesRepo for SqliteResponsesRepo {
         }
 
         let sql = format!(
-            "UPDATE responses SET {} WHERE id = ? AND org_id = ? RETURNING \
-             id, org_id, project_id, user_id, api_key_id, service_account_id, \
-             status, background, model, provider, \
-             created_at, started_at, completed_at, \
-             request_payload, output, usage, error, retention_expires_at, last_sequence_number",
-            setters.join(", ")
+            "UPDATE responses SET {set} WHERE id = ?{scope} RETURNING {cols}",
+            set = setters.join(", "),
+            scope = ORG_SCOPE_FILTER,
+            cols = RESPONSE_COLUMNS,
         );
         let mut q = query(&sql);
         if let Some(status) = patch.status {
@@ -211,7 +253,11 @@ impl ResponsesRepo for SqliteResponsesRepo {
         if let Some(ts) = patch.retention_expires_at {
             q = q.bind(truncate_to_millis(ts));
         }
-        q = q.bind(id).bind(org_id.to_string());
+        q = q.bind(id);
+        let org_str = org_id.to_string();
+        for _ in 0..ORG_SCOPE_BINDS {
+            q = q.bind(org_str.clone());
+        }
 
         let result = q.fetch_optional(&self.pool).await?;
         match result {
@@ -221,16 +267,16 @@ impl ResponsesRepo for SqliteResponsesRepo {
     }
 
     async fn delete_by_id_and_org(&self, id: &str, org_id: Uuid) -> DbResult<bool> {
-        let result = query(
-            r#"
-            DELETE FROM responses
-            WHERE id = ? AND org_id = ?
-            "#,
-        )
-        .bind(id)
-        .bind(org_id.to_string())
-        .execute(&self.pool)
-        .await?;
+        let sql = format!(
+            "DELETE FROM responses WHERE id = ?{scope}",
+            scope = ORG_SCOPE_FILTER,
+        );
+        let mut q = query(&sql).bind(id);
+        let org_str = org_id.to_string();
+        for _ in 0..ORG_SCOPE_BINDS {
+            q = q.bind(org_str.clone());
+        }
+        let result = q.execute(&self.pool).await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -239,8 +285,9 @@ impl ResponsesRepo for SqliteResponsesRepo {
         // SQLite serialises writes, so a plain UPDATE...RETURNING with
         // a subselect of one row gives atomic claim semantics: the
         // first transaction wins, the rest see status != 'queued' and
-        // get no rows back.
-        let result = query(
+        // get no rows back. Worker runs gateway-wide, so no scope
+        // filter — every queued row is claimable.
+        let sql = format!(
             r#"
             UPDATE responses
             SET status = 'in_progress', started_at = ?
@@ -250,17 +297,11 @@ impl ResponsesRepo for SqliteResponsesRepo {
                 ORDER BY created_at ASC
                 LIMIT 1
             )
-            RETURNING
-                id, org_id, project_id, user_id, api_key_id, service_account_id,
-                status, background, model, provider,
-                created_at, started_at, completed_at,
-                request_payload, output, usage, error,
-                retention_expires_at, last_sequence_number
+            RETURNING {cols}
             "#,
-        )
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await?;
+            cols = RESPONSE_COLUMNS,
+        );
+        let result = query(&sql).bind(now).fetch_optional(&self.pool).await?;
         match result {
             Some(row) => Ok(Some(row_to_record(&row)?)),
             None => Ok(None),

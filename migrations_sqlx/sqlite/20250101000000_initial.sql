@@ -1070,8 +1070,17 @@ CREATE TABLE IF NOT EXISTS responses (
     -- synthetic default org via the auth middleware, so a NULL here
     -- would indicate a bypass we want to reject at insert time.
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    -- Ownership. Matches the `skills` / `templates` / `conversations`
+    -- pattern — records which scope a response belongs to so it can
+    -- be listed/retrieved as an org/team/project/user/service-account
+    -- resource. Reads cascade through the org-scope filter; writes
+    -- and deletes follow the same cascade.
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('organization','team','project','user','service_account')),
+    owner_id TEXT NOT NULL,
+    -- Audit columns. These record who actually made the call; they
+    -- are distinct from the owner above (an API key bound to a
+    -- project can submit a request whose owner is the user, etc.).
     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
-    -- Principal attribution
     user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     api_key_id TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
     service_account_id TEXT REFERENCES service_accounts(id) ON DELETE SET NULL,
@@ -1097,7 +1106,7 @@ CREATE TABLE IF NOT EXISTS responses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_responses_org_status ON responses(org_id, status);
-CREATE INDEX IF NOT EXISTS idx_responses_user_created ON responses(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_responses_owner_created ON responses(owner_type, owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_responses_retention ON responses(retention_expires_at);
 
 -- Append-only event log for in-flight + completed responses. Powers

@@ -7,8 +7,44 @@ use uuid::Uuid;
 
 use crate::db::{
     error::{DbError, DbResult},
-    repos::{NewResponse, ResponseCompletion, ResponseRecord, ResponseStatus, ResponsesRepo},
+    repos::{
+        NewResponse, ResponseCompletion, ResponseOwnerType, ResponseRecord, ResponseStatus,
+        ResponsesRepo,
+    },
 };
+
+/// Org-scope filter for reads/updates/deletes against `responses` —
+/// mirrors `skills::ORG_SCOPE_FILTER`. Org id is `$1` (referenced
+/// five times — once per owner type). The clause is prefixed with
+/// `AND` so it can be appended to a `WHERE` predicate that already
+/// matches by `id`.
+const ORG_SCOPE_FILTER: &str = r#"
+    AND (
+        (responses.owner_type = 'organization' AND responses.owner_id = $1)
+        OR (responses.owner_type = 'team' AND EXISTS (
+            SELECT 1 FROM teams t WHERE t.id = responses.owner_id AND t.org_id = $1
+        ))
+        OR (responses.owner_type = 'project' AND EXISTS (
+            SELECT 1 FROM projects pr WHERE pr.id = responses.owner_id AND pr.org_id = $1
+        ))
+        OR (responses.owner_type = 'user' AND EXISTS (
+            SELECT 1 FROM org_memberships om WHERE om.user_id = responses.owner_id AND om.org_id = $1
+        ))
+        OR (responses.owner_type = 'service_account' AND EXISTS (
+            SELECT 1 FROM service_accounts sa WHERE sa.id = responses.owner_id AND sa.org_id = $1
+        ))
+    )
+"#;
+
+/// All columns of `responses` in canonical SELECT order, with
+/// `owner_type` cast to TEXT for direct string parsing. Used by every
+/// SELECT / RETURNING in this repo so the column list stays in sync.
+const RESPONSE_COLUMNS: &str = "id, org_id, owner_type::TEXT, owner_id, \
+    project_id, user_id, api_key_id, service_account_id, \
+    status, background, model, provider, \
+    created_at, started_at, completed_at, \
+    request_payload, output, usage, error, \
+    retention_expires_at, last_sequence_number";
 
 pub struct PostgresResponsesRepo {
     write_pool: PgPool,
@@ -30,10 +66,17 @@ fn parse_status(s: &str) -> DbResult<ResponseStatus> {
         .ok_or_else(|| DbError::Internal(format!("unknown response status: {s}")))
 }
 
+fn parse_owner_type(s: &str) -> DbResult<ResponseOwnerType> {
+    ResponseOwnerType::parse(s)
+        .ok_or_else(|| DbError::Internal(format!("unknown response owner_type: {s}")))
+}
+
 fn row_to_record(row: &sqlx::postgres::PgRow) -> DbResult<ResponseRecord> {
     Ok(ResponseRecord {
         id: row.get("id"),
         org_id: row.get("org_id"),
+        owner_type: parse_owner_type(&row.get::<String, _>("owner_type"))?,
+        owner_id: row.get("owner_id"),
         project_id: row.get("project_id"),
         user_id: row.get("user_id"),
         api_key_id: row.get("api_key_id"),
@@ -61,15 +104,23 @@ impl ResponsesRepo for PostgresResponsesRepo {
         sqlx::query(
             r#"
             INSERT INTO responses (
-                id, org_id, project_id, user_id, api_key_id, service_account_id,
+                id, org_id, owner_type, owner_id,
+                project_id, user_id, api_key_id, service_account_id,
                 status, background, model, provider,
                 created_at, request_payload, retention_expires_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES (
+                $1, $2, $3::response_owner_type, $4,
+                $5, $6, $7, $8,
+                $9, $10, $11, $12,
+                $13, $14, $15
+            )
             "#,
         )
         .bind(&input.id)
         .bind(input.org_id)
+        .bind(input.owner_type.as_str())
+        .bind(input.owner_id)
         .bind(input.project_id)
         .bind(input.user_id)
         .bind(input.api_key_id)
@@ -87,6 +138,8 @@ impl ResponsesRepo for PostgresResponsesRepo {
         Ok(ResponseRecord {
             id: input.id,
             org_id: input.org_id,
+            owner_type: input.owner_type,
+            owner_id: input.owner_id,
             project_id: input.project_id,
             user_id: input.user_id,
             api_key_id: input.api_key_id,
@@ -108,21 +161,16 @@ impl ResponsesRepo for PostgresResponsesRepo {
     }
 
     async fn get_by_id_and_org(&self, id: &str, org_id: Uuid) -> DbResult<Option<ResponseRecord>> {
-        let result = sqlx::query(
-            r#"
-            SELECT id, org_id, project_id, user_id, api_key_id, service_account_id,
-                   status, background, model, provider,
-                   created_at, started_at, completed_at,
-                   request_payload, output, usage, error,
-                   retention_expires_at, last_sequence_number
-            FROM responses
-            WHERE id = $1 AND org_id = $2
-            "#,
-        )
-        .bind(id)
-        .bind(org_id)
-        .fetch_optional(&self.read_pool)
-        .await?;
+        let sql = format!(
+            "SELECT {cols} FROM responses WHERE id = $2{scope}",
+            cols = RESPONSE_COLUMNS,
+            scope = ORG_SCOPE_FILTER,
+        );
+        let result = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(id)
+            .fetch_optional(&self.read_pool)
+            .await?;
         match result {
             Some(row) => Ok(Some(row_to_record(&row)?)),
             None => Ok(None),
@@ -135,9 +183,11 @@ impl ResponsesRepo for PostgresResponsesRepo {
         org_id: Uuid,
         patch: ResponseCompletion,
     ) -> DbResult<Option<ResponseRecord>> {
-        // Build the SET clause dynamically with numbered placeholders.
+        // Build the SET clause dynamically. Org id is $1 (referenced
+        // by the cascade scope filter), so dynamic columns start at
+        // $2 and the id placeholder slots in after them.
         let mut setters: Vec<String> = Vec::new();
-        let mut idx = 1usize;
+        let mut idx = 2usize;
 
         macro_rules! add {
             ($cond:expr, $col:expr) => {
@@ -159,18 +209,15 @@ impl ResponsesRepo for PostgresResponsesRepo {
         }
 
         let id_placeholder = idx;
-        let org_placeholder = idx + 1;
         let sql = format!(
-            "UPDATE responses SET {} WHERE id = ${} AND org_id = ${} RETURNING \
-             id, org_id, project_id, user_id, api_key_id, service_account_id, \
-             status, background, model, provider, \
-             created_at, started_at, completed_at, \
-             request_payload, output, usage, error, retention_expires_at, last_sequence_number",
-            setters.join(", "),
-            id_placeholder,
-            org_placeholder
+            "UPDATE responses SET {set} WHERE id = ${id}{scope} RETURNING {cols}",
+            set = setters.join(", "),
+            id = id_placeholder,
+            scope = ORG_SCOPE_FILTER,
+            cols = RESPONSE_COLUMNS,
         );
         let mut q = sqlx::query(&sql);
+        q = q.bind(org_id);
         if let Some(status) = patch.status {
             q = q.bind(status.as_str().to_string());
         }
@@ -192,7 +239,7 @@ impl ResponsesRepo for PostgresResponsesRepo {
         if let Some(ts) = patch.retention_expires_at {
             q = q.bind(ts);
         }
-        q = q.bind(id).bind(org_id);
+        q = q.bind(id);
 
         let result = q.fetch_optional(&self.write_pool).await?;
         match result {
@@ -202,23 +249,24 @@ impl ResponsesRepo for PostgresResponsesRepo {
     }
 
     async fn delete_by_id_and_org(&self, id: &str, org_id: Uuid) -> DbResult<bool> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM responses
-            WHERE id = $1 AND org_id = $2
-            "#,
-        )
-        .bind(id)
-        .bind(org_id)
-        .execute(&self.write_pool)
-        .await?;
+        let sql = format!(
+            "DELETE FROM responses WHERE id = $2{scope}",
+            scope = ORG_SCOPE_FILTER,
+        );
+        let result = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(id)
+            .execute(&self.write_pool)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
     async fn claim_queued(&self, now: DateTime<Utc>) -> DbResult<Option<ResponseRecord>> {
         // SELECT FOR UPDATE SKIP LOCKED + UPDATE in one CTE gives
         // atomic, contention-free claim semantics across N workers.
-        let result = sqlx::query(
+        // Worker runs gateway-wide (not per principal), so no scope
+        // filter — every queued row is claimable.
+        let sql = format!(
             r#"
             WITH claimed AS (
                 SELECT id FROM responses
@@ -227,21 +275,18 @@ impl ResponsesRepo for PostgresResponsesRepo {
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            UPDATE responses r
+            UPDATE responses
             SET status = 'in_progress', started_at = $1
             FROM claimed
-            WHERE r.id = claimed.id
-            RETURNING
-                r.id, r.org_id, r.project_id, r.user_id, r.api_key_id, r.service_account_id,
-                r.status, r.background, r.model, r.provider,
-                r.created_at, r.started_at, r.completed_at,
-                r.request_payload, r.output, r.usage, r.error,
-                r.retention_expires_at, r.last_sequence_number
+            WHERE responses.id = claimed.id
+            RETURNING {cols}
             "#,
-        )
-        .bind(now)
-        .fetch_optional(&self.write_pool)
-        .await?;
+            cols = RESPONSE_COLUMNS,
+        );
+        let result = sqlx::query(&sql)
+            .bind(now)
+            .fetch_optional(&self.write_pool)
+            .await?;
         match result {
             Some(row) => Ok(Some(row_to_record(&row)?)),
             None => Ok(None),

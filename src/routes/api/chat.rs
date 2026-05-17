@@ -1289,6 +1289,17 @@ pub async fn api_v1_responses(
                         "Background responses require an authenticated org",
                     )
                 })?;
+            let owner = crate::services::responses_pipeline::derive_response_owner(
+                &state,
+                auth.as_ref().map(|e| &e.0),
+            )
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "org_required",
+                    "Background responses require an authenticated principal",
+                )
+            })?;
             let principal_user = auth
                 .as_ref()
                 .and_then(|a| a.user_id())
@@ -1306,6 +1317,8 @@ pub async fn api_v1_responses(
             let new_row = crate::db::repos::NewResponse {
                 id: resp_id.clone(),
                 org_id: principal_org,
+                owner_type: owner.owner_type(),
+                owner_id: owner.owner_id(),
                 project_id: principal_project,
                 user_id: principal_user,
                 api_key_id: principal_api_key,
@@ -1668,14 +1681,21 @@ pub async fn api_v1_responses(
             && final_response.status().is_success();
         if !want_persist {
             None
-        } else if let (Some(store), Some(row_org)) =
-            (state.responses_store.as_ref(), principal.org_id)
-        {
+        } else if let (Some(store), Some(row_org), Some(owner)) = (
+            state.responses_store.as_ref(),
+            principal.org_id,
+            crate::services::responses_pipeline::derive_response_owner(
+                &state,
+                auth.as_ref().map(|e| &e.0),
+            ),
+        ) {
             let resp_id = crate::services::ResponsesStore::new_response_id();
             let now = chrono::Utc::now();
             let new_row = crate::db::repos::NewResponse {
                 id: resp_id.clone(),
                 org_id: row_org,
+                owner_type: owner.owner_type(),
+                owner_id: owner.owner_id(),
                 project_id: principal.project_id,
                 user_id: principal.user_id,
                 api_key_id: principal.api_key_id,
