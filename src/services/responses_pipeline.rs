@@ -341,9 +341,14 @@ pub fn apply_streaming_pipeline(
             .map(|t| t.iter().any(|tt| tt.is_shell()))
             .unwrap_or(false);
         if has_shell && !shell_runtime.capabilities().passthrough_only {
+            // The two passthrough variants are filtered out by the
+            // `passthrough_only` guard above; the `None` arm is unreachable
+            // because `shell_runtime` would have been `None` too. They're
+            // listed for match exhaustiveness only.
             let (rate, label) = match &state.config.features.shell {
                 crate::config::ShellRuntimeConfig::None
-                | crate::config::ShellRuntimeConfig::PassthroughOpenAI => (0, "unknown"),
+                | crate::config::ShellRuntimeConfig::PassthroughOpenAI
+                | crate::config::ShellRuntimeConfig::ClientPassthrough => (0, "unknown"),
                 #[cfg(feature = "runtime-microsandbox")]
                 crate::config::ShellRuntimeConfig::Microsandbox(_) => (
                     state

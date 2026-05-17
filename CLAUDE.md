@@ -19,15 +19,18 @@ Read files in `agent_instructions/` for detailed guidance on specific tasks:
 
 - `adding_admin_endpoint.md` — Admin endpoints and pagination patterns
 - `adding_frontend_tool.md` — Frontend tools
-- `adding_provider.md` — LLM providers
-- `architecture.md` — Multi-tenancy, auth, RBAC, SSO, request flow, RAG, chat modes, caching
+- `adding_provider.md` — LLM providers (and how server-side tools rewrite)
+- `adding_runtime.md` — Shell-tool runtime backends (passthrough, microsandbox, opensandbox, …)
+- `architecture.md` — Multi-tenancy, auth, RBAC, SSO, request flow, RAG, chat modes, caching, server-side tools
 - `ci_cd.md` — CI, release, and deploy pipelines
 - `configuration.md` — Config sections, feature flags, provider options
+- `containers.md` — Responses-API containers, shell tool, lifecycle, file staging
 - `database_changes.md` — Database migrations and schema changes
 - `documentation.md` — Documentation site, writing guidelines, Storybook embeds
 - `frontend_conventions.md` — Frontend conventions, accessibility (WCAG 2.1 AA)
 - `key_files.md` — Comprehensive file listing by subsystem
 - `modifying_chat_ui.md` — Chat UI performance (stores, selectors, memoization)
+- `responses_pipeline.md` — Foreground/background streaming pipeline, server-tool loop
 - `testing.md` — Provider e2e tests (wiremock), university E2E tests
 - `wasm.md` — WASM build architecture and frontend development
 
@@ -60,6 +63,17 @@ Hierarchical profiles (default: `full`):
 - **`full`** — standard + SAML, Kreuzberg, ClamAV
 - **`headless`** — full without embedded assets
 - **`wasm`** — Browser-only build (see `agent_instructions/wasm.md`)
+
+Shell-tool runtime backends are gated by their own feature flags (off by default in every
+profile so the heavy SDKs are opt-in):
+
+- **`runtime-microsandbox`** — pulls in the microsandbox SDK + microVM dependencies for the
+  in-process `microsandbox` runtime.
+- **`runtime-opensandbox`** — pulls in the HTTP client glue for the Alibaba OpenSandbox
+  Lifecycle API. No new system dependencies.
+
+`passthrough_openai` and `client_passthrough` runtimes are always available; they require no
+extra cargo features. See `agent_instructions/containers.md`.
 
 ```bash
 cargo build --no-default-features --features tiny       # Smallest binary

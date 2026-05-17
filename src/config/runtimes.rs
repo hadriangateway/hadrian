@@ -21,6 +21,15 @@ use serde::{Deserialize, Serialize};
 /// type = "passthrough_openai"
 /// ```
 ///
+/// Client fulfills shell calls itself (provider-agnostic equivalent of
+/// OpenAI's "local shell" mode — works behind Anthropic, Bedrock,
+/// Vertex, etc. as well as OpenAI):
+///
+/// ```toml
+/// [features.shell]
+/// type = "client_passthrough"
+/// ```
+///
 /// Local microVM via microsandbox:
 ///
 /// ```toml
@@ -42,6 +51,20 @@ pub enum ShellRuntimeConfig {
     /// runs the shell call in OpenAI's hosted container).
     PassthroughOpenAI,
 
+    /// The API client fulfills shell calls itself — Hadrian validates
+    /// the request, keeps OpenAI's native `shell` spec intact, rewrites
+    /// it to a function tool for non-OpenAI providers, and skips
+    /// server-side execution. Wire format the client sees:
+    ///
+    /// - OpenAI: `shell_call` / `shell_call_output` (native).
+    /// - Anthropic / Bedrock / Vertex: `function_call` with
+    ///   `name="shell"` / `function_call_output` (because those
+    ///   providers have no native shell tool type).
+    ///
+    /// Equivalent to OpenAI's "local shell" mode but works behind any
+    /// supported provider.
+    ClientPassthrough,
+
     /// Local microVMs via microsandbox
     /// (<https://github.com/superradcompany/microsandbox>).
     #[cfg(feature = "runtime-microsandbox")]
@@ -61,11 +84,22 @@ impl ShellRuntimeConfig {
         !matches!(self, Self::None)
     }
 
+    /// Whether this mode keeps OpenAI's native `shell` tool spec intact
+    /// rather than rewriting it to a function tool. True for both
+    /// passthrough modes (the OpenAI hosted container and the API
+    /// client both want native `shell_call` items); false for the
+    /// Hadrian-hosted sandbox modes (those run the call themselves and
+    /// need the function-mode rewrite so the executor can intercept).
+    pub fn keeps_openai_native_shell(&self) -> bool {
+        matches!(self, Self::PassthroughOpenAI | Self::ClientPassthrough)
+    }
+
     /// Human-readable name of the configured runtime, for logging.
     pub fn name(&self) -> &'static str {
         match self {
             Self::None => "none",
             Self::PassthroughOpenAI => "passthrough_openai",
+            Self::ClientPassthrough => "client_passthrough",
             #[cfg(feature = "runtime-microsandbox")]
             Self::Microsandbox(_) => "microsandbox",
             #[cfg(feature = "runtime-opensandbox")]

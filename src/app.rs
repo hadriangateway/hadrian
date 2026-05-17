@@ -1117,7 +1117,15 @@ impl AppState {
             config::ShellRuntimeConfig::None => None,
             config::ShellRuntimeConfig::PassthroughOpenAI => {
                 tracing::info!("Shell tool runtime: passthrough_openai");
-                Some(Arc::new(runtimes::PassthroughRuntime::new()))
+                Some(Arc::new(
+                    runtimes::PassthroughRuntime::for_openai_container(),
+                ))
+            }
+            config::ShellRuntimeConfig::ClientPassthrough => {
+                tracing::info!(
+                    "Shell tool runtime: client_passthrough (API client fulfills shell calls)"
+                );
+                Some(Arc::new(runtimes::PassthroughRuntime::for_api_client()))
             }
             #[cfg(feature = "runtime-microsandbox")]
             config::ShellRuntimeConfig::Microsandbox(cfg) => {

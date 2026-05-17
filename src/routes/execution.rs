@@ -22,19 +22,77 @@ use crate::{
         classify_provider_error, open_ai, should_fallback_on_response_status, test,
     },
     services::{
+        container_session::MNT_DATA,
         preprocess_file_search_tools, preprocess_web_search_tools,
-        shell_tool::preprocess_shell_tools,
+        shell_tool::{
+            ShellExecutionLocation, ShellNetworkSummary, ShellToolHint, preprocess_shell_tools,
+            resolve_shell_environment,
+        },
     },
 };
 
-/// Whether the shell tool spec should be left intact for the upstream
-/// provider to execute (passthrough mode). Currently only OpenAI hosts
-/// a shell runtime.
-fn shell_passthrough_for_openai(state: &AppState) -> bool {
-    matches!(
-        state.config.features.shell,
-        crate::config::ShellRuntimeConfig::PassthroughOpenAI
-    )
+/// Whether OpenAI's native `shell` tool spec should be left intact
+/// (vs rewritten to a function tool). True in both passthrough modes —
+/// `passthrough_openai` (OpenAI's hosted container executes) and
+/// `client_passthrough` (the API client executes). In both cases the
+/// model should emit native `shell_call` items the OpenAI SDK can
+/// recognize; Hadrian-hosted runtimes always rewrite so the executor
+/// can intercept function-call output.
+fn keep_openai_native_shell(state: &AppState) -> bool {
+    state.config.features.shell.keeps_openai_native_shell()
+}
+
+/// Build the description hint the model sees on the function-mode shell
+/// tool. Drawn from the runtime mode, per-request shell environment
+/// overrides intersected with operator caps, and the containers config.
+///
+/// Re-resolves the per-request env even though `chat.rs` already did so
+/// at admission time — preprocessing happens deep in the per-provider
+/// dispatch and re-derivation is cheap. Errors fall back to defaults
+/// silently because the request would have been rejected with a 400 at
+/// admission if the env was actually invalid.
+fn build_shell_tool_hint(
+    state: &AppState,
+    payload: &api_types::CreateResponsesPayload,
+) -> ShellToolHint {
+    let location = match state.config.features.shell {
+        crate::config::ShellRuntimeConfig::ClientPassthrough => ShellExecutionLocation::ApiClient,
+        _ => ShellExecutionLocation::HadrianSandbox,
+    };
+
+    let containers = &state.config.features.containers;
+    let shell_limits = &state.config.features.server_tools.shell_limits;
+
+    let request_env = payload
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.iter().find_map(|t| t.as_shell()))
+        .and_then(|s| s.environment.as_ref());
+    let resolved = resolve_shell_environment(request_env, shell_limits).ok();
+
+    let mem_limit_mb = resolved
+        .as_ref()
+        .and_then(|r| r.mem_limit_bytes)
+        .map(|b| b / (1024 * 1024))
+        .or_else(|| shell_limits.default_mem_limit_mb.map(u64::from));
+
+    let network_summary = match resolved.as_ref() {
+        Some(r) if !r.egress_policy.allow_hosts.is_empty() => {
+            ShellNetworkSummary::Allowlist(r.egress_policy.allow_hosts.clone())
+        }
+        _ => ShellNetworkSummary::Unknown,
+    };
+
+    ShellToolHint {
+        location,
+        workdir: MNT_DATA,
+        container_persistence: containers.enabled
+            && matches!(location, ShellExecutionLocation::HadrianSandbox),
+        network_summary,
+        mem_limit_mb,
+        command_timeout_secs: shell_limits.command_timeout_secs,
+        ..ShellToolHint::default()
+    }
 }
 
 // ============================================================================
@@ -273,19 +331,25 @@ impl ProviderExecutor for ResponsesExecutor {
     ) -> Result<Response, ProviderError> {
         // Shell tool preprocessing rules:
         // - OpenAI / Azure OpenAI: leave native `shell` tool intact when
-        //   passthrough is configured; otherwise rewrite to function tool.
-        //   (Currently the only "otherwise" is when a non-passthrough
-        //   runtime adapter is wired up, which is gated to slice 1B.)
+        //   either passthrough mode is configured (so the model emits
+        //   native `shell_call` items the OpenAI SDK / hosted container
+        //   can consume); otherwise rewrite to function tool so the
+        //   Hadrian-hosted executor can intercept.
         // - Anthropic / Bedrock / Vertex: always rewrite, since these
-        //   providers have no native shell tool.
-        let openai_keep_native_shell = shell_passthrough_for_openai(state);
+        //   providers have no native shell tool. Under `client_passthrough`
+        //   the rewrite still happens; the model emits `function_call`
+        //   items with `name="shell"` that pass through to the client.
+        let openai_keep_native_shell = keep_openai_native_shell(state);
+        // Build the hint once per provider attempt; rewrites are idempotent
+        // and the hint depends only on request payload + operator config.
+        let shell_hint = build_shell_tool_hint(state, &payload);
         match provider_config {
             ProviderConfig::OpenAi(config) => {
                 let mut payload = payload;
                 preprocess_file_search_tools(&mut payload);
                 preprocess_web_search_tools(&mut payload);
                 if !openai_keep_native_shell {
-                    preprocess_shell_tools(&mut payload);
+                    preprocess_shell_tools(&mut payload, &shell_hint);
                 }
 
                 open_ai::OpenAICompatibleProvider::from_config_with_registry(
@@ -299,7 +363,7 @@ impl ProviderExecutor for ResponsesExecutor {
             ProviderConfig::Anthropic(config) => {
                 let mut payload = payload;
                 preprocess_web_search_tools(&mut payload);
-                preprocess_shell_tools(&mut payload);
+                preprocess_shell_tools(&mut payload, &shell_hint);
                 anthropic::AnthropicProvider::from_config_with_registry(
                     config,
                     provider_name,
@@ -314,7 +378,7 @@ impl ProviderExecutor for ResponsesExecutor {
                 preprocess_file_search_tools(&mut payload);
                 preprocess_web_search_tools(&mut payload);
                 if !openai_keep_native_shell {
-                    preprocess_shell_tools(&mut payload);
+                    preprocess_shell_tools(&mut payload, &shell_hint);
                 }
 
                 azure_openai::AzureOpenAIProvider::from_config_with_registry(
@@ -330,7 +394,7 @@ impl ProviderExecutor for ResponsesExecutor {
                 let mut payload = payload;
                 preprocess_file_search_tools(&mut payload);
                 preprocess_web_search_tools(&mut payload);
-                preprocess_shell_tools(&mut payload);
+                preprocess_shell_tools(&mut payload, &shell_hint);
 
                 bedrock::BedrockProvider::from_config_with_registry(
                     config,
@@ -344,7 +408,7 @@ impl ProviderExecutor for ResponsesExecutor {
             ProviderConfig::Vertex(config) => {
                 let mut payload = payload;
                 preprocess_web_search_tools(&mut payload);
-                preprocess_shell_tools(&mut payload);
+                preprocess_shell_tools(&mut payload, &shell_hint);
                 vertex::VertexProvider::from_config_with_registry(
                     config,
                     provider_name,
@@ -357,7 +421,7 @@ impl ProviderExecutor for ResponsesExecutor {
                 let mut payload = payload;
                 preprocess_file_search_tools(&mut payload);
                 preprocess_web_search_tools(&mut payload);
-                preprocess_shell_tools(&mut payload);
+                preprocess_shell_tools(&mut payload, &shell_hint);
 
                 test::TestProvider::from_config(config)
                     .create_responses(&state.http_client, payload)

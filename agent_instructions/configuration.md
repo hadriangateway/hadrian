@@ -39,3 +39,6 @@ Config file: `hadrian.toml` (TOML format). Environment variables: use `${VAR_NAM
 - `[features.model_catalog]` — Model metadata enrichment from models.dev
 - `[features.websocket]` — WebSocket for real-time events
 - `[features.vector_store_cleanup]` — Background cleanup for soft-deleted vector stores
+- `[features.shell]` — Shell tool runtime (`passthrough_openai`, `client_passthrough`, `microsandbox`, `opensandbox`). See `containers.md` and `adding_runtime.md`. Cargo features `runtime-microsandbox` / `runtime-opensandbox` gate the local backends.
+- `[features.containers]` — Container persistence + artifact capture (idle TTL, per-file / per-session byte caps, max input files per request). Defaults match OpenAI's hosted-container behavior.
+- `[features.server_tools]` — Server-executed tool framework: `max_iterations` (tool-loop budget), `pricing` (per-runtime microcents/sec), `shell_limits` (default & max memory, command timeout, egress allowlist, domain secrets).

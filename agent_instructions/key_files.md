@@ -52,6 +52,39 @@
 - `src/jobs/vector_store_cleanup.rs` — Background cleanup for soft-deleted stores
 - `src/models/vector_store.rs` — VectorStore and VectorStoreFile models
 
+## Backend — Responses API / Agents / Containers
+
+- `src/api_types/responses.rs` — Wire types for the Responses API (`shell`, `ShellEnvironment`, `ContainerFileRef`, etc.)
+- `src/services/responses_pipeline.rs` — Streaming pipeline: input-file staging → guardrails → tool loop → persistence
+- `src/services/response_persister.rs` — Persist SSE events to `responses` + `response_events`
+- `src/services/response_event_buffer.rs` — In-memory tailing for background responses
+- `src/services/responses_store.rs` — Service wrapper for the `responses` table
+- `src/services/responses_webhook.rs` — Terminal-state webhook fan-out
+- `src/services/background_executor.rs` — Background-response runner; re-enters `apply_streaming_pipeline`
+- `src/services/server_tools/mod.rs` — `ServerExecutedTool` trait + `ToolLoopRunner` glue
+- `src/services/server_tools/runner.rs` — Tool-loop orchestrator (detect → execute → continuation)
+- `src/services/shell_tool.rs` — `ShellExecutor`, function-mode rewrite, dynamic `ShellToolHint` description, env resolution
+- `src/services/containers.rs` — `ContainersService`; provision, file persistence, lifecycle
+- `src/services/container_session.rs` — `ContainerSession`, `ContainerSessionRegistry`, `MNT_DATA` constant
+- `src/services/input_file_staging.rs` — Resolve `input_file` parts (file_id / data / url) into `/mnt/data`
+- `src/runtimes/mod.rs` — `ShellRuntime` trait + `RuntimeCapabilities`
+- `src/runtimes/passthrough.rs` — `PassthroughRuntime` (OpenAI container + client-passthrough modes)
+- `src/runtimes/microsandbox.rs` — Local microVM backend (feature `runtime-microsandbox`)
+- `src/runtimes/opensandbox.rs` — Alibaba OpenSandbox HTTP backend (feature `runtime-opensandbox`)
+- `src/config/runtimes.rs` — `ShellRuntimeConfig` enum, per-backend config structs
+- `src/config/features.rs` — `ContainersConfig`, `ServerToolsConfig`, `ShellLimitsConfig`
+- `src/routes/api/containers.rs` — `GET /v1/containers/{id}`, files, delete
+- `src/routes/api/responses_lookup.rs` — `GET /v1/responses/{id}` with tail-streaming
+- `src/db/repos/containers.rs` — `ContainersRepo`, `ContainerRecord`, `ContainerFileRecord`, `ContainerPatch`
+- `src/db/repos/responses.rs` — `ResponsesRepo`, `ResponseRecord`, owner / org scoping
+- `src/db/repos/response_events.rs` — Persisted SSE events
+- `src/db/{postgres,sqlite}/containers.rs` — Repo impls (keep in sync!)
+- `src/db/{postgres,sqlite}/responses.rs` / `response_events.rs` — Repo impls (keep in sync!)
+- `src/jobs/containers_reaper.rs` — Idle-TTL reaper for containers
+- `src/jobs/background_responses.rs` — Background-response dispatcher
+- `src/jobs/responses_cancel_poller.rs` — Honor cancellation on in-flight background responses
+- `src/jobs/responses_retention.rs` — Retention-driven deletion of `responses` rows
+
 ## Backend — Usage, Cost & Observability
 
 - `src/models/usage.rs` — `UsageLogEntry` with principal attribution fields

@@ -13,7 +13,12 @@
 //! # Backends
 //!
 //! - **`passthrough_openai`** — forward the shell tool spec to OpenAI
-//!   unchanged. Default when upstream is OpenAI.
+//!   unchanged so OpenAI's hosted container executes the call.
+//! - **`client_passthrough`** — the API client fulfills shell calls
+//!   itself (OpenAI's "local shell" mode, generalized to all providers).
+//!   Hadrian validates the request, keeps OpenAI's native `shell` spec
+//!   intact, rewrites it to a function tool for non-OpenAI providers,
+//!   and does not register a server-side executor.
 //! - **`microsandbox`** — local microVMs via
 //!   <https://github.com/superradcompany/microsandbox>. Behind the
 //!   `runtime-microsandbox` feature flag.
@@ -92,11 +97,22 @@ pub enum NetworkMode {
 /// silently degrading.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
-    /// True if the runtime is a pass-through to the upstream provider
-    /// rather than a Hadrian-hosted execution environment. When set, the
-    /// orchestrator does not call `start_session`; it forwards the
-    /// shell tool spec to the upstream provider unchanged.
+    /// True if the runtime defers shell execution rather than running it
+    /// in a Hadrian-hosted environment. When set, the orchestrator does
+    /// not register a [`ShellExecutor`](crate::services::shell_tool::ShellExecutor)
+    /// for the request. Combine with [`client_executes`] to distinguish
+    /// where execution actually happens (`false` = upstream provider's
+    /// hosted container; `true` = the API client).
     pub passthrough_only: bool,
+    /// True iff the shell call is fulfilled by the API client itself
+    /// (rather than the upstream provider). Drives the preprocessing
+    /// decision in `routes/execution.rs`: when this is set, the OpenAI
+    /// native `shell` tool spec is left intact so the model emits
+    /// `shell_call` items the OpenAI SDK's local-shell loop can
+    /// recognize, while non-OpenAI providers still receive the
+    /// function-mode rewrite so they emit `function_call` items the
+    /// client can interpret. Meaningless without `passthrough_only`.
+    pub client_executes: bool,
     /// Can the runtime substitute placeholder strings with secret
     /// values at egress (so the model never sees raw secret values)?
     pub secret_injection: bool,
@@ -113,16 +129,33 @@ pub struct RuntimeCapabilities {
 }
 
 impl RuntimeCapabilities {
-    /// Capabilities of a no-op / passthrough runtime.
-    pub fn passthrough() -> Self {
+    /// Capabilities of a passthrough runtime where the upstream provider's
+    /// hosted environment executes the call (e.g. OpenAI's Responses API
+    /// container).
+    pub fn passthrough_upstream() -> Self {
         Self {
             passthrough_only: true,
+            client_executes: false,
             secret_injection: false,
             egress_allowlist: false,
             skill_mount: false,
             file_io: false,
             network_isolation_modes: Vec::new(),
             max_session_duration: None,
+        }
+    }
+
+    /// Capabilities of a passthrough runtime where the API client fulfills
+    /// shell calls itself (OpenAI's local-shell mode, generalized to all
+    /// providers). The orchestrator still skips registering an executor;
+    /// the difference from [`passthrough_upstream`](Self::passthrough_upstream)
+    /// is purely in the preprocessing decision documented on
+    /// [`client_executes`](RuntimeCapabilities::client_executes).
+    pub fn passthrough_client() -> Self {
+        Self {
+            passthrough_only: true,
+            client_executes: true,
+            ..Self::passthrough_upstream()
         }
     }
 }

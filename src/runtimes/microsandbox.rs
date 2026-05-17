@@ -54,6 +54,7 @@ impl ShellRuntime for MicrosandboxRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             passthrough_only: false,
+            client_executes: false,
             // Slice 1D enables secret injection via microsandbox's
             // SecretBuilder (placeholder substitution at the TLS proxy).
             secret_injection: true,

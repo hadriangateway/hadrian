@@ -72,7 +72,9 @@ Each organization can configure its own identity provider (OIDC or SAML), replac
 
 ## Document Processing Flow (RAG)
 
-1. **File Upload** (`POST /v1/files`) — Store raw file in database
+1. **File Upload** (`POST /v1/files`) — Store raw file in database. The same Files API is also
+   the source for `input_file` parts on Responses requests (resolved into `/mnt/data` by
+   `services/input_file_staging.rs`).
 2. **Add to Vector Store** (`POST /v1/vector_stores/{id}/files`) — Trigger processing
    - Note: 'Vector Stores' are called 'Knowledge Bases' in the UI. Do not refer to them as 'Vector Stores' there.
 3. **Document Processor** (inline or queue mode):
@@ -108,6 +110,34 @@ Client-side tool execution runs in the browser via WASM. When the LLM returns `t
 - **HTML** — Sandboxed iframe preview
 
 Tool results are sent back to the LLM to continue the conversation. Artifacts (charts, tables, images) are displayed inline in the chat.
+
+## Server-side Tools & Agents
+
+The `/v1/responses` pipeline runs server-executed tools alongside the upstream provider's
+stream. Today: `file_search`, `web_search`, `shell`. See `responses_pipeline.md` and
+`containers.md` for the full design.
+
+- **Shell tool runtimes** (`src/runtimes/`):
+  - `passthrough_openai` — OpenAI's hosted container executes.
+  - `client_passthrough` — the API client fulfills shell calls itself (OpenAI's "local shell"
+    mode generalized to all providers).
+  - `microsandbox` — local microVM per session.
+  - `opensandbox` — Alibaba OpenSandbox Lifecycle API over HTTP.
+- **Containers** (`src/services/containers.rs`, `src/services/container_session.rs`) — a
+  persistent shell session keyed by `cntr_<hex>` id. Reused across responses chained via
+  `previous_response_id`. Reaped by `jobs/containers_reaper.rs` after idle TTL.
+- **Tool loop** (`src/services/server_tools/runner.rs`) — wraps the provider stream,
+  intercepts `function_call` (or native `shell_call`) events, dispatches to the registered
+  `ServerExecutedTool`, folds outputs into a continuation request, loops up to
+  `max_iterations`.
+- **Background mode** (`{"background": true}`) — request is queued in the `responses` table
+  and dispatched by `jobs/background_responses.rs` through the same pipeline; clients tail
+  with `GET /v1/responses/{id}?stream=true`.
+
+The shell tool spec gets rewritten to a function tool with a **dynamic description** for
+non-OpenAI providers (`ShellToolHint` in `src/services/shell_tool.rs`). The description
+encodes workdir, network policy, memory limit, and truncation cap for the effective sandbox
+so models don't have to guess.
 
 ## Provider Features
 

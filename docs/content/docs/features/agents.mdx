@@ -1,0 +1,228 @@
+---
+title: Agents & Shell Tool
+description: Run shell commands in a persistent container as part of a Responses API call. Works behind any LLM provider, with pluggable execution backends.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Hadrian extends the OpenAI-compatible `/v1/responses` API with an **agentic shell tool**:
+the model can execute shell commands, write and read files in a persistent workspace, and
+chain that work across multiple turns. Inspired by [OpenAI's Responses API computer
+environment](https://openai.com/index/equip-responses-api-computer-environment/) and modeled
+on the [shell tool spec](https://developers.openai.com/api/docs/guides/tools-shell.md),
+extended to **work behind any provider Hadrian supports** — not just OpenAI.
+
+## At a glance
+
+- **Containers** — every shell call runs in a persistent Linux container scoped by a
+  `cntr_<id>`. Reuse across responses via `previous_response_id`; reaped on idle TTL.
+- **Workspace** — `/mnt/data` is the writable workdir. Files you upload via `input_file`
+  parts land here; files the model writes here are captured and downloadable.
+- **Provider agnostic** — the shell tool spec is the same OpenAI-shaped
+  `{"type": "shell"}`. Hadrian rewrites it to a function tool for providers that don't have
+  a native equivalent (Anthropic, Bedrock, Vertex), so any model with tool-use support can
+  drive it.
+- **Pluggable runtimes** — choose how shell calls are executed: OpenAI's hosted container,
+  the API client itself, or a Hadrian-hosted sandbox (`microsandbox`, `opensandbox`).
+- **Background mode** — submit with `{"background": true}` and stream results later via
+  `GET /v1/responses/{id}?stream=true`.
+
+## Runtimes
+
+Configure under `[features.shell]` in `hadrian.toml`:
+
+| Runtime              | Where execution happens                  | When to use                                                            |
+|----------------------|------------------------------------------|------------------------------------------------------------------------|
+| `passthrough_openai` | OpenAI's hosted container                | You're using `gpt-5.2+` and want zero infrastructure.                  |
+| `client_passthrough` | Your application code                    | You want OpenAI's "local shell" UX behind any provider — Hadrian routes the call but doesn't execute it. |
+| `microsandbox`       | Hadrian process, per-request microVM     | You want isolated, hosted sandboxes without an external sandbox service. Behind cargo feature `runtime-microsandbox`. |
+| `opensandbox`        | Remote OpenSandbox Lifecycle API         | You're running a managed sandbox service (e.g. Alibaba OpenSandbox). Behind cargo feature `runtime-opensandbox`. |
+
+```toml
+# Use OpenAI's hosted container
+[features.shell]
+type = "passthrough_openai"
+
+# Or have your client execute calls (works behind any provider)
+[features.shell]
+type = "client_passthrough"
+
+# Or host the sandbox yourself
+[features.shell]
+type = "microsandbox"
+image = "alpine"
+cpus = 1
+memory_mb = 512
+```
+
+`passthrough_openai` requires an OpenAI / Azure OpenAI upstream — Hadrian rejects shell
+requests routed to other providers with a clear 400. `client_passthrough` works behind
+**any** supported provider; non-OpenAI providers see a `function_call` with `name="shell"`
+instead of OpenAI's native `shell_call`, but the wire-level call data is the same.
+
+## Using the shell tool
+
+The wire format matches OpenAI's. Send a `/v1/responses` request with a `shell` tool
+declared and optional environment overrides:
+
+```json
+{
+  "model": "gpt-5.2",
+  "input": "Plot the residuals in residuals.csv and write the chart to /mnt/data/chart.png.",
+  "tools": [
+    {
+      "type": "shell",
+      "environment": {
+        "container_auto": { "memory_limit": "1g" },
+        "network_policy": { "domains": ["pypi.org", "files.pythonhosted.org"] }
+      }
+    }
+  ]
+}
+```
+
+The model emits shell calls; Hadrian executes them and streams progress events back as
+they happen:
+
+- `response.shell_call.in_progress`
+- `response.shell_call.command_started`
+- `response.shell_call.output_chunk` (stdout / stderr deltas)
+- `response.shell_call.file_created` (every captured file from `/mnt/data`)
+- `response.shell_call.completed` (exit code)
+
+Output longer than 8&nbsp;000 characters is head + tail trimmed before being fed back to the
+model, so it should redirect long output to a file under `/mnt/data` and follow up with
+`grep` / `tail`. The function-mode tool description Hadrian sends to non-OpenAI providers
+embeds this guidance explicitly.
+
+## Files
+
+### Inputs
+
+Attach files to a request with `input_file` parts. Three source modes:
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "Summarize this CSV." },
+        { "type": "input_file", "file_id": "file_abc123" },
+        { "type": "input_file", "file_url": "https://example.com/dataset.csv" },
+        { "type": "input_file", "file_data": "data:text/csv;base64,..." }
+      ]
+    }
+  ]
+}
+```
+
+- `file_id` — looks up a file already uploaded via the standard
+  [Files API](/docs/api). The same `/v1/files` resource that backs Knowledge Bases is
+  reused; you don't need a parallel uploads endpoint just for shell-tool inputs.
+- `file_url` — HTTPS fetch with SSRF protection.
+- `file_data` — inline base64 (data URL).
+
+All resolved files land at `/mnt/data/<filename>` before the first shell command runs.
+
+### Outputs
+
+Anything the model writes under `/mnt/data` is captured into the container's file store and
+surfaced two ways:
+
+1. Inline as `container_file_citation` annotations on the assistant's reply.
+2. Downloadable from `GET /v1/containers/{cntr_id}/files/{cfile_id}/content`.
+
+<Callout type="info">
+  Container output files are a **separate** resource from the Files API (`/v1/files`). To
+  feed a container output back into a knowledge base, download it from the container
+  endpoint and re-upload via `/v1/files`.
+</Callout>
+
+## Containers
+
+Every shell-tool response provisions a container. Inspect and manage them:
+
+```
+GET    /v1/containers/{cntr_id}              # Metadata + TTL
+GET    /v1/containers/{cntr_id}/files        # List files in /mnt/data
+GET    /v1/containers/{cntr_id}/files/{id}   # File metadata
+GET    /v1/containers/{cntr_id}/files/{id}/content  # Raw bytes
+DELETE /v1/containers/{cntr_id}              # Tear down + cascade delete files
+```
+
+Chain across responses by sending `previous_response_id`. The shell tool reattaches to the
+same container, so files and `/mnt/data` state are preserved between turns.
+
+### TTL & expiry
+
+`GET /v1/containers/{id}` returns:
+
+- `created_at` — when the container was provisioned.
+- `last_active_at` — moves forward on every shell call.
+- `expires_at` — **Hadrian extension.** For active containers this is a forward-looking
+  estimate (`last_active_at + idle_ttl_secs`); for terminal statuses it's the actual
+  transition time. Lets you plan reuse without polling.
+- `idle_ttl_secs` — **Hadrian extension.** The TTL applied to this row, so you can recompute
+  `expires_at` yourself.
+
+A background reaper marks rows `expired` once `now > last_active_at + idle_ttl_secs`. The
+default TTL is 20 minutes (configurable as `[features.containers].default_idle_ttl_secs`),
+matching OpenAI's hosted-container behavior.
+
+## Sandboxing (Hadrian-hosted runtimes)
+
+For `microsandbox` and `opensandbox`, every request can request a narrower environment
+than the operator's defaults, but the request is bounded by what the operator pins in
+`[features.server_tools.shell_limits]`:
+
+- **Memory** — `default_mem_limit_mb`, `max_mem_limit_mb`. Per-request `memory_limit`
+  must fit inside the cap.
+- **Egress** — `allowed_egress_hosts` is an operator allowlist; per-request
+  `network_policy.domains` must be a subset. Empty allowlist = inherit the runtime
+  default (microsandbox: full network; opensandbox: deny-all).
+- **Domain secrets** — `allowed_domain_secrets` lets the operator pre-configure
+  placeholder secrets (e.g. `GITHUB_TOKEN`) that the model can refer to by name without
+  ever seeing the value. Per-request `domain_secrets[].allowed_domains` must be a subset.
+- **Command timeout** — `command_timeout_secs` caps each individual shell exec.
+
+## Background mode
+
+Long-running requests run asynchronously:
+
+```json
+{
+  "model": "gpt-5.2",
+  "background": true,
+  "input": "Run the full data pipeline.",
+  "tools": [{ "type": "shell" }]
+}
+```
+
+Returns immediately with a `resp_<id>`. Tail with:
+
+```
+GET /v1/responses/{resp_id}?stream=true
+```
+
+A background worker picks up the queued response, runs it through the same pipeline as
+foreground requests, and persists every SSE event so clients can resume the stream from any
+point — including reconnecting after the server restarts.
+
+## How it compares
+
+| Capability                          | Hadrian              | OpenAI Responses     | Anthropic           | Bedrock AgentCore  | Gemini             |
+|-------------------------------------|----------------------|----------------------|---------------------|--------------------|--------------------|
+| Persistent container handle         | ✓                    | ✓                    | ✓ (30-day TTL)      | ✓ (session VM)     | —                  |
+| Reuse across turns                  | ✓ (`previous_response_id`) | ✓              | ✓                   | ✓                  | —                  |
+| Client-executed mode                | ✓ (`client_passthrough`) | ✓                | ✓ (bash tool)       | —                  | —                  |
+| Per-request network allowlist       | ✓                    | ✓                    | — (no network)      | configurable       | —                  |
+| Files via existing Files API        | ✓                    | ✓                    | ✓                   | ✓ (S3 / EFS)       | ✓                  |
+| Background / long-running           | ✓                    | ✓                    | —                   | ✓                  | —                  |
+
+## See also
+
+- [Knowledge Bases](/docs/features/knowledge-bases) — for retrieval, not execution.
+- [Web Tools](/docs/features/web-tools) — server-side web search / URL fetch.
+- [Skills](/docs/features/skills) — mountable bundles available to the shell tool when
+  supported by the runtime.

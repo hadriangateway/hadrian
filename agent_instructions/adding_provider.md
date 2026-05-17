@@ -662,6 +662,31 @@ ProviderTestSpec {
 | `list_models` | List available models | No | Yes (for health checks) |
 | `health_check` | Provider health | No | Has default impl |
 
+## Server-side tools (`shell`, `file_search`, `web_search`)
+
+For `create_responses`, the execution layer rewrites server-side tools to function tools for
+providers without a native equivalent — your provider doesn't need to know about `shell` or
+`web_search` specifically.
+
+- **`shell`** — `routes/execution.rs` calls `preprocess_shell_tools` with a `ShellToolHint`
+  before invoking your provider. Anthropic / Bedrock / Vertex always get the rewrite (they
+  have no native shell tool); OpenAI / Azure keep the native spec when the runtime mode is
+  `passthrough_openai` or `client_passthrough`. If your provider has a native shell-like
+  primitive, extend `keeps_openai_native_shell()` in `config/runtimes.rs` and update the
+  per-provider branch in `ResponsesExecutor::execute`.
+- **`file_search` / `web_search`** — same pattern; rewritten unconditionally for non-OpenAI
+  providers. The `ToolLoopRunner` (`services/server_tools/runner.rs`) intercepts the
+  resulting `function_call` items and executes them server-side.
+- **Function-call shape compatibility** — your `convert.rs` needs to translate OpenAI-style
+  `function_call` / `function_call_output` items in `payload.input` to the provider's
+  tool-use format and back. The server-tool loop will not work otherwise. See
+  `providers/{anthropic,bedrock,vertex}/convert.rs` for working examples.
+- **Container files** — when the server tool returns a `container_file_citation` annotation,
+  it shows up on a `response.content_part.done` event. You don't need to handle this in your
+  convert layer; the shell executor injects it on the way out via `transform_event`.
+
+For containers / shell architecture, see `containers.md` and `responses_pipeline.md`.
+
 ## Checklist
 
 - [ ] Provider struct with `circuit_breaker` field

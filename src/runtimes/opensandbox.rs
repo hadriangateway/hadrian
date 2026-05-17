@@ -269,6 +269,7 @@ impl ShellRuntime for OpenSandboxRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             passthrough_only: false,
+            client_executes: false,
             // Per-domain secret injection isn't natively supported by
             // execd; secrets get injected via `envs` which makes them
             // visible in the env block but not destination-scoped.

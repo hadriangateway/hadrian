@@ -239,6 +239,190 @@ pub struct ShellPrincipal {
 // Tool arguments (function schema the model sees)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Where shell execution actually happens. Drives the tone of the
+/// dynamic tool description emitted to non-OpenAI providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellExecutionLocation {
+    /// Hadrian-hosted sandbox VM (microsandbox / opensandbox).
+    HadrianSandbox,
+    /// The API client fulfills the call itself (`client_passthrough`).
+    /// Hadrian can't promise anything about the environment.
+    ApiClient,
+}
+
+/// Everything the model should be told about its shell tool for a given
+/// request. Built once per request from the resolved runtime, container
+/// config, and effective shell environment, then folded into the
+/// function-mode description rewritten in [`preprocess_shell_tools`].
+///
+/// The default value produces a minimal, conservative description
+/// suitable when no concrete sandbox is wired up.
+#[derive(Debug, Clone)]
+pub struct ShellToolHint {
+    pub location: ShellExecutionLocation,
+    /// Workdir inside the sandbox where input files are staged and
+    /// captured output files are read from. Always `/mnt/data` today.
+    pub workdir: &'static str,
+    /// Idle / capture behavior is enabled (containers feature on).
+    pub container_persistence: bool,
+    /// Network access from inside the sandbox.
+    pub network_summary: ShellNetworkSummary,
+    /// Memory limit applied to the sandbox, in MiB.
+    pub mem_limit_mb: Option<u64>,
+    /// Per-command wall-clock cap, in seconds.
+    pub command_timeout_secs: u64,
+    /// stdout/stderr fed back to the model are truncated past this many
+    /// characters with a head+tail keep.
+    pub max_output_chars: usize,
+    /// Names of skill bundles mounted under `/skills/<id>` for this
+    /// request.
+    pub mounted_skill_ids: Vec<String>,
+}
+
+/// Network access summary for the model. Tone matches OpenAI's
+/// `network_policy` field.
+#[derive(Debug, Clone)]
+pub enum ShellNetworkSummary {
+    /// No outbound network from the sandbox.
+    NoNetwork,
+    /// Egress restricted to specific hosts.
+    Allowlist(Vec<String>),
+    /// Unrestricted outbound network.
+    Unrestricted,
+    /// Hadrian can't tell (e.g. client-fulfilled mode).
+    Unknown,
+}
+
+impl Default for ShellToolHint {
+    fn default() -> Self {
+        Self {
+            location: ShellExecutionLocation::HadrianSandbox,
+            workdir: crate::services::container_session::MNT_DATA,
+            container_persistence: false,
+            network_summary: ShellNetworkSummary::Unknown,
+            mem_limit_mb: None,
+            command_timeout_secs: 300,
+            max_output_chars: MAX_OUTPUT_CHARS,
+            mounted_skill_ids: Vec::new(),
+        }
+    }
+}
+
+impl ShellToolHint {
+    /// Render the hint into the `description` string the model sees on
+    /// the function-mode shell tool. The wording is deliberately
+    /// prescriptive about workdir, file capture, persistence, network,
+    /// and truncation — model providers' built-in shell tools embed
+    /// similar guidance (Anthropic's `bash_20250124` adds ~245 tokens
+    /// of it) and without it models guess at paths and lose output.
+    pub fn render_description(&self) -> String {
+        let mut s = String::with_capacity(512);
+        s.push_str(
+            "Execute a shell command and return its stdout, stderr, and exit code. \
+             Use this for running scripts, processing data, or any task that benefits \
+             from a shell.\n\n",
+        );
+
+        match self.location {
+            ShellExecutionLocation::HadrianSandbox => {
+                s.push_str(&format!(
+                    "Runs in a sandboxed Linux environment hosted by the gateway. \
+                     Working directory is `{}`.\n",
+                    self.workdir
+                ));
+                if self.container_persistence {
+                    s.push_str(&format!(
+                        "- Files you write under `{}` are captured and returned to the \
+                         caller as `container_file_citation` annotations. The caller can \
+                         download them via the containers API.\n",
+                        self.workdir
+                    ));
+                    s.push_str(
+                        "- State under that directory **persists across turns** in the \
+                         same response and across responses that chain via \
+                         `previous_response_id`. Files you wrote earlier are still there.\n",
+                    );
+                } else {
+                    s.push_str(
+                        "- Files written during this call are not persisted between \
+                         turns; recreate any intermediate state you need.\n",
+                    );
+                }
+                if !self.mounted_skill_ids.is_empty() {
+                    s.push_str("- Skill bundles mounted for this request: ");
+                    for (i, id) in self.mounted_skill_ids.iter().enumerate() {
+                        if i > 0 {
+                            s.push_str(", ");
+                        }
+                        s.push_str(&format!("`/skills/{id}`"));
+                    }
+                    s.push_str(
+                        ". Inspect those directories for tools or data the \
+                                caller wants you to use.\n",
+                    );
+                }
+                match &self.network_summary {
+                    ShellNetworkSummary::NoNetwork => {
+                        s.push_str(
+                            "- **No outbound network.** Do not attempt to fetch \
+                                    packages, call APIs, or resolve hostnames.\n",
+                        );
+                    }
+                    ShellNetworkSummary::Allowlist(hosts) if !hosts.is_empty() => {
+                        s.push_str("- Outbound network is restricted to these hosts only: ");
+                        for (i, h) in hosts.iter().enumerate() {
+                            if i > 0 {
+                                s.push_str(", ");
+                            }
+                            s.push_str(&format!("`{h}`"));
+                        }
+                        s.push_str(". Reaching anything else will fail.\n");
+                    }
+                    ShellNetworkSummary::Allowlist(_) => {
+                        s.push_str("- Outbound network uses an operator-defined allowlist.\n");
+                    }
+                    ShellNetworkSummary::Unrestricted => {
+                        s.push_str(
+                            "- Outbound network is unrestricted, but prefer minimal \
+                             egress and never exfiltrate secrets the caller didn't share.\n",
+                        );
+                    }
+                    ShellNetworkSummary::Unknown => {}
+                }
+                if let Some(mb) = self.mem_limit_mb {
+                    s.push_str(&format!(
+                        "- Memory limit: {mb} MiB. Stream large datasets through pipes \
+                         rather than loading them all in memory.\n"
+                    ));
+                }
+                s.push_str(&format!(
+                    "- Per-command wall-clock limit: {}s. Long-running jobs must be \
+                     broken into steps.\n",
+                    self.command_timeout_secs
+                ));
+            }
+            ShellExecutionLocation::ApiClient => {
+                s.push_str(
+                    "Runs on the **API client**, not the gateway. The client decides \
+                     the working directory, available tools, and network policy — assume \
+                     a generic POSIX shell with whatever the caller's environment \
+                     provides. Do not assume packages, files, or services are present \
+                     unless the caller said so.\n",
+                );
+            }
+        }
+
+        s.push_str(&format!(
+            "\nstdout and stderr fed back to you are truncated past {} characters \
+             (head + tail kept). For long output, redirect to a file (e.g. \
+             `cmd > /mnt/data/log.txt`) and grep / tail it on a follow-up call.",
+            self.max_output_chars
+        ));
+
+        s
+    }
+}
+
 /// Arguments the model emits when invoking the function-mode shell
 /// tool. Non-OpenAI providers (Anthropic, etc.) see the `shell` tool
 /// rewritten as a function tool with this schema.
@@ -259,12 +443,6 @@ impl ShellToolArguments {
         serde_json::from_str(arguments_json).ok()
     }
 
-    pub fn function_description() -> &'static str {
-        "Execute a shell command in a sandboxed environment and return its output. \
-         Use this for running scripts, querying tools, processing data, or any task \
-         that benefits from a shell."
-    }
-
     pub fn function_parameters_schema() -> Value {
         serde_json::json!({
             "type": "object",
@@ -283,11 +461,13 @@ impl ShellToolArguments {
         })
     }
 
-    pub fn function_tool_definition() -> Value {
+    /// Build the function-tool JSON the model sees, embedding the
+    /// rendered hint as the description.
+    pub fn function_tool_definition(hint: &ShellToolHint) -> Value {
         serde_json::json!({
             "type": "function",
             "name": Self::FUNCTION_NAME,
-            "description": Self::function_description(),
+            "description": hint.render_description(),
             "parameters": Self::function_parameters_schema(),
             "strict": false,
         })
@@ -295,21 +475,25 @@ impl ShellToolArguments {
 }
 
 /// Rewrite `shell` tool definitions in the payload to function tools so
-/// non-OpenAI models can invoke them.
+/// non-OpenAI models can invoke them. The hint describes the effective
+/// sandbox so the model sees workdir, persistence, network, and
+/// truncation rules accurate for *this* request.
 ///
-/// Called by chat.rs when the configured runtime is **not** passthrough.
-/// In passthrough mode, the spec is left intact so OpenAI sees the
-/// native tool definition.
-pub fn preprocess_shell_tools(payload: &mut CreateResponsesPayload) {
+/// Called by `routes/execution.rs` for every non-passthrough provider
+/// path. In OpenAI passthrough modes the native spec is left intact and
+/// this is skipped.
+pub fn preprocess_shell_tools(payload: &mut CreateResponsesPayload, hint: &ShellToolHint) {
     let Some(tools) = payload.tools.as_mut() else {
         return;
     };
+    let rewrite =
+        ResponsesToolDefinition::Function(ShellToolArguments::function_tool_definition(hint));
     for tool in tools.iter_mut() {
         if tool.is_shell() {
-            *tool =
-                ResponsesToolDefinition::Function(ShellToolArguments::function_tool_definition());
+            *tool = rewrite.clone();
             debug!(
                 stage = "tool_preprocessed",
+                location = ?hint.location,
                 "Preprocessed shell tool to function definition"
             );
         }
@@ -1525,10 +1709,58 @@ mod tests {
             "stream": false,
         });
         let mut payload: CreateResponsesPayload = serde_json::from_value(payload_json).unwrap();
-        preprocess_shell_tools(&mut payload);
+        preprocess_shell_tools(&mut payload, &ShellToolHint::default());
         let tools = payload.tools.unwrap();
         assert_eq!(tools.len(), 1);
-        assert!(matches!(tools[0], ResponsesToolDefinition::Function(_)));
+        let ResponsesToolDefinition::Function(func) = &tools[0] else {
+            panic!("expected function tool");
+        };
+        // Default hint advertises Hadrian-hosted sandbox and the workdir.
+        let desc = func.get("description").and_then(|d| d.as_str()).unwrap();
+        assert!(
+            desc.contains("/mnt/data"),
+            "description should mention workdir: {desc}"
+        );
+        assert!(
+            desc.contains("truncated"),
+            "description should warn about truncation: {desc}"
+        );
+    }
+
+    #[test]
+    fn shell_hint_describes_client_passthrough() {
+        let hint = ShellToolHint {
+            location: ShellExecutionLocation::ApiClient,
+            ..ShellToolHint::default()
+        };
+        let desc = hint.render_description();
+        assert!(
+            desc.contains("API client"),
+            "should call out client execution: {desc}"
+        );
+        // Workdir guidance is for Hadrian-hosted sandboxes; client-mode
+        // models shouldn't be told to write to /mnt/data.
+        assert!(
+            !desc.contains("written under `/mnt/data`"),
+            "client mode should not promise /mnt/data: {desc}"
+        );
+    }
+
+    #[test]
+    fn shell_hint_describes_allowlist() {
+        let hint = ShellToolHint {
+            network_summary: ShellNetworkSummary::Allowlist(vec![
+                "api.example.com".into(),
+                "cdn.example.org".into(),
+            ]),
+            ..ShellToolHint::default()
+        };
+        let desc = hint.render_description();
+        assert!(
+            desc.contains("api.example.com"),
+            "should list allowed host: {desc}"
+        );
+        assert!(desc.contains("cdn.example.org"));
     }
 
     #[test]

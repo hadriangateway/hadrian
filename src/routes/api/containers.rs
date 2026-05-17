@@ -48,9 +48,23 @@ pub struct WireContainer {
     created_at: i64,
     /// Unix timestamp of the last successful activity.
     last_active_at: i64,
-    /// Unix timestamp when the container moved to `expired`, when known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at: Option<i64>,
+    /// Unix timestamp when this container will expire (or did expire,
+    /// for terminal statuses). For `active` containers this is a
+    /// forward-looking estimate computed as
+    /// `last_active_at + idle_ttl_secs`; every shell call rolls
+    /// `last_active_at` forward, so the field moves with activity. For
+    /// `expired` / `deleted` containers it's the exact moment the row
+    /// transitioned. Always present.
+    ///
+    /// **Hadrian Extension:** OpenAI's `Container` object surfaces only
+    /// `created_at`; the proactive expiry estimate is a Hadrian addition
+    /// so clients can plan reuse without polling. The field name and
+    /// type match OpenAI's other expiring resources (e.g. Files API).
+    expires_at: i64,
+    /// **Hadrian Extension:** idle TTL applied to this container, in
+    /// seconds. Stable for the row's lifetime; clients can recompute
+    /// `expires_at` themselves from `last_active_at + idle_ttl_secs`.
+    idle_ttl_secs: i64,
     /// **Hadrian Extension:** runtime that backed the session.
     runtime: String,
     /// **Hadrian Extension:** response this container was originally
@@ -103,13 +117,24 @@ pub struct ListFilesQuery {
 }
 
 fn container_to_wire(record: ContainerRecord) -> WireContainer {
+    // For active containers compute a forward-looking expiry from the
+    // last_active_at + idle_ttl. The reaper job uses the same formula
+    // to decide when to flip the row to `expired`; surfacing it lets
+    // clients reuse a container right before it would have lapsed
+    // without having to poll. Terminal statuses use the persisted
+    // moment of transition.
+    let expires_at = record
+        .expires_at
+        .map(|t| t.timestamp())
+        .unwrap_or_else(|| record.last_active_at.timestamp() + record.idle_ttl_secs);
     WireContainer {
         id: record.id,
         object: OBJECT_CONTAINER,
         status: record.status.as_str().to_string(),
         created_at: record.created_at.timestamp(),
         last_active_at: record.last_active_at.timestamp(),
-        expires_at: record.expires_at.map(|t| t.timestamp()),
+        expires_at,
+        idle_ttl_secs: record.idle_ttl_secs,
         runtime: record.runtime_label,
         source_response_id: record.source_response_id,
     }
@@ -513,7 +538,42 @@ fn percent_encode_rfc5987(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
+    use crate::db::repos::ResponseOwnerType;
+
+    fn record(status: crate::db::repos::ContainerStatus) -> ContainerRecord {
+        ContainerRecord {
+            id: "cntr_test".into(),
+            org_id: Uuid::nil(),
+            owner_type: ResponseOwnerType::User,
+            owner_id: Uuid::nil(),
+            status,
+            runtime_label: "microsandbox".into(),
+            source_response_id: None,
+            idle_ttl_secs: 1200,
+            last_active_at: chrono::Utc.timestamp_opt(1_000_000, 0).unwrap(),
+            created_at: chrono::Utc.timestamp_opt(999_000, 0).unwrap(),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn active_container_projects_expiry_from_last_active() {
+        let wire = container_to_wire(record(crate::db::repos::ContainerStatus::Active));
+        assert_eq!(wire.last_active_at, 1_000_000);
+        assert_eq!(wire.idle_ttl_secs, 1200);
+        assert_eq!(wire.expires_at, 1_001_200);
+    }
+
+    #[test]
+    fn terminal_container_uses_persisted_expiry() {
+        let mut r = record(crate::db::repos::ContainerStatus::Expired);
+        r.expires_at = Some(chrono::Utc.timestamp_opt(1_000_500, 0).unwrap());
+        let wire = container_to_wire(r);
+        assert_eq!(wire.expires_at, 1_000_500);
+    }
 
     #[test]
     fn content_disposition_escapes_quotes_and_backslashes() {
