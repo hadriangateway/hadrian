@@ -68,6 +68,21 @@ impl BackgroundExecuteError {
 /// function-mode rewrite). Used to gate `input_file` staging — staging
 /// files into `/mnt/data` for a request that can't run shell commands
 /// is just wasted I/O.
+/// Locate the first `ShellTool` in the request payload and return its
+/// (optional) `environment` block. Returns `None` when the payload
+/// doesn't carry a typed `shell` tool — `Function`-rewritten tools
+/// have no `environment` field by construction.
+fn first_shell_environment(
+    payload: &crate::api_types::CreateResponsesPayload,
+) -> Option<&crate::api_types::responses::ShellEnvironment> {
+    payload
+        .tools
+        .as_ref()?
+        .iter()
+        .find_map(|t| t.as_shell())
+        .and_then(|s| s.environment.as_ref())
+}
+
 fn shell_tool_requested(payload: &crate::api_types::CreateResponsesPayload) -> bool {
     let Some(tools) = payload.tools.as_ref() else {
         return false;
@@ -146,6 +161,23 @@ pub async fn execute_persisted_response(
     let mounted_skills = resolve_and_inject_skills(&state, &mut payload, Some(record.org_id))
         .await
         .map_err(|e| BackgroundExecuteError::BadPayload(format!("skill resolution failed: {e}")))?;
+
+    // Re-validate the request's shell `environment` overrides against
+    // the current operator limits. Foreground already checked at
+    // admission time, but the operator config may have tightened
+    // between admission and execution — re-checking ensures we never
+    // launch a session that exceeds the current envelope. Misconfig
+    // is permanent for this row (`BadPayload`), not retried.
+    let resolved_shell_env = {
+        let request_env = first_shell_environment(&payload);
+        crate::services::shell_tool::resolve_shell_environment(
+            request_env,
+            &state.config.features.server_tools.shell_limits,
+        )
+        .map_err(|e| {
+            BackgroundExecuteError::BadPayload(format!("shell environment rejected: {e}"))
+        })?
+    };
 
     // Resolve input_file parts the request asked us to stage into
     // /mnt/data. We only do the work if the request actually carries
@@ -263,6 +295,7 @@ pub async fn execute_persisted_response(
         staged_input_files,
         Some(containers_owner),
         container_id_hint,
+        resolved_shell_env,
         // Background has no HTTP request_id; use the response_id for
         // audit-log correlation so events tied to this run can be
         // grouped consistently.

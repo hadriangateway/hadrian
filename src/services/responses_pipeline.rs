@@ -254,6 +254,12 @@ pub fn apply_streaming_pipeline(
     // `previous_response_id` chaining upstream; `None` falls back to
     // the executor allocating a fresh id on first use.
     container_id_hint: Option<String>,
+    // `resolved_shell_env`: per-request shell `environment` block
+    // already intersected with `[features.server_tools.shell_limits]`
+    // upstream. Foreground and background callers both validate at
+    // request-acceptance time so an out-of-bounds request can't even
+    // be queued — by the time we get here it's known-safe.
+    resolved_shell_env: crate::services::shell_tool::ResolvedShellEnvironment,
     request_id: Option<String>,
     response: Response<Body>,
     persistence: Option<PersistenceHandle>,
@@ -378,6 +384,7 @@ pub fn apply_streaming_pipeline(
                 principal.clone().into(),
                 mounted_skills,
                 state.config.features.server_tools.shell_limits.clone(),
+                resolved_shell_env.clone(),
                 state.config.features.containers.clone(),
                 staged_input_files,
                 persistence,

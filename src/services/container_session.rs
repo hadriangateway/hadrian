@@ -49,11 +49,10 @@ pub fn new_file_id() -> String {
 
 /// One file currently being tracked by the session.
 ///
-/// Phase 1 stores `content` in memory; clients can't download yet.
-/// Phase 3 will replace this with a `container_files` row + storage
-/// backend that serves `GET /v1/containers/{id}/files/{file_id}/content`.
-/// `hash` is mirrored from the snapshot map for fast equality checks
-/// when Phase 3 wants to skip re-uploading unchanged files.
+/// `content` is the in-memory copy used to build the persist payload
+/// for `container_files`; `hash` mirrors the snapshot entry so the
+/// persist payload can carry the canonical content-hash without
+/// re-digesting the bytes.
 #[derive(Debug, Clone)]
 struct TrackedFile {
     file_id: String,
@@ -62,9 +61,7 @@ struct TrackedFile {
     bytes: u64,
     content_type: Option<String>,
     source: ContainerFileSource,
-    #[allow(dead_code)] // wired up in Phase 3 (container files API)
     content: Bytes,
-    #[allow(dead_code)] // wired up in Phase 3 (equality checks)
     hash: [u8; 32],
 }
 
@@ -263,21 +260,6 @@ impl ContainerSession {
             Some(persistence),
         )
         .await
-    }
-
-    /// Backwards-compatible shim — `start()` keeps its Phase 3 signature
-    /// (always allocates a fresh `cntr_` id) so existing call sites
-    /// continue to compile. Phase 4 callers should prefer
-    /// `start_new` / `start_attached`.
-    #[allow(dead_code)]
-    pub async fn start(
-        runtime: Arc<dyn ShellRuntime>,
-        runtime_label: &'static str,
-        spec: SessionSpec,
-        config: ContainersConfig,
-        persistence: Option<ContainerPersistence>,
-    ) -> RuntimeResult<Self> {
-        Self::start_new(runtime, runtime_label, spec, config, persistence).await
     }
 
     /// Shared boot path. When `replay` is `Some`, skips provisioning

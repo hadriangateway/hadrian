@@ -54,9 +54,6 @@ enum SandboxState {
 #[derive(Debug, Deserialize)]
 struct SandboxStatusObj {
     state: SandboxState,
-    #[serde(default)]
-    #[allow(dead_code)]
-    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

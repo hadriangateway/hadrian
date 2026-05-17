@@ -454,7 +454,7 @@ pub async fn api_v1_containers_file_content(
             .parse()
             .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
     );
-    if let Ok(disp) = format!("attachment; filename=\"{}\"", record.filename).parse() {
+    if let Ok(disp) = content_disposition_attachment(&record.filename).parse() {
         headers.insert(header::CONTENT_DISPOSITION, disp);
     }
     headers.insert(header::CONTENT_LENGTH, bytes.len().into());
@@ -462,4 +462,93 @@ pub async fn api_v1_containers_file_content(
     let mut response = Response::new(Body::from(bytes));
     *response.headers_mut() = headers;
     Ok(response)
+}
+
+/// Build an RFC 6266 `Content-Disposition: attachment` header value
+/// that survives any byte sequence in `filename`.
+///
+/// Emits both an ASCII-safe quoted form (with `"` / `\` / controls /
+/// non-ASCII swapped for `_`) and an RFC 5987 `filename*=UTF-8''…`
+/// percent-encoded form. Modern clients prefer the latter and round-
+/// trip Unicode losslessly; legacy clients fall back to the quoted
+/// form. Either way the header parses — no silent drop when the model
+/// produces a filename with `"` or control chars.
+fn content_disposition_attachment(filename: &str) -> String {
+    let fallback: String = filename
+        .chars()
+        .map(|c| {
+            if matches!(c, ' '..='~') && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded = percent_encode_rfc5987(filename);
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
+/// RFC 5987 `value-chars` percent-encoder. Encodes everything that
+/// isn't in the `attr-char` set so the result can land in an
+/// `ext-value` like `filename*=UTF-8''…`.
+fn percent_encode_rfc5987(s: &str) -> String {
+    // attr-char = ALPHA / DIGIT / one of "!#$&+-.^_`|~"
+    fn is_attr_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+            )
+    }
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        if is_attr_char(*byte) {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_disposition_escapes_quotes_and_backslashes() {
+        let h = content_disposition_attachment("evil\"name.txt");
+        // ASCII fallback strips the offending quote.
+        assert!(h.contains("filename=\"evil_name.txt\""));
+        // Ext form percent-encodes it.
+        assert!(h.contains("filename*=UTF-8''evil%22name.txt"));
+    }
+
+    #[test]
+    fn content_disposition_handles_crlf_and_controls() {
+        let h = content_disposition_attachment("a\r\nInjected: yes\nb");
+        // No bare CR/LF survives in the header value — header parsers
+        // reject those, which was the bug we're fixing.
+        assert!(!h.contains('\r'));
+        assert!(!h.contains('\n'));
+        // And the encoded form preserves the original bytes for clients
+        // that decode it.
+        assert!(h.contains("%0D%0A"));
+    }
+
+    #[test]
+    fn content_disposition_preserves_unicode_in_ext_form() {
+        let h = content_disposition_attachment("café.csv");
+        // ASCII fallback degrades one underscore per non-ASCII char;
+        // ext form percent-encodes the UTF-8 bytes losslessly.
+        assert!(h.contains("filename=\"caf_.csv\""), "got: {h}");
+        assert!(h.contains("filename*=UTF-8''caf%C3%A9.csv"), "got: {h}");
+    }
+
+    #[test]
+    fn content_disposition_passes_through_plain_ascii() {
+        let h = content_disposition_attachment("report.csv");
+        assert!(h.contains("filename=\"report.csv\""));
+        assert!(h.contains("filename*=UTF-8''report.csv"));
+    }
 }

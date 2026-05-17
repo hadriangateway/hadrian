@@ -22,8 +22,10 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Serialize;
+use sha2::Sha256;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, error, info, warn};
 
@@ -32,6 +34,14 @@ use crate::{
     db::repos::ResponseStatus,
     dlq::{DeadLetterQueue, DlqEntry},
 };
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Header carrying the HMAC signature when `signing_secret` is set.
+/// Format: `t=<unix-seconds>,v1=<hex-sha256>`. The signed payload is
+/// `"<unix>.<body>"` so a captured request can't be replayed against a
+/// receiver that enforces timestamp freshness.
+const SIGNATURE_HEADER: &str = "X-Hadrian-Signature";
 
 /// Entry-type marker used when pushing failed webhook deliveries to
 /// the DLQ. Surfaced in `/admin/v1/dlq` filters.
@@ -275,6 +285,14 @@ async fn deliver_with_retry(shared: &DispatcherInner, event: &WebhookEvent) -> b
 
     const BACKOFFS_MS: [u64; 3] = [250, 1_000, 4_000];
     for (attempt, backoff) in BACKOFFS_MS.iter().enumerate() {
+        // Recompute the signature per attempt so the `t=` timestamp
+        // stays fresh — a retry an hour later shouldn't fail receiver
+        // freshness checks for a stale stamp from the first try.
+        let signature = shared
+            .config
+            .signing_secret
+            .as_deref()
+            .map(|secret| sign_payload(secret, &body, Utc::now()));
         let mut req = shared
             .http
             .post(&shared.config.url)
@@ -284,6 +302,9 @@ async fn deliver_with_retry(shared: &DispatcherInner, event: &WebhookEvent) -> b
             .body(body.clone());
         if let Some(ref token) = shared.config.bearer_token {
             req = req.bearer_auth(token);
+        }
+        if let Some(ref sig) = signature {
+            req = req.header(SIGNATURE_HEADER, sig);
         }
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -320,4 +341,65 @@ async fn deliver_with_retry(shared: &DispatcherInner, event: &WebhookEvent) -> b
         }
     }
     false
+}
+
+/// Compute the `X-Hadrian-Signature` header value for a body.
+///
+/// Signs the payload `"<unix>.<body>"` with HMAC-SHA256 keyed by the
+/// configured secret. The leading timestamp prevents a captured
+/// request from being replayed against a receiver that enforces a
+/// freshness window (the receiver re-signs with its own copy of
+/// `body` and the timestamp from the header, then compares).
+fn sign_payload(secret: &str, body: &[u8], now: DateTime<Utc>) -> String {
+    let ts = now.timestamp();
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC-SHA256 accepts any key length");
+    mac.update(ts.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let digest = mac.finalize().into_bytes();
+    format!("t={ts},v1={}", hex::encode(digest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature_format_and_verifiability() {
+        let secret = "shh";
+        let body = br#"{"type":"response.completed","data":{"id":"resp_abc"}}"#;
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let header = sign_payload(secret, body, now);
+
+        // Format: t=<unix>,v1=<64-hex>
+        let (t_part, v_part) = header.split_once(',').expect("comma-separated header");
+        assert_eq!(t_part, "t=1700000000");
+        let hex_sig = v_part.strip_prefix("v1=").expect("v1= prefix");
+        assert_eq!(hex_sig.len(), 64);
+
+        // Verifiable: recomputing with the same secret + body + ts
+        // reproduces the digest byte-for-byte.
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(b"1700000000");
+        mac.update(b".");
+        mac.update(body);
+        assert_eq!(hex::encode(mac.finalize().into_bytes()), hex_sig);
+    }
+
+    #[test]
+    fn signature_changes_when_body_changes() {
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let a = sign_payload("shh", b"a", now);
+        let b = sign_payload("shh", b"b", now);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn signature_changes_when_timestamp_changes() {
+        let body = b"payload";
+        let t1 = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let t2 = DateTime::<Utc>::from_timestamp(1_700_000_001, 0).unwrap();
+        assert_ne!(sign_payload("shh", body, t1), sign_payload("shh", body, t2));
+    }
 }

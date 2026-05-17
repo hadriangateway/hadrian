@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{CircuitBreakerConfig, RetryConfig};
@@ -278,6 +280,13 @@ pub struct ResponsesWebhookConfig {
     /// manager URI scheme rather than embedding the literal token.
     #[serde(default)]
     pub bearer_token: Option<String>,
+    /// Optional HMAC signing secret. When set, every delivery carries
+    /// an `X-Hadrian-Signature: t=<unix>,v1=<hex>` header where the
+    /// hex digest is `HMAC-SHA256(secret, "<unix>.<body>")`. Receivers
+    /// reject requests whose timestamp is too old (defends against
+    /// replay) and recompute the digest to verify the body.
+    #[serde(default)]
+    pub signing_secret: Option<String>,
     /// Per-request timeout in seconds. Default 10s.
     #[serde(default = "default_webhook_timeout_secs")]
     pub timeout_secs: u64,
@@ -411,7 +420,8 @@ fn default_server_tools_max_iterations() -> usize {
 
 /// Limits enforced on every shell-tool invocation. Sets soft ceilings
 /// on wall-clock time and resource use so a runaway model can't pin
-/// VM resources indefinitely.
+/// VM resources indefinitely, and the upper bound for what a
+/// per-request `environment` block may ask for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -426,11 +436,29 @@ pub struct ShellLimitsConfig {
     /// this is `None`.
     #[serde(default)]
     pub default_cpu_limit: Option<f64>,
-    /// Default memory limit (MB) applied when the SessionSpec doesn't
-    /// specify one. The runtime backend's own default applies when
-    /// this is `None`.
+    /// Default memory limit (MB) applied when the request didn't
+    /// supply a `container_auto.memory_limit`. The runtime backend's
+    /// own default applies when this is `None`.
     #[serde(default)]
     pub default_mem_limit_mb: Option<u32>,
+    /// Hard ceiling for the per-request `container_auto.memory_limit`
+    /// override. Requests asking for more than this are rejected with
+    /// `400`. `None` (the default) means requests can ask for any
+    /// value the backend supports.
+    #[serde(default)]
+    pub max_mem_limit_mb: Option<u32>,
+    /// Hostnames (or `*.suffix` patterns) requests may put in
+    /// `network_policy.domains`. Empty (the default) means requests
+    /// cannot widen egress beyond whatever the runtime allows by
+    /// default; use `["*"]` to permit any host.
+    #[serde(default)]
+    pub allowed_egress_hosts: Vec<String>,
+    /// Operator-pre-configured secrets the request may reference by
+    /// `placeholder` in `domain_secrets`. The raw value never leaves
+    /// the gateway — the model sees only the placeholder, and the
+    /// runtime substitutes the value at egress to the permitted hosts.
+    #[serde(default)]
+    pub allowed_domain_secrets: HashMap<String, AllowedDomainSecret>,
 }
 
 impl Default for ShellLimitsConfig {
@@ -439,8 +467,29 @@ impl Default for ShellLimitsConfig {
             command_timeout_secs: default_shell_command_timeout_secs(),
             default_cpu_limit: None,
             default_mem_limit_mb: None,
+            max_mem_limit_mb: None,
+            allowed_egress_hosts: Vec::new(),
+            allowed_domain_secrets: HashMap::new(),
         }
     }
+}
+
+/// One operator-pinned secret the request may reference via
+/// `ShellDomainSecretRef`. The literal value can be a plaintext token
+/// or a secrets-manager URI; resolution is the runtime's
+/// responsibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AllowedDomainSecret {
+    /// Literal value or `secret://…` reference. Never logged. Never
+    /// returned in API responses.
+    pub value: String,
+    /// Hostnames the runtime is permitted to send this secret to. A
+    /// request's `allowed_domains` must be a subset; empty in the
+    /// request inherits this full list.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 fn default_shell_command_timeout_secs() -> u64 {

@@ -1082,19 +1082,81 @@ pub enum ShellToolType {
 /// (or forward them to the upstream provider's hosted runtime if
 /// configured for passthrough).
 ///
-/// The exact spec mirrors OpenAI's `shell` tool definition for
-/// GPT-5.2+. Hadrian extends it with optional `environment` overrides
-/// the admin may set per-request.
+/// Mirrors OpenAI's `shell` tool definition for GPT-5.2+. The
+/// `environment` block lets a caller request narrower constraints than
+/// the operator's defaults — anything outside those defaults is
+/// rejected with `400` at request validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellTool {
     #[serde(rename = "type")]
     pub type_: ShellToolType,
-    /// **Hadrian Extension:** Optional runtime-environment hints the
-    /// model can see. Roughly mirrors OpenAI's `environment` field but
-    /// admins can pre-seed values per-request without exposing them as
-    /// real env vars to the sandbox.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<serde_json::Value>,
+    /// Runtime environment overrides. Every field is a **subset** of
+    /// what `[features.server_tools.shell_limits]` permits; requests
+    /// asking for more than the operator allows are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ShellEnvironment>,
+}
+
+/// Per-request runtime-environment overrides. All fields are optional;
+/// omitted fields inherit operator defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellEnvironment {
+    /// Container auto-provisioning hints (memory, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_auto: Option<ShellContainerAuto>,
+    /// Egress allowlist. The supplied `domains` must be a subset of
+    /// `[features.server_tools.shell_limits].allowed_egress_hosts`;
+    /// hosts not in the operator allowlist cause a `400`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<ShellNetworkPolicy>,
+    /// References to operator-configured secrets to inject for
+    /// outbound traffic. Placeholders must match a key under
+    /// `[features.server_tools.shell_limits].allowed_domain_secrets`;
+    /// unknown placeholders cause a `400`. The caller never supplies
+    /// raw secret values — only the placeholder name and the subset of
+    /// allowed destinations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_secrets: Vec<ShellDomainSecretRef>,
+}
+
+/// Container auto-provisioning overrides (the OpenAI `container_auto`
+/// shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellContainerAuto {
+    /// Memory ceiling for the container, e.g. `"512m"`, `"1g"`. Parsed
+    /// case-insensitively. Capped by the operator's `max_mem_limit_mb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<String>,
+}
+
+/// Per-domain egress policy (the OpenAI `network_policy` shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellNetworkPolicy {
+    /// Hostnames or hostname patterns (`*.example.com`) the container
+    /// may make outbound requests to. Must be a subset of the
+    /// operator's `allowed_egress_hosts`.
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+/// Caller's reference to one of the operator-configured domain
+/// secrets. The raw value never crosses the wire — the caller supplies
+/// the placeholder name and which subset of the operator-permitted
+/// hosts the secret may flow to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellDomainSecretRef {
+    /// Placeholder name, matched against
+    /// `allowed_domain_secrets[<name>]` in operator config.
+    pub placeholder: String,
+    /// Hosts this secret may flow to. Must be a subset of the
+    /// operator-configured `allowed_hosts` for the placeholder; empty
+    /// means "all hosts the operator permits for this secret".
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
 }
 
 impl ShellTool {

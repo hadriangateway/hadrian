@@ -31,11 +31,15 @@ use crate::{
     api_types::responses::{
         ContainerFileRef, CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType,
         ResponsesAnnotation, ResponsesInput, ResponsesInputItem, ResponsesToolDefinition,
+        ShellEnvironment,
     },
-    config::ContainersConfig,
+    config::{ContainersConfig, ShellLimitsConfig},
     models::UsageLogEntry,
     pricing::CostPricingSource,
-    runtimes::{ExecEvent, ExecRequest, RuntimeError, SessionSpec, ShellRuntime, SkillMount},
+    runtimes::{
+        EgressPolicy, ExecEvent, ExecRequest, RuntimeError, SecretMount, SessionSpec, ShellRuntime,
+        SkillMount,
+    },
     services::{
         container_session::{ContainerPersistence, ContainerSession, ContainerSessionRegistry},
         input_file_staging::StagedFile,
@@ -45,6 +49,179 @@ use crate::{
         },
     },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-request environment resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of intersecting a per-request `ShellEnvironment` with the
+/// operator's `[features.server_tools.shell_limits]`. Drives the
+/// `SessionSpec` the executor hands to the runtime on first call.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedShellEnvironment {
+    /// Memory limit to apply to this session, in bytes. `None` means
+    /// "use the runtime backend's default".
+    pub mem_limit_bytes: Option<u64>,
+    /// Egress allowlist + secrets to mount. An empty `allow_hosts`
+    /// list means the runtime applies its built-in default.
+    pub egress_policy: EgressPolicy,
+}
+
+/// Rejection reasons surfaced as `400 Bad Request` at the route layer.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ShellEnvironmentError {
+    #[error("invalid memory_limit '{0}': expected '<n>[k|m|g][b]' (e.g. '512m', '1g')")]
+    BadMemoryLimit(String),
+    #[error("requested memory_limit {requested_mb} MB exceeds operator cap of {max_mb} MB")]
+    MemoryExceedsCap { requested_mb: u64, max_mb: u32 },
+    #[error("egress host '{0}' is not in the operator's allowed_egress_hosts")]
+    HostNotAllowed(String),
+    #[error("unknown domain secret placeholder '{0}' (not in allowed_domain_secrets)")]
+    UnknownSecret(String),
+    #[error("secret '{placeholder}' may not flow to host '{host}' under operator's allowed_hosts")]
+    SecretHostNotAllowed { placeholder: String, host: String },
+}
+
+/// Intersect the per-request environment with the operator-pinned
+/// limits. The request can ask for a **narrower** subset of what the
+/// operator permits; anything outside that envelope is rejected.
+///
+/// Always succeeds for `request_env = None` (the caller didn't ask for
+/// anything beyond defaults). Returns an empty `EgressPolicy` when no
+/// egress was requested.
+pub fn resolve_shell_environment(
+    request_env: Option<&ShellEnvironment>,
+    operator: &ShellLimitsConfig,
+) -> Result<ResolvedShellEnvironment, ShellEnvironmentError> {
+    let default_mem_bytes = operator
+        .default_mem_limit_mb
+        .map(|mb| u64::from(mb) * 1024 * 1024);
+
+    let Some(env) = request_env else {
+        return Ok(ResolvedShellEnvironment {
+            mem_limit_bytes: default_mem_bytes,
+            egress_policy: EgressPolicy::default(),
+        });
+    };
+
+    // ── memory ──
+    let mem_limit_bytes = match env
+        .container_auto
+        .as_ref()
+        .and_then(|c| c.memory_limit.as_deref())
+    {
+        Some(raw) => {
+            let requested_bytes = parse_memory_limit(raw)
+                .ok_or_else(|| ShellEnvironmentError::BadMemoryLimit(raw.to_string()))?;
+            if let Some(cap_mb) = operator.max_mem_limit_mb {
+                let cap_bytes = u64::from(cap_mb) * 1024 * 1024;
+                if requested_bytes > cap_bytes {
+                    return Err(ShellEnvironmentError::MemoryExceedsCap {
+                        requested_mb: requested_bytes / (1024 * 1024),
+                        max_mb: cap_mb,
+                    });
+                }
+            }
+            Some(requested_bytes)
+        }
+        None => default_mem_bytes,
+    };
+
+    // ── egress hosts ──
+    let allow_hosts = match env.network_policy.as_ref() {
+        Some(policy) => {
+            for host in &policy.domains {
+                if !host_matches_any(host, &operator.allowed_egress_hosts) {
+                    return Err(ShellEnvironmentError::HostNotAllowed(host.clone()));
+                }
+            }
+            policy.domains.clone()
+        }
+        None => Vec::new(),
+    };
+
+    // ── domain secrets ──
+    let mut secrets = Vec::with_capacity(env.domain_secrets.len());
+    for r in &env.domain_secrets {
+        let allowed = operator
+            .allowed_domain_secrets
+            .get(&r.placeholder)
+            .ok_or_else(|| ShellEnvironmentError::UnknownSecret(r.placeholder.clone()))?;
+        for host in &r.allowed_domains {
+            if !host_matches_any(host, &allowed.allowed_hosts) {
+                return Err(ShellEnvironmentError::SecretHostNotAllowed {
+                    placeholder: r.placeholder.clone(),
+                    host: host.clone(),
+                });
+            }
+        }
+        // Empty `allowed_domains` in the request inherits the
+        // operator's full list — same convention as omitting the field
+        // in OpenAI's spec.
+        let allowed_hosts = if r.allowed_domains.is_empty() {
+            allowed.allowed_hosts.clone()
+        } else {
+            r.allowed_domains.clone()
+        };
+        secrets.push(SecretMount {
+            placeholder: r.placeholder.clone(),
+            value: allowed.value.clone(),
+            allowed_hosts,
+        });
+    }
+
+    Ok(ResolvedShellEnvironment {
+        mem_limit_bytes,
+        egress_policy: EgressPolicy {
+            allow_hosts,
+            secrets,
+        },
+    })
+}
+
+/// Parse OpenAI-style `memory_limit` strings: `"512m"`, `"1g"`,
+/// `"1024MB"`, case-insensitive. Returns the value in bytes, or
+/// `None` on any parse failure. A bare integer is treated as bytes.
+fn parse_memory_limit(raw: &str) -> Option<u64> {
+    let s = raw.trim().to_ascii_lowercase();
+    let (digits, suffix) = s
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| (&s[..i], s[i..].trim()))
+        .unwrap_or((s.as_str(), ""));
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    let mult: u64 = match suffix {
+        "" | "b" => 1,
+        "k" | "kb" => 1024,
+        "m" | "mb" => 1024 * 1024,
+        "g" | "gb" => 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    n.checked_mul(mult)
+}
+
+/// `host` is allowed iff it matches any entry in `patterns`. Entries
+/// may be exact hostnames or `*.suffix.example` glob patterns;
+/// a single `"*"` matches anything.
+fn host_matches_any(host: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| host_matches(host, p))
+}
+
+fn host_matches(host: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        // `*.example.com` matches any subdomain (`a.example.com`,
+        // `a.b.example.com`) but not the bare apex.
+        return host.len() > suffix.len() + 1
+            && host.ends_with(suffix)
+            && host.as_bytes()[host.len() - suffix.len() - 1] == b'.';
+    }
+    host.eq_ignore_ascii_case(pattern)
+}
 
 /// Identity fields captured at request time for shell-tool usage
 /// attribution. Mirrors the tuple `extract_identity` returns elsewhere.
@@ -333,6 +510,10 @@ pub struct ShellExecutor {
     /// Per-execution limits (timeouts, default CPU/mem). Loaded from
     /// `[features.server_tools].shell_limits`.
     limits: crate::config::ShellLimitsConfig,
+    /// Per-request `environment` overrides, already intersected with
+    /// `limits` at request-acceptance time. Drives memory and egress
+    /// on the `SessionSpec` we hand the runtime.
+    resolved_env: ResolvedShellEnvironment,
     /// Container / artifact-capture settings.
     containers_config: ContainersConfig,
     /// Per-executor cache of the resolved registry entry. `None`
@@ -379,6 +560,7 @@ impl ShellExecutor {
         principal: ShellPrincipal,
         mounted_skills: Vec<SkillMount>,
         limits: crate::config::ShellLimitsConfig,
+        resolved_env: ResolvedShellEnvironment,
         containers_config: ContainersConfig,
         staged_input_files: Vec<StagedFile>,
         persistence: Option<ContainerPersistence>,
@@ -400,6 +582,7 @@ impl ShellExecutor {
             principal,
             mounted_skills,
             limits,
+            resolved_env,
             containers_config,
             session_handle: Arc::new(Mutex::new(None)),
             registry,
@@ -502,10 +685,12 @@ impl ServerExecutedTool for ShellExecutor {
         let command_for_task = command.clone();
         let exec_timeout = Duration::from_secs(self.limits.command_timeout_secs.max(1));
         let default_cpu = self.limits.default_cpu_limit;
-        let default_mem_bytes = self
-            .limits
-            .default_mem_limit_mb
-            .map(|mb| u64::from(mb) * 1024 * 1024);
+        // Per-request override (already intersected with operator's
+        // limits at request-acceptance time) wins; fall back to the
+        // operator default. `egress_policy` is taken from the resolved
+        // env verbatim — an empty `allow_hosts` means inherit runtime
+        // default, which `SessionSpec`'s default already encodes.
+        let resolved_env = self.resolved_env.clone();
         crate::compat::spawn_detached(async move {
             let start = Instant::now();
 
@@ -531,7 +716,8 @@ impl ServerExecutedTool for ShellExecutor {
                             let spec = SessionSpec {
                                 mounted_skills,
                                 cpu_limit: default_cpu,
-                                mem_limit_bytes: default_mem_bytes,
+                                mem_limit_bytes: resolved_env.mem_limit_bytes,
+                                egress_policy: resolved_env.egress_policy,
                                 ..SessionSpec::default()
                             };
                             let boot_result = match (container_id_hint.clone(), persistence.clone())
@@ -1083,6 +1269,229 @@ fn inject_container_file_citations(chunk: &[u8], files: &[ContainerFileRef]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        api_types::responses::{
+            ShellContainerAuto, ShellDomainSecretRef, ShellEnvironment, ShellNetworkPolicy,
+        },
+        config::AllowedDomainSecret,
+    };
+
+    fn op_limits_with(
+        max_mb: Option<u32>,
+        hosts: &[&str],
+        secrets: &[(&str, &str, &[&str])],
+    ) -> ShellLimitsConfig {
+        let mut limits = ShellLimitsConfig::default();
+        limits.max_mem_limit_mb = max_mb;
+        limits.allowed_egress_hosts = hosts.iter().map(|s| (*s).to_string()).collect();
+        for (name, value, hs) in secrets {
+            limits.allowed_domain_secrets.insert(
+                (*name).to_string(),
+                AllowedDomainSecret {
+                    value: (*value).to_string(),
+                    allowed_hosts: hs.iter().map(|s| (*s).to_string()).collect(),
+                },
+            );
+        }
+        limits
+    }
+
+    #[test]
+    fn resolver_none_inherits_operator_default_memory() {
+        let mut limits = ShellLimitsConfig::default();
+        limits.default_mem_limit_mb = Some(512);
+        let r = resolve_shell_environment(None, &limits).unwrap();
+        assert_eq!(r.mem_limit_bytes, Some(512 * 1024 * 1024));
+        assert!(r.egress_policy.allow_hosts.is_empty());
+        assert!(r.egress_policy.secrets.is_empty());
+    }
+
+    #[test]
+    fn resolver_memory_request_within_cap() {
+        let limits = op_limits_with(Some(2048), &[], &[]);
+        let env = ShellEnvironment {
+            container_auto: Some(ShellContainerAuto {
+                memory_limit: Some("1g".into()),
+            }),
+            ..Default::default()
+        };
+        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        assert_eq!(r.mem_limit_bytes, Some(1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn resolver_memory_request_exceeds_cap_rejected() {
+        let limits = op_limits_with(Some(512), &[], &[]);
+        let env = ShellEnvironment {
+            container_auto: Some(ShellContainerAuto {
+                memory_limit: Some("1g".into()),
+            }),
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ShellEnvironmentError::MemoryExceedsCap {
+                    requested_mb: 1024,
+                    max_mb: 512
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolver_memory_no_cap_accepts_anything() {
+        let limits = op_limits_with(None, &[], &[]);
+        let env = ShellEnvironment {
+            container_auto: Some(ShellContainerAuto {
+                memory_limit: Some("64g".into()),
+            }),
+            ..Default::default()
+        };
+        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        assert_eq!(r.mem_limit_bytes, Some(64 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn resolver_memory_unparseable_rejected() {
+        let limits = ShellLimitsConfig::default();
+        let env = ShellEnvironment {
+            container_auto: Some(ShellContainerAuto {
+                memory_limit: Some("huge".into()),
+            }),
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(matches!(err, ShellEnvironmentError::BadMemoryLimit(_)));
+    }
+
+    #[test]
+    fn resolver_egress_subset_accepted() {
+        let limits = op_limits_with(None, &["api.openai.com", "*.example.com"], &[]);
+        let env = ShellEnvironment {
+            network_policy: Some(ShellNetworkPolicy {
+                domains: vec!["api.openai.com".into(), "foo.example.com".into()],
+            }),
+            ..Default::default()
+        };
+        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        assert_eq!(r.egress_policy.allow_hosts.len(), 2);
+    }
+
+    #[test]
+    fn resolver_egress_apex_does_not_match_wildcard() {
+        let limits = op_limits_with(None, &["*.example.com"], &[]);
+        let env = ShellEnvironment {
+            network_policy: Some(ShellNetworkPolicy {
+                domains: vec!["example.com".into()],
+            }),
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(matches!(err, ShellEnvironmentError::HostNotAllowed(h) if h == "example.com"));
+    }
+
+    #[test]
+    fn resolver_egress_host_outside_allowlist_rejected() {
+        let limits = op_limits_with(None, &["api.openai.com"], &[]);
+        let env = ShellEnvironment {
+            network_policy: Some(ShellNetworkPolicy {
+                domains: vec!["evil.example.com".into()],
+            }),
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(matches!(err, ShellEnvironmentError::HostNotAllowed(h) if h == "evil.example.com"));
+    }
+
+    #[test]
+    fn resolver_wildcard_star_allows_everything() {
+        let limits = op_limits_with(None, &["*"], &[]);
+        let env = ShellEnvironment {
+            network_policy: Some(ShellNetworkPolicy {
+                domains: vec!["anything.example".into()],
+            }),
+            ..Default::default()
+        };
+        assert!(resolve_shell_environment(Some(&env), &limits).is_ok());
+    }
+
+    #[test]
+    fn resolver_unknown_secret_rejected() {
+        let limits = op_limits_with(None, &[], &[]);
+        let env = ShellEnvironment {
+            domain_secrets: vec![ShellDomainSecretRef {
+                placeholder: "GITHUB_TOKEN".into(),
+                allowed_domains: vec![],
+            }],
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(matches!(err, ShellEnvironmentError::UnknownSecret(p) if p == "GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn resolver_secret_subset_accepted_inherits_full_allowlist_when_empty() {
+        let limits = op_limits_with(
+            None,
+            &[],
+            &[("GH", "ghp_xxx", &["api.github.com", "uploads.github.com"])],
+        );
+        let env = ShellEnvironment {
+            domain_secrets: vec![ShellDomainSecretRef {
+                placeholder: "GH".into(),
+                allowed_domains: vec![],
+            }],
+            ..Default::default()
+        };
+        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        assert_eq!(r.egress_policy.secrets.len(), 1);
+        assert_eq!(r.egress_policy.secrets[0].value, "ghp_xxx");
+        assert_eq!(r.egress_policy.secrets[0].allowed_hosts.len(), 2);
+    }
+
+    #[test]
+    fn resolver_secret_host_outside_allowed_rejected() {
+        let limits = op_limits_with(None, &[], &[("GH", "v", &["api.github.com"])]);
+        let env = ShellEnvironment {
+            domain_secrets: vec![ShellDomainSecretRef {
+                placeholder: "GH".into(),
+                allowed_domains: vec!["evil.example.com".into()],
+            }],
+            ..Default::default()
+        };
+        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        assert!(matches!(
+            err,
+            ShellEnvironmentError::SecretHostNotAllowed { placeholder, host }
+                if placeholder == "GH" && host == "evil.example.com"
+        ));
+    }
+
+    #[test]
+    fn parses_memory_limits() {
+        assert_eq!(parse_memory_limit("1g"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_memory_limit("512m"), Some(512 * 1024 * 1024));
+        assert_eq!(parse_memory_limit("1024MB"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_memory_limit("2 GB"), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_memory_limit("4096"), Some(4096));
+        assert_eq!(parse_memory_limit("4096b"), Some(4096));
+        assert_eq!(parse_memory_limit(""), None);
+        assert_eq!(parse_memory_limit("nope"), None);
+        assert_eq!(parse_memory_limit("1tb"), None);
+    }
+
+    #[test]
+    fn host_match_handles_wildcards() {
+        assert!(host_matches("a.example.com", "*.example.com"));
+        assert!(host_matches("a.b.example.com", "*.example.com"));
+        assert!(!host_matches("example.com", "*.example.com"));
+        assert!(!host_matches("notexample.com", "*.example.com"));
+        assert!(host_matches("Anything.tld", "*"));
+        assert!(host_matches("API.OpenAI.com", "api.openai.com"));
+    }
 
     #[test]
     fn parses_function_call_arguments() {

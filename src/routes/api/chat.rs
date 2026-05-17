@@ -1270,6 +1270,32 @@ pub async fn api_v1_responses(
         ));
     }
 
+    // Intersect any per-request shell `environment` overrides with the
+    // operator's `[features.server_tools.shell_limits]` envelope before
+    // we admit the request. A failure here returns 400 to the caller
+    // immediately — for background requests this is the only chance to
+    // reject; for foreground it spares us the VM-boot cost on doomed
+    // calls. Background re-validates at execution time against the
+    // current config.
+    let resolved_shell_env = {
+        let request_env = payload
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.iter().find_map(|t| t.as_shell()))
+            .and_then(|s| s.environment.as_ref());
+        crate::services::shell_tool::resolve_shell_environment(
+            request_env,
+            &state.config.features.server_tools.shell_limits,
+        )
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "shell_environment_rejected",
+                e.to_string(),
+            )
+        })?
+    };
+
     // Check authorization if authz context is available and API RBAC is enabled
     if let Some(Extension(ref authz)) = authz {
         // Check if file_search tool is present
@@ -1871,6 +1897,7 @@ pub async fn api_v1_responses(
             staged_input_files,
             containers_owner,
             container_id_hint,
+            resolved_shell_env.clone(),
             req_id_str,
             final_response,
             persistence_handle,
