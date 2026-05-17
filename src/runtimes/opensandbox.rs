@@ -281,7 +281,10 @@ impl ShellRuntime for OpenSandboxRuntime {
             // (default_action + egress allowlist / denylist).
             egress_allowlist: true,
             skill_mount: true,
-            file_io: false,
+            // Backed by execd's `GET /files/download?path=` and
+            // `POST /files/upload` (the same upload endpoint used by
+            // `mount_skill_via_execd`).
+            file_io: true,
             network_isolation_modes: vec![NetworkMode::Full, NetworkMode::AllowList],
             max_session_duration: None,
         }
@@ -531,14 +534,51 @@ impl ShellSession for OpenSandboxSession {
         Ok(ExecHandle { output })
     }
 
-    async fn write_file(&self, _path: &str, _bytes: Bytes) -> RuntimeResult<()> {
-        // Execd has a `/files` endpoint but it's a separate workflow.
-        // Capability advertises `file_io: false` so this won't be invoked.
-        Err(RuntimeError::Unsupported("file_io"))
+    async fn write_file(&self, path: &str, bytes: Bytes) -> RuntimeResult<()> {
+        let upload_url = format!("{}/files/upload", self.execd_url.trim_end_matches('/'));
+        let metadata = serde_json::json!({
+            "path": path,
+            "mode": 0o644,
+        });
+        let form = reqwest::multipart::Form::new()
+            .text("metadata", metadata.to_string())
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes.to_vec())
+                    .mime_str("application/octet-stream")
+                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(bytes.to_vec())),
+            );
+        let resp = self
+            .auth(self.http.post(&upload_url).multipart(form))
+            .send()
+            .await
+            .map_err(|e| RuntimeError::Unreachable(format!("write_file {path}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(RuntimeError::Backend(format!(
+                "write_file {path} failed: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            )));
+        }
+        Ok(())
     }
 
-    async fn read_file(&self, _path: &str) -> RuntimeResult<Bytes> {
-        Err(RuntimeError::Unsupported("file_io"))
+    async fn read_file(&self, path: &str) -> RuntimeResult<Bytes> {
+        let download_url = format!("{}/files/download", self.execd_url.trim_end_matches('/'));
+        let resp = self
+            .auth(self.http.get(&download_url).query(&[("path", path)]))
+            .send()
+            .await
+            .map_err(|e| RuntimeError::Unreachable(format!("read_file {path}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(RuntimeError::Backend(format!(
+                "read_file {path} failed: {}",
+                resp.status()
+            )));
+        }
+        resp.bytes()
+            .await
+            .map_err(|e| RuntimeError::Backend(format!("read_file {path} body: {e}")))
     }
 
     async fn terminate(&self) -> RuntimeResult<()> {

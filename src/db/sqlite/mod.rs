@@ -2,6 +2,7 @@ mod api_keys;
 mod audit_logs;
 pub(crate) mod backend;
 mod common;
+mod containers;
 mod conversations;
 #[cfg(feature = "sso")]
 mod domain_verifications;
@@ -34,6 +35,7 @@ mod vector_stores;
 
 pub use api_keys::SqliteApiKeyRepo;
 pub use audit_logs::SqliteAuditLogRepo;
+pub use containers::SqliteContainersRepo;
 pub use conversations::SqliteConversationRepo;
 #[cfg(feature = "sso")]
 pub use domain_verifications::SqliteDomainVerificationRepo;

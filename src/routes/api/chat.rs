@@ -181,6 +181,78 @@ fn provider_supports_passthrough_shell(provider: &crate::config::ProviderConfig)
     }
 }
 
+/// Resolve `input_file` parts into byte blobs for `/mnt/data` staging.
+///
+/// Returns an empty `Vec` (without doing any I/O) when the request
+/// doesn't declare a shell tool — staging is only useful when the
+/// model can actually reach the files via shell. Errors from the
+/// resolver map onto 400 / 502-eligible API errors with stable codes.
+async fn stage_input_files_if_shell(
+    state: &crate::AppState,
+    payload: &crate::api_types::CreateResponsesPayload,
+) -> Result<Vec<crate::services::input_file_staging::StagedFile>, ApiError> {
+    let shell_requested = payload
+        .tools
+        .as_ref()
+        .map(|tools| {
+            tools.iter().any(|t| {
+                t.is_shell()
+                    || matches!(
+                        t,
+                        crate::api_types::responses::ResponsesToolDefinition::Function(v)
+                            if v.get("name").and_then(|n| n.as_str()) == Some("shell")
+                    )
+            })
+        })
+        .unwrap_or(false);
+    if !shell_requested {
+        return Ok(Vec::new());
+    }
+    crate::services::input_file_staging::stage_input_files(
+        state,
+        payload,
+        &state.config.features.containers,
+    )
+    .await
+    .map_err(|e| {
+        use crate::services::input_file_staging::StageError;
+        let status = match e {
+            StageError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            StageError::FetchFailed(_) | StageError::HttpStatus(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        let code = e.error_code();
+        ApiError::new(status, code, e.to_string())
+    })
+}
+
+/// Resolve a chain reuse opportunity: if `prev_id` is a response in
+/// this org and its row carries a still-active `container_id`, return
+/// it so the new request reattaches to the same VM. Returns `None`
+/// (causing the executor to fall back to a fresh container) on any
+/// not-found / expired / cross-org situation — chain reuse is implicit
+/// from the user's perspective so we silently start fresh rather than
+/// erroring.
+async fn resolve_chained_container_id(
+    store: &crate::services::ResponsesStore,
+    containers: &crate::services::containers::ContainersService,
+    prev_id: &str,
+    org_id: uuid::Uuid,
+) -> Option<String> {
+    let prev = match store.get(prev_id, org_id).await {
+        Ok(rec) => rec,
+        Err(_) => return None,
+    };
+    let candidate = prev.container_id?;
+    let container = containers.get_container(&candidate, org_id).await.ok()?;
+    match container.status {
+        crate::db::repos::ContainerStatus::Active => Some(candidate),
+        crate::db::repos::ContainerStatus::Expired | crate::db::repos::ContainerStatus::Deleted => {
+            None
+        }
+    }
+}
+
 /// Modifies the assistant content in a chat completion response JSON.
 ///
 /// Returns the modified response body, or None if modification failed.
@@ -1421,6 +1493,13 @@ pub async fn api_v1_responses(
         ApiError::new(status, code, e.to_string())
     })?;
 
+    // Resolve any `input_file` parts on the request into in-memory
+    // bytes that `ShellExecutor` will write to `/mnt/data` before the
+    // model's first shell command. Skipped (resolved to an empty Vec)
+    // when the request doesn't carry a shell tool or `[features.
+    // containers]` is disabled.
+    let staged_input_files = stage_input_files_if_shell(&state, &payload).await?;
+
     // Track cache status for response headers
     let mut cache_status = CacheStatus::None;
 
@@ -1756,6 +1835,31 @@ pub async fn api_v1_responses(
     // tool loop + persister.
     let mut final_response = if is_streaming {
         let req_id_str = request_id.as_ref().map(|r| r.0.0.clone());
+        // Derive the response owner for container-persistence wiring
+        // even if `store=false` (the pipeline routes container files
+        // through the owner regardless of whether the response itself
+        // is persisted). Returns None when no auth + no default_org —
+        // in which case containers persistence is silently disabled.
+        let containers_owner = crate::services::responses_pipeline::derive_response_owner(
+            &state,
+            auth.as_ref().map(|e| &e.0),
+        );
+        // Phase 4: implicit container reuse via `previous_response_id`
+        // chaining. Walking the prior response's row gives us a clean
+        // fall-through path when the container has expired or been
+        // deleted — we silently start fresh instead of erroring, since
+        // the caller didn't explicitly reference a container.
+        let container_id_hint = match (
+            payload.previous_response_id.as_deref(),
+            principal.org_id,
+            state.responses_store.as_ref(),
+            state.containers_service.as_ref(),
+        ) {
+            (Some(prev_id), Some(org_id), Some(store), Some(containers_svc)) => {
+                resolve_chained_container_id(store, containers_svc, prev_id, org_id).await
+            }
+            _ => None,
+        };
         crate::services::responses_pipeline::apply_streaming_pipeline(
             &state,
             &payload,
@@ -1764,6 +1868,9 @@ pub async fn api_v1_responses(
             model_name.clone(),
             principal,
             mounted_skills,
+            staged_input_files,
+            containers_owner,
+            container_id_hint,
             req_id_str,
             final_response,
             persistence_handle,

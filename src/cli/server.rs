@@ -283,6 +283,21 @@ pub(crate) async fn run_server(explicit_config_path: Option<&str>, no_browser: b
         });
     }
 
+    // Start the idle-container reaper. Marks containers whose
+    // `last_active_at + idle_ttl_secs` has elapsed as `expired` and
+    // evicts them from the in-memory registry. Always runs when a
+    // containers_service is configured.
+    if let (Some(db), Some(containers)) = (state.db.clone(), state.containers_service.clone()) {
+        let registry = state.container_session_registry.clone();
+        // Run at 1/4 of the default idle TTL, clamped to [10s, 5min].
+        let raw = config.features.containers.default_idle_ttl_secs / 4;
+        let interval = std::time::Duration::from_secs(raw.clamp(10, 300));
+        let cancel = shutdown_token.clone();
+        tokio::spawn(async move {
+            jobs::start_containers_reaper_worker(containers, registry, db, interval, cancel).await;
+        });
+    }
+
     // Start the background response worker — claims rows queued by
     // `POST /v1/responses` with `background=true` and runs them
     // through the LLM pipeline.

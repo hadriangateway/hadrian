@@ -484,6 +484,11 @@ pub struct FilePath {
 /// - **FilePath**: References a file generated during response creation
 ///   (e.g., by code_interpreter). Points to downloadable output files.
 ///
+/// - **ContainerFileCitation**: References a file written to the shell
+///   tool's `/mnt/data` workspace. Carries both the container and file
+///   IDs so the client can later download the bytes via the container
+///   files API.
+///
 /// ## Index Fields
 ///
 /// All annotation types include index fields indicating byte positions
@@ -524,6 +529,31 @@ pub enum ResponsesAnnotation {
         file_id: String,
         /// Byte offset where the file reference appears.
         index: u64,
+    },
+    /// Citation to a file written to the shell tool's container
+    /// workspace (`/mnt/data`). Shape matches OpenAI's Responses API so
+    /// existing clients can render it without code changes.
+    ContainerFileCitation {
+        /// ID of the container the file lives in (`cntr_<uuid>`).
+        container_id: String,
+        /// Stable file identifier (`cfile_<uuid>`) usable with the
+        /// container files API to download the bytes.
+        file_id: String,
+        /// Display name of the file inside `/mnt/data`.
+        filename: String,
+        /// Byte offset where the cited range begins. Phase 1 emits `0`
+        /// because we don't attempt to parse model output for filename
+        /// mentions; clients should render the annotation as a
+        /// whole-message reference.
+        #[serde(default)]
+        start_index: u64,
+        /// Byte offset where the cited range ends. Same caveat as
+        /// `start_index`.
+        #[serde(default)]
+        end_index: u64,
+        /// Optional single-position index. Phase 1 emits `null`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<u64>,
     },
 }
 
@@ -736,6 +766,51 @@ pub struct ShellCallOutput {
     /// Truncated stderr for the model's context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// **Hadrian Extension:** Files written to `/mnt/data` during this
+    /// command. Populated when the configured shell runtime supports
+    /// `file_io` and `[features.containers]` is enabled. Each entry's
+    /// `file_id` matches a `container_file_citation` annotation on the
+    /// assistant's reply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_files: Vec<ContainerFileRef>,
+}
+
+/// Reference to one file produced or modified by a shell command.
+///
+/// Phase 1 stores the bytes in process memory keyed by `file_id`; Phase
+/// 3 will back the same shape with the `container_files` table so the
+/// `GET /v1/containers/{container_id}/files/{file_id}/content` endpoint
+/// can serve them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerFileRef {
+    /// Container the file lives in (`cntr_<uuid>`).
+    pub container_id: String,
+    /// Stable identifier (`cfile_<uuid>`).
+    pub file_id: String,
+    /// Display name, taken from the path under `/mnt/data`.
+    pub filename: String,
+    /// Absolute path inside the container.
+    pub path: String,
+    /// Size in bytes.
+    pub bytes: u64,
+    /// Best-effort MIME type derived from the filename extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// `"user"` if staged in from the request, `"assistant"` if written
+    /// by the model.
+    pub source: ContainerFileSource,
+}
+
+/// Origin of a captured container file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerFileSource {
+    /// File was staged into `/mnt/data` from an `input_file` part on
+    /// the request. Reserved for Phase 2; Phase 1 only emits
+    /// `Assistant` references.
+    User,
+    /// File was written by the model during a shell command.
+    Assistant,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

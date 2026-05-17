@@ -1,5 +1,6 @@
 mod api_keys;
 mod audit_logs;
+mod containers;
 mod conversations;
 pub mod cursor;
 #[cfg(feature = "sso")]
@@ -34,6 +35,7 @@ mod vector_stores;
 pub use api_keys::*;
 pub use audit_logs::*;
 use chrono::NaiveDate;
+pub use containers::*;
 pub use conversations::*;
 pub use cursor::*;
 #[cfg(feature = "sso")]

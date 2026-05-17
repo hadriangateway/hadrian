@@ -1333,7 +1333,13 @@ CREATE TABLE IF NOT EXISTS responses (
     usage JSONB,
     error JSONB,
     retention_expires_at TIMESTAMPTZ NOT NULL,
-    last_sequence_number BIGINT NOT NULL DEFAULT 0
+    last_sequence_number BIGINT NOT NULL DEFAULT 0,
+    -- Container the shell-tool session for this response wrote files
+    -- into. Set when a `[features.shell]` runtime captures artifacts
+    -- under `/mnt/data`. Drives `previous_response_id`-based reuse
+    -- (Phase 4): a chained response looks here to find the container
+    -- it should reattach to.
+    container_id VARCHAR(48)
 );
 
 CREATE INDEX IF NOT EXISTS idx_responses_org_status ON responses(org_id, status);
@@ -1351,3 +1357,79 @@ CREATE TABLE IF NOT EXISTS response_events (
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (response_id, sequence_number)
 );
+
+-- ======================================================================
+-- Containers (shell-tool `/mnt/data` artifact persistence)
+-- ======================================================================
+
+-- A "container" is the persistent shell-tool session and the files it
+-- produced under `/mnt/data`. One row per session; Phase 1 makes one
+-- per response, Phase 4 will reuse rows across responses via
+-- `previous_response_id` / `container_reference`.
+--
+-- IDs are stored as TEXT (`cntr_<32hex>`) so the wire format and the
+-- DB key match — clients pass the same string they received in a
+-- `container_file_citation` annotation back as the URL segment.
+CREATE TABLE IF NOT EXISTS containers (
+    id VARCHAR(48) PRIMARY KEY,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type response_owner_type NOT NULL,
+    owner_id UUID NOT NULL,
+    -- 'active' | 'expired' | 'deleted'
+    status VARCHAR(16) NOT NULL,
+    -- Runtime that backed the session (`microsandbox`, `opensandbox`,
+    -- `passthrough_openai`). Stored as a label rather than a FK so
+    -- we can drop a runtime backend without rewriting history.
+    runtime_label VARCHAR(64) NOT NULL,
+    -- Response this container was originally provisioned for. Nullable
+    -- to keep the door open for Phase 4 `POST /v1/containers` (manual
+    -- create) which is unattached at first.
+    source_response_id VARCHAR(64),
+    idle_ttl_secs BIGINT NOT NULL,
+    last_active_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_containers_org_active
+    ON containers(org_id, status, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_containers_source_response
+    ON containers(source_response_id)
+    WHERE source_response_id IS NOT NULL;
+
+-- One row per file currently tracked under `/mnt/data` for a given
+-- container. Reuses the same `file_storage_backend` enum + storage
+-- columns as the OpenAI Files API table so the same `FileStorage`
+-- trait can read both.
+--
+-- `path` is the absolute path inside the container (always under
+-- `/mnt/data/`). Unique per container so overwrites map to the same
+-- row — re-running a shell command that produces the same artifact
+-- doesn't grow the table unbounded.
+CREATE TABLE IF NOT EXISTS container_files (
+    id VARCHAR(48) PRIMARY KEY,
+    container_id VARCHAR(48) NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    content_type VARCHAR(128),
+    -- sha256 hex of content. 64 chars exactly.
+    content_hash VARCHAR(64) NOT NULL,
+    -- 'user' (staged from an input_file part) | 'assistant' (written
+    -- by the model during a shell command).
+    source VARCHAR(16) NOT NULL,
+    storage_backend file_storage_backend NOT NULL DEFAULT 'database',
+    file_data BYTEA,
+    storage_path TEXT,
+    -- Provenance: which response / shell call produced this version.
+    source_response_id VARCHAR(64),
+    source_call_id VARCHAR(128),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(container_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_container_files_container_created
+    ON container_files(container_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_container_files_org
+    ON container_files(org_id);

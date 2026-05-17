@@ -374,6 +374,15 @@ pub struct AppState {
     /// is configured; powers `GET/POST cancel/DELETE /v1/responses/{id}`
     /// and the cancellation signal pipeline.
     pub responses_store: Option<Arc<services::ResponsesStore>>,
+    /// Containers service. Present when a database is configured;
+    /// drives write-through persistence for the shell-tool
+    /// `/mnt/data` artifact pipeline and serves
+    /// `GET /v1/containers/*`.
+    pub containers_service: Option<Arc<services::containers::ContainersService>>,
+    /// In-memory registry of live container sessions, keyed by the
+    /// `cntr_…` id. Always present so cross-response container reuse
+    /// works even in DB-less deployments (it just stays empty there).
+    pub container_session_registry: Arc<services::container_session::ContainerSessionRegistry>,
     /// Bounded-channel writer that batches `response_events` rows.
     /// Constructed alongside `responses_store` so persistence and event
     /// log share the same DB lifecycle.
@@ -1085,6 +1094,22 @@ impl AppState {
                 ))
             });
 
+        // Containers service powers shell-tool `/mnt/data` artifact
+        // persistence and `/v1/containers/*`. Available whenever a DB
+        // is configured. Without it the live shell tool still works
+        // (Phase 1/2 in-memory capture remains), but the GET endpoints
+        // return 404 because no rows exist.
+        let containers_service: Option<Arc<services::containers::ContainersService>> = db
+            .as_ref()
+            .map(|db| Arc::new(services::containers::ContainersService::new(db.clone())));
+
+        // Always construct a registry. In DB-less deployments it
+        // stays empty (Phase 1/2 sessions never get inserted), but
+        // wiring it in unconditionally keeps the rest of the
+        // pipeline's plumbing simple.
+        let container_session_registry: Arc<services::container_session::ContainerSessionRegistry> =
+            Arc::new(services::container_session::ContainerSessionRegistry::new());
+
         // Initialize the shell tool runtime from [features.shell].
         // Microsandbox / OpenSandbox / E2B adapters land in slice 1B; for
         // now they return None and emit a clear startup error.
@@ -1238,6 +1263,8 @@ impl AppState {
             file_search_service,
             shell_runtime,
             responses_store,
+            containers_service,
+            container_session_registry,
             response_event_buffer,
             #[cfg(any(
                 feature = "document-extraction-basic",

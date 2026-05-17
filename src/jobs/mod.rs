@@ -29,6 +29,7 @@
 //! ```
 
 mod background_responses;
+mod containers_reaper;
 mod leader_lock;
 mod model_catalog_sync;
 mod oauth_code_cleanup;
@@ -38,6 +39,7 @@ mod responses_retention;
 mod vector_store_cleanup;
 
 pub use background_responses::start_background_response_worker;
+pub use containers_reaper::start_containers_reaper_worker;
 pub use model_catalog_sync::start_model_catalog_sync_worker;
 pub use oauth_code_cleanup::start_oauth_code_cleanup_worker;
 pub use provider_health_check::{

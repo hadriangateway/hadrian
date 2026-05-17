@@ -1102,7 +1102,10 @@ CREATE TABLE IF NOT EXISTS responses (
     -- Highest event sequence_number persisted by the event buffer for
     -- this response. Used by the replay endpoint to detect "no more
     -- events coming" without a separate join.
-    last_sequence_number INTEGER NOT NULL DEFAULT 0
+    last_sequence_number INTEGER NOT NULL DEFAULT 0,
+    -- Container the shell-tool session for this response wrote files
+    -- into. See Postgres migration for the design rationale.
+    container_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_responses_org_status ON responses(org_id, status);
@@ -1129,3 +1132,56 @@ CREATE TABLE IF NOT EXISTS response_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY (response_id, sequence_number)
 );
+
+-- ======================================================================
+-- Containers (shell-tool `/mnt/data` artifact persistence)
+-- ======================================================================
+
+-- Mirror of the Postgres `containers` / `container_files` tables. See
+-- the Postgres migration for the design rationale. SQLite stores
+-- timestamps as TEXT (ISO-8601) — cursor pagination through these
+-- tables relies on millisecond-precision `created_at` values, so all
+-- inserts must use `truncate_to_millis(Utc::now())`.
+CREATE TABLE IF NOT EXISTS containers (
+    id TEXT PRIMARY KEY NOT NULL,
+    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('organization', 'team', 'project', 'user', 'service_account')),
+    owner_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'expired', 'deleted')),
+    runtime_label TEXT NOT NULL,
+    source_response_id TEXT,
+    idle_ttl_secs INTEGER NOT NULL,
+    last_active_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_containers_org_active
+    ON containers(org_id, status, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_containers_source_response
+    ON containers(source_response_id)
+    WHERE source_response_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS container_files (
+    id TEXT PRIMARY KEY NOT NULL,
+    container_id TEXT NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    content_type TEXT,
+    content_hash TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('user', 'assistant')),
+    storage_backend TEXT NOT NULL DEFAULT 'database' CHECK (storage_backend IN ('database', 'filesystem', 's3')),
+    file_data BLOB,
+    storage_path TEXT,
+    source_response_id TEXT,
+    source_call_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(container_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_container_files_container_created
+    ON container_files(container_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_container_files_org
+    ON container_files(org_id);

@@ -1,5 +1,6 @@
 mod api_keys;
 mod audit_logs;
+mod containers;
 mod conversations;
 #[cfg(feature = "sso")]
 mod domain_verifications;
@@ -32,6 +33,7 @@ mod vector_stores;
 
 pub use api_keys::PostgresApiKeyRepo;
 pub use audit_logs::PostgresAuditLogRepo;
+pub use containers::PostgresContainersRepo;
 pub use conversations::PostgresConversationRepo;
 #[cfg(feature = "sso")]
 pub use domain_verifications::PostgresDomainVerificationRepo;

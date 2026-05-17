@@ -44,7 +44,7 @@ const RESPONSE_COLUMNS: &str = "id, org_id, owner_type::TEXT, owner_id, \
     status, background, model, provider, \
     created_at, started_at, completed_at, \
     request_payload, output, usage, error, \
-    retention_expires_at, last_sequence_number";
+    retention_expires_at, last_sequence_number, container_id";
 
 pub struct PostgresResponsesRepo {
     write_pool: PgPool,
@@ -94,6 +94,7 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> DbResult<ResponseRecord> {
         error: row.get("error"),
         retention_expires_at: row.get("retention_expires_at"),
         last_sequence_number: row.get("last_sequence_number"),
+        container_id: row.get("container_id"),
     })
 }
 
@@ -157,6 +158,7 @@ impl ResponsesRepo for PostgresResponsesRepo {
             error: None,
             retention_expires_at: input.retention_expires_at,
             last_sequence_number: 0,
+            container_id: None,
         })
     }
 
@@ -204,6 +206,7 @@ impl ResponsesRepo for PostgresResponsesRepo {
         add!(patch.usage.is_some(), "usage");
         add!(patch.error.is_some(), "error");
         add!(patch.retention_expires_at.is_some(), "retention_expires_at");
+        add!(patch.container_id.is_some(), "container_id");
         if setters.is_empty() {
             return self.get_by_id_and_org(id, org_id).await;
         }
@@ -238,6 +241,9 @@ impl ResponsesRepo for PostgresResponsesRepo {
         }
         if let Some(ts) = patch.retention_expires_at {
             q = q.bind(ts);
+        }
+        if let Some(cid) = patch.container_id {
+            q = q.bind(cid);
         }
         q = q.bind(id);
 

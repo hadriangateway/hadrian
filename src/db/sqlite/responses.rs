@@ -50,7 +50,7 @@ const RESPONSE_COLUMNS: &str = "id, org_id, owner_type, owner_id, \
     status, background, model, provider, \
     created_at, started_at, completed_at, \
     request_payload, output, usage, error, \
-    retention_expires_at, last_sequence_number";
+    retention_expires_at, last_sequence_number, container_id";
 
 pub struct SqliteResponsesRepo {
     pool: Pool,
@@ -108,6 +108,7 @@ fn row_to_record(row: &super::backend::Row) -> DbResult<ResponseRecord> {
         error: parse_json(row.col("error"))?,
         retention_expires_at: row.col("retention_expires_at"),
         last_sequence_number: row.col("last_sequence_number"),
+        container_id: row.col("container_id"),
     })
 }
 
@@ -170,6 +171,7 @@ impl ResponsesRepo for SqliteResponsesRepo {
             error: None,
             retention_expires_at,
             last_sequence_number: 0,
+            container_id: None,
         })
     }
 
@@ -221,6 +223,9 @@ impl ResponsesRepo for SqliteResponsesRepo {
         if patch.retention_expires_at.is_some() {
             setters.push("retention_expires_at = ?");
         }
+        if patch.container_id.is_some() {
+            setters.push("container_id = ?");
+        }
         if setters.is_empty() {
             return self.get_by_id_and_org(id, org_id).await;
         }
@@ -252,6 +257,9 @@ impl ResponsesRepo for SqliteResponsesRepo {
         }
         if let Some(ts) = patch.retention_expires_at {
             q = q.bind(truncate_to_millis(ts));
+        }
+        if let Some(cid) = patch.container_id {
+            q = q.bind(cid);
         }
         q = q.bind(id);
         let org_str = org_id.to_string();

@@ -168,6 +168,12 @@ pub struct ResponseRecord {
     /// Highest event sequence_number persisted. Set by the event
     /// buffer drainer on each batch flush.
     pub last_sequence_number: i64,
+    /// Container the shell-tool session for this response was attached
+    /// to. `None` when the request had no shell tool, when containers
+    /// persistence is disabled, or before the shell tool first runs.
+    /// Drives `previous_response_id`-based reuse: a chained response
+    /// looks here to find which container to reattach to.
+    pub container_id: Option<String>,
 }
 
 /// Fields needed to create a new response row at request-start time.
@@ -201,6 +207,12 @@ pub struct ResponseCompletion {
     pub usage: Option<Value>,
     pub error: Option<Value>,
     pub retention_expires_at: Option<DateTime<Utc>>,
+    /// Container attached to this response. Patched in by the
+    /// streaming pipeline once a shell-tool session has been
+    /// provisioned (or reattached), so a follow-up request that
+    /// chains via `previous_response_id` can resolve the right
+    /// container.
+    pub container_id: Option<String>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]

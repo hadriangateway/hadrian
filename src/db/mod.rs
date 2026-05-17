@@ -78,6 +78,8 @@ struct CachedRepos {
     responses: Arc<dyn ResponsesRepo>,
     // Per-response event log
     response_events: Arc<dyn ResponseEventsRepo>,
+    // Containers + container_files (shell-tool /mnt/data artifacts)
+    containers: Arc<dyn ContainersRepo>,
 }
 
 enum PoolStorage {
@@ -159,6 +161,7 @@ impl DbPool {
             )),
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
+            containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
         };
         DbPool {
             inner: PoolStorage::Sqlite(pool),
@@ -203,6 +206,7 @@ impl DbPool {
             )),
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
+            containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
         };
         DbPool {
             inner: PoolStorage::WasmSqlite(pool),
@@ -321,6 +325,10 @@ impl DbPool {
                 write_pool.clone(),
                 read_pool.clone(),
             )),
+            containers: Arc::new(postgres::PostgresContainersRepo::new(
+                write_pool.clone(),
+                read_pool.clone(),
+            )),
         };
         DbPool {
             inner: PoolStorage::Postgres(PgPoolPair {
@@ -402,6 +410,7 @@ impl DbPool {
                     ),
                     responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
                     response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
+                    containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
                 };
 
                 Ok(DbPool {
@@ -549,6 +558,10 @@ impl DbPool {
                         read_pool.clone(),
                     )),
                     response_events: Arc::new(postgres::PostgresResponseEventsRepo::new(
+                        write_pool.clone(),
+                        read_pool.clone(),
+                    )),
+                    containers: Arc::new(postgres::PostgresContainersRepo::new(
                         write_pool.clone(),
                         read_pool.clone(),
                     )),
@@ -730,6 +743,11 @@ impl DbPool {
     /// Get the response event log repository.
     pub fn response_events(&self) -> Arc<dyn ResponseEventsRepo> {
         Arc::clone(&self.repos.response_events)
+    }
+
+    /// Get the containers + container_files repository.
+    pub fn containers(&self) -> Arc<dyn ContainersRepo> {
+        Arc::clone(&self.repos.containers)
     }
 
     /// Get a reference to the underlying database pool.

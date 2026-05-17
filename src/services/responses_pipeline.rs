@@ -30,7 +30,9 @@ use crate::{
     runtimes::{MountedFile, SkillMount},
     services::{
         FileSearchAuthContext, FileSearchContext, WebSearchContext,
+        container_session::ContainerPersistence,
         file_search_tool::FileSearchExecutor,
+        input_file_staging::StagedFile,
         server_tools::{ProviderCallback, ServerExecutedTool, ToolLoopRunner},
         shell_tool::ShellExecutor,
         web_search_tool::WebSearchExecutor,
@@ -245,6 +247,13 @@ pub fn apply_streaming_pipeline(
     model_name: String,
     principal: PipelinePrincipal,
     mounted_skills: Vec<SkillMount>,
+    staged_input_files: Vec<StagedFile>,
+    response_owner: Option<ResponseOwner>,
+    // `container_id_hint`: pre-resolved container id this response
+    // should attach to (or create under). Derived from
+    // `previous_response_id` chaining upstream; `None` falls back to
+    // the executor allocating a fresh id on first use.
+    container_id_hint: Option<String>,
     request_id: Option<String>,
     response: Response<Body>,
     persistence: Option<PersistenceHandle>,
@@ -342,6 +351,26 @@ pub fn apply_streaming_pipeline(
                 #[cfg(feature = "runtime-opensandbox")]
                 crate::config::ShellRuntimeConfig::OpenSandbox(_) => (0, "opensandbox"),
             };
+            // Build the optional ContainerPersistence handle. All three
+            // ingredients must be present: the gateway has a DB (so a
+            // ContainersService was constructed), the caller derived a
+            // ResponseOwner from auth, and the principal carries an
+            // org id. When any is missing we run in-memory only — the
+            // live response still works, but `/v1/containers/*`
+            // returns 404 for files captured under this session.
+            let persistence = match (
+                state.containers_service.as_ref(),
+                response_owner,
+                principal.org_id,
+            ) {
+                (Some(svc), Some(owner), Some(org_id)) => Some(ContainerPersistence {
+                    service: svc.clone(),
+                    org_id,
+                    owner,
+                    source_response_id: persistence.as_ref().map(|h| h.response_id.clone()),
+                }),
+                _ => None,
+            };
             tools.push(Arc::new(ShellExecutor::new(
                 shell_runtime.clone(),
                 rate,
@@ -349,6 +378,11 @@ pub fn apply_streaming_pipeline(
                 principal.clone().into(),
                 mounted_skills,
                 state.config.features.server_tools.shell_limits.clone(),
+                state.config.features.containers.clone(),
+                staged_input_files,
+                persistence,
+                state.container_session_registry.clone(),
+                container_id_hint,
                 #[cfg(feature = "concurrency")]
                 state.usage_buffer.clone(),
             )));

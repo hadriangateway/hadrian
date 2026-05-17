@@ -2293,6 +2293,10 @@ mod tests {
             file_search_service: None,
             shell_runtime: None,
             responses_store: None,
+            containers_service: None,
+            container_session_registry: std::sync::Arc::new(
+                crate::services::container_session::ContainerSessionRegistry::new(),
+            ),
             response_event_buffer: None,
             #[cfg(any(
                 feature = "document-extraction-basic",
@@ -2354,6 +2358,10 @@ mod tests {
             file_search_service: None,
             shell_runtime: None,
             responses_store: None,
+            containers_service: None,
+            container_session_registry: std::sync::Arc::new(
+                crate::services::container_session::ContainerSessionRegistry::new(),
+            ),
             response_event_buffer: None,
             #[cfg(any(
                 feature = "document-extraction-basic",

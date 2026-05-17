@@ -29,11 +29,12 @@ use crate::{
 
 mod audio;
 mod chat;
+#[cfg(feature = "server")]
+pub mod containers;
 mod embeddings;
 mod files;
 mod images;
 mod models;
-#[cfg(feature = "server")]
 pub mod responses_lookup;
 pub(crate) mod tools;
 mod vector_stores;
@@ -858,6 +859,22 @@ pub(crate) fn api_v1_routes(limits: ApiBodyLimits) -> Router<AppState> {
         .route(
             "/v1/responses/{response_id}/events",
             get(responses_lookup::api_v1_responses_events),
+        )
+        .route(
+            "/v1/containers/{container_id}",
+            get(containers::api_v1_containers_get).delete(containers::api_v1_containers_delete),
+        )
+        .route(
+            "/v1/containers/{container_id}/files",
+            get(containers::api_v1_containers_list_files),
+        )
+        .route(
+            "/v1/containers/{container_id}/files/{file_id}",
+            get(containers::api_v1_containers_file_get),
+        )
+        .route(
+            "/v1/containers/{container_id}/files/{file_id}/content",
+            get(containers::api_v1_containers_file_content),
         )
         .route("/v1/completions", post(api_v1_completions))
         .route("/v1/embeddings", post(api_v1_embeddings))

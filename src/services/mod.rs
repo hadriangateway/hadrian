@@ -3,6 +3,10 @@ mod api_keys;
 pub mod audit_logs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod background_executor;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod container_session;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod containers;
 mod conversations;
 #[cfg(any(
     feature = "document-extraction-basic",
@@ -17,6 +21,8 @@ mod file_storage;
 mod files;
 #[cfg(feature = "forecasting")]
 pub mod forecasting;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod input_file_staging;
 mod model_pricing;
 pub mod oauth_pkce;
 mod org_rbac_policies;

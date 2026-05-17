@@ -63,6 +63,25 @@ impl BackgroundExecuteError {
     }
 }
 
+/// True when the request carries a `shell` tool (either as the native
+/// `{"type": "shell"}` form or the post-`preprocess_shell_tools`
+/// function-mode rewrite). Used to gate `input_file` staging — staging
+/// files into `/mnt/data` for a request that can't run shell commands
+/// is just wasted I/O.
+fn shell_tool_requested(payload: &crate::api_types::CreateResponsesPayload) -> bool {
+    let Some(tools) = payload.tools.as_ref() else {
+        return false;
+    };
+    tools.iter().any(|t| {
+        t.is_shell()
+            || matches!(
+                t,
+                crate::api_types::responses::ResponsesToolDefinition::Function(v)
+                    if v.get("name").and_then(|n| n.as_str()) == Some("shell")
+            )
+    })
+}
+
 /// Run a claimed response to completion.
 ///
 /// `record` must already be in `in_progress` status (claimed via
@@ -128,6 +147,25 @@ pub async fn execute_persisted_response(
         .await
         .map_err(|e| BackgroundExecuteError::BadPayload(format!("skill resolution failed: {e}")))?;
 
+    // Resolve input_file parts the request asked us to stage into
+    // /mnt/data. We only do the work if the request actually carries
+    // a shell tool — files for non-shell requests would just sit in
+    // memory unused. Errors bubble up as `BadPayload` so the row
+    // ends in `failed` with the resolver's diagnostic preserved.
+    let staged_input_files = if shell_tool_requested(&payload) {
+        crate::services::input_file_staging::stage_input_files(
+            &state,
+            &payload,
+            &state.config.features.containers,
+        )
+        .await
+        .map_err(|e| {
+            BackgroundExecuteError::BadPayload(format!("input_file staging failed: {e}"))
+        })?
+    } else {
+        Vec::new()
+    };
+
     // Sovereignty requirements are checked at request-creation time
     // for the foreground path; in the background we trust the row.
     let exec_result = execute_with_fallback::<ResponsesExecutor>(
@@ -167,6 +205,53 @@ pub async fn execute_persisted_response(
         service_account_id: record.service_account_id,
     };
 
+    // Reconstruct the response owner from the persisted row so the
+    // container-persistence layer attributes files to the same scope
+    // the foreground caller used.
+    let containers_owner = match record.owner_type {
+        crate::db::repos::ResponseOwnerType::Organization => {
+            crate::db::repos::ResponseOwner::Organization(record.owner_id)
+        }
+        crate::db::repos::ResponseOwnerType::Team => {
+            crate::db::repos::ResponseOwner::Team(record.owner_id)
+        }
+        crate::db::repos::ResponseOwnerType::Project => {
+            crate::db::repos::ResponseOwner::Project(record.owner_id)
+        }
+        crate::db::repos::ResponseOwnerType::User => {
+            crate::db::repos::ResponseOwner::User(record.owner_id)
+        }
+        crate::db::repos::ResponseOwnerType::ServiceAccount => {
+            crate::db::repos::ResponseOwner::ServiceAccount(record.owner_id)
+        }
+    };
+
+    // Same chained-container lookup the foreground does. Implicit
+    // reuse: any non-active prior container falls back to a fresh one
+    // rather than erroring.
+    let container_id_hint = match (
+        payload.previous_response_id.as_deref(),
+        state.containers_service.as_ref(),
+    ) {
+        (Some(prev_id), Some(containers_svc)) => {
+            let prev = store
+                .get(prev_id, record.org_id)
+                .await
+                .ok()
+                .and_then(|r| r.container_id);
+            match prev {
+                Some(cid) => match containers_svc.get_container(&cid, record.org_id).await {
+                    Ok(c) if matches!(c.status, crate::db::repos::ContainerStatus::Active) => {
+                        Some(cid)
+                    }
+                    _ => None,
+                },
+                None => None,
+            }
+        }
+        _ => None,
+    };
+
     let wrapped = apply_streaming_pipeline(
         &state,
         &payload,
@@ -175,6 +260,9 @@ pub async fn execute_persisted_response(
         model_name,
         principal,
         mounted_skills,
+        staged_input_files,
+        Some(containers_owner),
+        container_id_hint,
         // Background has no HTTP request_id; use the response_id for
         // audit-log correlation so events tied to this run can be
         // grouped consistently.

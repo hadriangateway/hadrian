@@ -77,6 +77,12 @@ pub struct FeaturesConfig {
     #[serde(default)]
     pub shell: super::ShellRuntimeConfig,
 
+    /// Container / `/mnt/data` artifact capture settings. Controls how
+    /// files written by the shell tool are persisted and surfaced back
+    /// to the conversation as `container_file_citation` annotations.
+    #[serde(default)]
+    pub containers: ContainersConfig,
+
     /// Persistence settings for the Responses API.
     #[serde(default)]
     pub responses: ResponsesPersistenceConfig,
@@ -439,6 +445,104 @@ impl Default for ShellLimitsConfig {
 
 fn default_shell_command_timeout_secs() -> u64 {
     300
+}
+
+/// Settings for `/mnt/data` artifact capture from the shell tool.
+///
+/// When the configured shell runtime supports `file_io`, Hadrian
+/// snapshots the container's `/mnt/data` directory before and after
+/// every shell command. New or changed files are surfaced as
+/// `container_file_citation` annotations on the assistant's reply, with
+/// a stable `cfile_<uuid>` identifier that Phase 3's container files
+/// API will resolve to downloadable bytes.
+///
+/// Setting `enabled = false` reverts to the legacy "tear down VM after
+/// every command" behaviour with no artifact capture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ContainersConfig {
+    /// Master switch. When false, the shell tool boots and tears down a
+    /// fresh microVM for every command and never captures artifacts —
+    /// matches Hadrian behaviour prior to Phase 1.
+    #[serde(default = "default_containers_enabled")]
+    pub enabled: bool,
+
+    /// Idle time after which an in-memory container session is torn
+    /// down. Phase 1 sessions are response-scoped, so this only kicks
+    /// in if a response stalls without terminating. Default 1200 (20m,
+    /// matching OpenAI's hosted-container idle TTL).
+    #[serde(default = "default_containers_idle_ttl_secs")]
+    pub default_idle_ttl_secs: u64,
+
+    /// Hard cap on the number of new/changed files captured per shell
+    /// exec. Excess files are dropped with a warning. Default 64.
+    #[serde(default = "default_containers_max_files_per_exec")]
+    pub max_files_per_exec: usize,
+
+    /// Hard cap on the size of any single captured file. Files larger
+    /// than this are recorded as metadata only (bytes + filename) with
+    /// no content stored. Default 25 MiB.
+    #[serde(default = "default_containers_max_bytes_per_file")]
+    pub max_bytes_per_file: u64,
+
+    /// Hard cap on the total bytes captured across all files in one
+    /// container session. Default 250 MiB.
+    #[serde(default = "default_containers_max_bytes_per_session")]
+    pub max_bytes_per_session: u64,
+
+    /// Hard cap on the number of `input_file` parts Hadrian will
+    /// materialize into `/mnt/data` for one request. Excess parts
+    /// cause the request to fail with a 400. Default 32.
+    #[serde(default = "default_containers_max_input_files_per_request")]
+    pub max_input_files_per_request: usize,
+
+    /// Hard cap on the total bytes across all staged input files in
+    /// one request. Default 100 MiB.
+    #[serde(default = "default_containers_max_input_bytes_per_request")]
+    pub max_input_bytes_per_request: u64,
+}
+
+impl Default for ContainersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_containers_enabled(),
+            default_idle_ttl_secs: default_containers_idle_ttl_secs(),
+            max_files_per_exec: default_containers_max_files_per_exec(),
+            max_bytes_per_file: default_containers_max_bytes_per_file(),
+            max_bytes_per_session: default_containers_max_bytes_per_session(),
+            max_input_files_per_request: default_containers_max_input_files_per_request(),
+            max_input_bytes_per_request: default_containers_max_input_bytes_per_request(),
+        }
+    }
+}
+
+fn default_containers_enabled() -> bool {
+    true
+}
+
+fn default_containers_idle_ttl_secs() -> u64 {
+    1200
+}
+
+fn default_containers_max_files_per_exec() -> usize {
+    64
+}
+
+fn default_containers_max_bytes_per_file() -> u64 {
+    25 * 1024 * 1024
+}
+
+fn default_containers_max_bytes_per_session() -> u64 {
+    250 * 1024 * 1024
+}
+
+fn default_containers_max_input_files_per_request() -> usize {
+    32
+}
+
+fn default_containers_max_input_bytes_per_request() -> u64 {
+    100 * 1024 * 1024
 }
 
 /// Cost rates for billable server-tool runtimes.

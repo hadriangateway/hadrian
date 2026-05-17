@@ -12,28 +12,37 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use chrono::Utc;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
     api_types::responses::{
-        CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType, ResponsesInput,
-        ResponsesInputItem, ResponsesToolDefinition,
+        ContainerFileRef, CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType,
+        ResponsesAnnotation, ResponsesInput, ResponsesInputItem, ResponsesToolDefinition,
     },
+    config::ContainersConfig,
     models::UsageLogEntry,
     pricing::CostPricingSource,
     runtimes::{ExecEvent, ExecRequest, RuntimeError, SessionSpec, ShellRuntime, SkillMount},
-    services::server_tools::{
-        DetectedToolCall, ServerExecutedTool, ToolCallResult, ToolContext, ToolError,
-        ToolExecutionHandle,
+    services::{
+        container_session::{ContainerPersistence, ContainerSession, ContainerSessionRegistry},
+        input_file_staging::StagedFile,
+        server_tools::{
+            DetectedToolCall, ServerExecutedTool, ToolCallResult, ToolContext, ToolError,
+            ToolExecutionHandle,
+        },
     },
 };
 
@@ -240,6 +249,21 @@ fn format_completed(item_id: &str, output_index: usize, exit_code: i32) -> Bytes
     }))
 }
 
+fn format_file_created(item_id: &str, output_index: usize, file: &ContainerFileRef) -> Bytes {
+    sse_event(serde_json::json!({
+        "type": "response.shell_call.file_created",
+        "output_index": output_index,
+        "item_id": item_id,
+        "container_id": file.container_id,
+        "file_id": file.file_id,
+        "filename": file.filename,
+        "path": file.path,
+        "bytes": file.bytes,
+        "content_type": file.content_type,
+        "source": file.source,
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Output trimming for continuation payload
 // ─────────────────────────────────────────────────────────────────────────────
@@ -279,6 +303,16 @@ fn trim_output(s: String) -> String {
 /// **Not registered for passthrough runtimes** — the orchestrator
 /// inspects the runtime's capabilities and skips registration entirely
 /// when passthrough is in effect.
+///
+/// Each `ShellExecutor` is request-scoped (created by
+/// `apply_streaming_pipeline` per Responses-API request) and owns one
+/// lazily-started [`ContainerSession`] that all shell tool calls
+/// within that request share. The session — and its underlying
+/// sandbox VM — lives until the `ShellExecutor` is dropped at
+/// stream-end, at which point [`ContainerSession::drop`] detaches a
+/// terminate task. Files written to `/mnt/data` along the way are
+/// captured into `captured_files` and replayed as
+/// `container_file_citation` annotations on the assistant's reply.
 pub struct ShellExecutor {
     runtime: Arc<dyn ShellRuntime>,
     /// Cost per second of runtime time, in microcents. Multiplied by
@@ -291,15 +325,45 @@ pub struct ShellExecutor {
     /// Identity context attached to the per-shell-call usage record so
     /// runtime time is attributed to the right principal.
     principal: ShellPrincipal,
-    /// Skill bundles to mount into every session started by this
+    /// Skill bundles to mount into the session started by this
     /// executor. Resolved upstream from the request's `skills` field;
-    /// empty when the request didn't ask for any. Cloned into each
-    /// `SessionSpec` because shell tool calls can repeat and each one
-    /// boots a fresh session.
+    /// empty when the request didn't ask for any. Cloned into the
+    /// `SessionSpec` on first `execute()` call.
     mounted_skills: Vec<SkillMount>,
     /// Per-execution limits (timeouts, default CPU/mem). Loaded from
     /// `[features.server_tools].shell_limits`.
     limits: crate::config::ShellLimitsConfig,
+    /// Container / artifact-capture settings.
+    containers_config: ContainersConfig,
+    /// Per-executor cache of the resolved registry entry. `None`
+    /// until the first `execute()` call. Once populated, every
+    /// subsequent call in this response goes straight to the cached
+    /// `Arc<Mutex<ContainerSession>>` without touching the registry.
+    session_handle: Arc<Mutex<Option<Arc<Mutex<ContainerSession>>>>>,
+    /// Process-wide registry of live container sessions. Used to
+    /// share one VM across responses that target the same
+    /// `container_id` (e.g. chained via `previous_response_id`).
+    registry: Arc<ContainerSessionRegistry>,
+    /// Pre-allocated container id from the pipeline. When `Some`, the
+    /// executor checks the registry for an existing session and
+    /// reattaches (or creates) under this id; when `None`, it
+    /// generates a fresh id on first use (Phase 1/2 behaviour for
+    /// in-memory-only deployments).
+    container_id_hint: Option<String>,
+    /// Files captured across every shell call in this response,
+    /// keyed by path so an overwrite replaces the prior entry. Read
+    /// synchronously by `transform_event` to populate
+    /// `container_file_citation` annotations on output_text events.
+    captured_files: Arc<std::sync::Mutex<HashMap<String, ContainerFileRef>>>,
+    /// `input_file` parts the request asked us to stage into
+    /// `/mnt/data` before the first shell command. Drained on the
+    /// first `execute()` call; subsequent calls see `None`.
+    pending_input_files: Arc<Mutex<Option<Vec<StagedFile>>>>,
+    /// Optional database write-through. When `Some`, a `containers`
+    /// row is inserted on session start and every captured file is
+    /// upserted into `container_files`; when `None`, the session
+    /// runs entirely in-memory (Phase 1/2 behaviour).
+    persistence: Option<ContainerPersistence>,
     /// Usage log buffer. When set, the executor pushes a `record_type:
     /// "tool"` entry per completed call with `tool_runtime_seconds` set.
     #[cfg(feature = "concurrency")]
@@ -315,10 +379,20 @@ impl ShellExecutor {
         principal: ShellPrincipal,
         mounted_skills: Vec<SkillMount>,
         limits: crate::config::ShellLimitsConfig,
+        containers_config: ContainersConfig,
+        staged_input_files: Vec<StagedFile>,
+        persistence: Option<ContainerPersistence>,
+        registry: Arc<ContainerSessionRegistry>,
+        container_id_hint: Option<String>,
         #[cfg(feature = "concurrency")] usage_buffer: Option<
             Arc<crate::usage_buffer::UsageLogBuffer>,
         >,
     ) -> Self {
+        let pending = if staged_input_files.is_empty() {
+            None
+        } else {
+            Some(staged_input_files)
+        };
         Self {
             runtime,
             cost_microcents_per_second,
@@ -326,6 +400,13 @@ impl ShellExecutor {
             principal,
             mounted_skills,
             limits,
+            containers_config,
+            session_handle: Arc::new(Mutex::new(None)),
+            registry,
+            container_id_hint,
+            captured_files: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_input_files: Arc::new(Mutex::new(pending)),
+            persistence,
             #[cfg(feature = "concurrency")]
             usage_buffer,
         }
@@ -395,6 +476,13 @@ impl ServerExecutedTool for ShellExecutor {
         let runtime_label = self.runtime_label;
         let principal = self.principal.clone();
         let mounted_skills = self.mounted_skills.clone();
+        let containers_config = self.containers_config.clone();
+        let session_handle_slot = self.session_handle.clone();
+        let registry = self.registry.clone();
+        let container_id_hint = self.container_id_hint.clone();
+        let captured_files = self.captured_files.clone();
+        let pending_input_files = self.pending_input_files.clone();
+        let persistence = self.persistence.clone();
         #[cfg(feature = "concurrency")]
         let usage_buffer = self.usage_buffer.clone();
 
@@ -412,7 +500,7 @@ impl ServerExecutedTool for ShellExecutor {
         // consuming events while we boot the container.
         let id_for_task = id.clone();
         let command_for_task = command.clone();
-        let exec_timeout = std::time::Duration::from_secs(self.limits.command_timeout_secs.max(1));
+        let exec_timeout = Duration::from_secs(self.limits.command_timeout_secs.max(1));
         let default_cpu = self.limits.default_cpu_limit;
         let default_mem_bytes = self
             .limits
@@ -420,43 +508,175 @@ impl ServerExecutedTool for ShellExecutor {
             .map(|mb| u64::from(mb) * 1024 * 1024);
         crate::compat::spawn_detached(async move {
             let start = Instant::now();
-            let spec = SessionSpec {
-                mounted_skills,
-                cpu_limit: default_cpu,
-                mem_limit_bytes: default_mem_bytes,
-                ..SessionSpec::default()
-            };
-            let session = match runtime.start_session(spec).await {
-                Ok(s) => s,
-                Err(RuntimeError::Passthrough) => {
-                    // The orchestrator shouldn't have invoked us for a
-                    // passthrough runtime; warn and stop without
-                    // hanging the request.
-                    warn!(
-                        stage = "passthrough_invoked",
-                        call_id = %id_for_task,
-                        "Passthrough runtime received an execute() call; \
-                         this indicates a misconfiguration in chat.rs registration"
-                    );
-                    let _ = event_tx.send(format_completed(&id_for_task, 0, -1)).await;
-                    let _ = result_tx.send(Err(ToolError::ExecutionFailed(
-                        "shell runtime is configured for passthrough but executor was invoked"
-                            .into(),
-                    )));
-                    return;
+
+            // Resolve the registry entry. On the first execute() call
+            // for this executor we either grab an existing shared
+            // session (chained `previous_response_id`) or boot a new
+            // VM and register it. Subsequent calls within this
+            // response read the cached `Arc<Mutex<ContainerSession>>`
+            // without touching the registry.
+            let session_arc: Arc<Mutex<ContainerSession>> = {
+                let mut handle_slot = session_handle_slot.lock().await;
+                if let Some(existing) = handle_slot.as_ref() {
+                    existing.clone()
+                } else {
+                    // First-call path. Try the registry under the
+                    // requested id; if missing, boot.
+                    let resolved: Arc<Mutex<ContainerSession>> = match container_id_hint
+                        .as_deref()
+                        .and_then(|cid| registry.get(cid))
+                    {
+                        Some(cached) => cached,
+                        None => {
+                            let spec = SessionSpec {
+                                mounted_skills,
+                                cpu_limit: default_cpu,
+                                mem_limit_bytes: default_mem_bytes,
+                                ..SessionSpec::default()
+                            };
+                            let boot_result = match (container_id_hint.clone(), persistence.clone())
+                            {
+                                (Some(cid), Some(p)) => {
+                                    ContainerSession::start_attached(
+                                        cid,
+                                        runtime.clone(),
+                                        runtime_label,
+                                        spec,
+                                        containers_config.clone(),
+                                        p,
+                                    )
+                                    .await
+                                }
+                                _ => {
+                                    ContainerSession::start_new(
+                                        runtime.clone(),
+                                        runtime_label,
+                                        spec,
+                                        containers_config.clone(),
+                                        persistence.clone(),
+                                    )
+                                    .await
+                                }
+                            };
+                            let session = match boot_result {
+                                Ok(s) => {
+                                    debug!(
+                                        stage = "container_session_started",
+                                        call_id = %id_for_task,
+                                        container_id = %s.container_id,
+                                        file_io = s.file_io_enabled(),
+                                        reattached = container_id_hint.is_some(),
+                                        "Started persistent container session"
+                                    );
+                                    s
+                                }
+                                Err(RuntimeError::Passthrough) => {
+                                    warn!(
+                                        stage = "passthrough_invoked",
+                                        call_id = %id_for_task,
+                                        "Passthrough runtime received an execute() call; \
+                                         this indicates a misconfiguration in chat.rs registration"
+                                    );
+                                    let _ =
+                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = result_tx.send(Err(ToolError::ExecutionFailed(
+                                        "shell runtime is configured for passthrough but \
+                                         executor was invoked"
+                                            .into(),
+                                    )));
+                                    return;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        stage = "session_start_failed",
+                                        call_id = %id_for_task,
+                                        error = %e,
+                                        "Failed to start shell session"
+                                    );
+                                    let _ =
+                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = result_tx
+                                        .send(Err(ToolError::ExecutionFailed(e.to_string())));
+                                    return;
+                                }
+                            };
+                            let cid = session.container_id.clone();
+                            let (arc, displaced) = registry.insert(cid, session);
+                            if let Some(prev) = displaced {
+                                warn!(
+                                    stage = "container_registry_race",
+                                    call_id = %id_for_task,
+                                    "Two concurrent requests booted a VM under the same \
+                                     container_id; the displaced session will be terminated \
+                                     when its Arc is dropped"
+                                );
+                                // Drop the displaced Arc explicitly so
+                                // any in-flight readers finish, then
+                                // its `ContainerSession::drop`
+                                // detaches the terminate task.
+                                drop(prev);
+                            }
+                            arc
+                        }
+                    };
+                    *handle_slot = Some(resolved.clone());
+                    resolved
                 }
-                Err(e) => {
-                    error!(
-                        stage = "session_start_failed",
-                        call_id = %id_for_task,
-                        error = %e,
-                        "Failed to start shell session"
-                    );
-                    let _ = event_tx.send(format_completed(&id_for_task, 0, -1)).await;
-                    let _ = result_tx.send(Err(ToolError::ExecutionFailed(e.to_string())));
-                    return;
-                }
             };
+
+            // Hold the per-session lock for the duration of:
+            // input-file staging → exec → capture. Concurrent shell
+            // calls (within this response OR across responses sharing
+            // the container) queue behind this; one VM, one in-flight
+            // command.
+            let session_guard = session_arc.lock().await;
+            let session: &ContainerSession = &session_guard;
+
+            // Drain any `input_file` parts the pipeline staged for us
+            // and write them into /mnt/data before the model's command
+            // runs. Only fires on the first execute() call per
+            // executor; subsequent calls see `None`.
+            let pending = {
+                let mut p = pending_input_files.lock().await;
+                p.take()
+            };
+            if let Some(files) = pending {
+                let file_count = files.len();
+                match session.ingest_user_files(files).await {
+                    Ok(refs) => {
+                        if !refs.is_empty() {
+                            debug!(
+                                stage = "input_files_staged",
+                                call_id = %id_for_task,
+                                count = refs.len(),
+                                "Staged input_file parts into /mnt/data"
+                            );
+                        }
+                        for r in &refs {
+                            let _ = event_tx.send(format_file_created(&id_for_task, 0, r)).await;
+                        }
+                        // Mirror into captured_files so the very first
+                        // assistant message picks them up in
+                        // annotations, even if the shell command
+                        // itself produces no further output.
+                        let mut guard =
+                            captured_files.lock().expect("captured_files lock poisoned");
+                        for r in refs {
+                            guard.insert(r.path.clone(), r);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            stage = "input_files_staging_failed",
+                            call_id = %id_for_task,
+                            count = file_count,
+                            error = %e,
+                            "Failed to stage one or more input_file parts; \
+                             continuing with the shell command anyway"
+                        );
+                    }
+                }
+            }
 
             let exec = match session
                 .exec(ExecRequest {
@@ -475,7 +695,6 @@ impl ServerExecutedTool for ShellExecutor {
                         "Failed to exec shell command"
                     );
                     let _ = event_tx.send(format_completed(&id_for_task, 0, -1)).await;
-                    let _ = session.terminate().await;
                     let _ = result_tx.send(Err(ToolError::ExecutionFailed(e.to_string())));
                     return;
                 }
@@ -493,7 +712,7 @@ impl ServerExecutedTool for ShellExecutor {
             let mut stdout_buf = String::new();
             let mut stderr_buf = String::new();
             let mut final_exit: i32 = 0;
-            let mut output = exec.output;
+            let mut output = exec.handle.output;
             let mut client_disconnected = false;
             loop {
                 tokio::select! {
@@ -539,10 +758,44 @@ impl ServerExecutedTool for ShellExecutor {
                 }
             }
 
+            // Snapshot /mnt/data to detect any files the command
+            // produced. Only runs when the runtime supports file_io
+            // and the operator hasn't disabled the feature. Errors
+            // are surfaced as warnings — they don't fail the shell
+            // call, since the command itself already ran.
+            let mut new_files: Vec<ContainerFileRef> = Vec::new();
+            if !client_disconnected {
+                match session.capture_changes().await {
+                    Ok(refs) => new_files = refs,
+                    Err(e) => warn!(
+                        stage = "capture_failed",
+                        call_id = %id_for_task,
+                        error = %e,
+                        "Failed to snapshot /mnt/data after exec"
+                    ),
+                }
+                for r in &new_files {
+                    let _ = event_tx.send(format_file_created(&id_for_task, 0, r)).await;
+                }
+            }
+
+            // Replace the global captured_files map for this response
+            // with the session's full tracked set (handles overwrites
+            // and deletions consistently with what the model sees).
+            let all_tracked = session.list_captured().await;
+            {
+                let mut guard = captured_files.lock().expect("captured_files lock poisoned");
+                guard.clear();
+                for r in all_tracked {
+                    guard.insert(r.path.clone(), r);
+                }
+            }
+
+            // Release the session lock before the cost-accounting and
+            // continuation-build work — those don't need the VM.
+            drop(session_guard);
+
             let duration_secs = start.elapsed().as_secs_f64();
-            // Always tear the session down whether we completed normally
-            // or aborted on client disconnect.
-            let _ = session.terminate().await;
 
             // Cost is billable regardless of how the session ended — we
             // ran the VM, the operator pays for the time.
@@ -634,12 +887,24 @@ impl ServerExecutedTool for ShellExecutor {
 
             // Build the continuation item — the model sees a single
             // text blob with combined stdout/stderr summary, head+tail
-            // truncated.
+            // truncated. When this command produced files, append a
+            // short manifest so the model can refer to them on its
+            // next turn (e.g. "I wrote /mnt/data/foo.csv").
+            let files_section = if new_files.is_empty() {
+                String::new()
+            } else {
+                let mut s = String::from("\noutput_files:\n");
+                for f in &new_files {
+                    s.push_str(&format!("- {} ({} bytes)\n", f.path, f.bytes));
+                }
+                s
+            };
             let combined = format!(
-                "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
+                "exit_code: {}\nstdout:\n{}\nstderr:\n{}{}",
                 final_exit,
                 trim_output(stdout_buf),
-                trim_output(stderr_buf)
+                trim_output(stderr_buf),
+                files_section,
             );
 
             let cont_item = ResponsesInputItem::FunctionCallOutput(FunctionCallOutput {
@@ -728,6 +993,91 @@ impl ServerExecutedTool for ShellExecutor {
             }
         }
     }
+
+    /// Inject `container_file_citation` annotations into output_text
+    /// `response.content_part.done` events using the captured-files
+    /// map populated by each `execute()` call.
+    fn transform_event(&self, event: Bytes) -> Bytes {
+        let captured: Vec<ContainerFileRef> = {
+            let guard = match self.captured_files.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if guard.is_empty() {
+                return event;
+            }
+            guard.values().cloned().collect()
+        };
+        inject_container_file_citations(&event, &captured)
+    }
+}
+
+/// Append `container_file_citation` annotations to any
+/// `response.content_part.done` event whose part is an `output_text`.
+/// Existing annotations on the part are preserved; we extend the
+/// `annotations` array rather than overwriting it.
+///
+/// Mirrors the file_search citation injector but uses a fixed file
+/// list rather than parsing markers out of the text.
+fn inject_container_file_citations(chunk: &[u8], files: &[ContainerFileRef]) -> Bytes {
+    if files.is_empty() {
+        return Bytes::copy_from_slice(chunk);
+    }
+    let Ok(chunk_str) = std::str::from_utf8(chunk) else {
+        return Bytes::copy_from_slice(chunk);
+    };
+
+    let mut output = String::new();
+    for line in chunk_str.split_inclusive('\n') {
+        if let Some(data) = line.strip_prefix("data:") {
+            let data_trimmed = data.trim();
+            if data_trimmed.is_empty() || data_trimmed == "[DONE]" {
+                output.push_str(line);
+                continue;
+            }
+            if let Ok(mut json) = serde_json::from_str::<Value>(data_trimmed) {
+                let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if event_type == "response.content_part.done"
+                    && let Some(part) = json.get_mut("part")
+                    && let Some(part_obj) = part.as_object_mut()
+                    && part_obj.get("type").and_then(|t| t.as_str()) == Some("output_text")
+                {
+                    let mut existing: Vec<Value> = part_obj
+                        .get("annotations")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    for f in files {
+                        let ann = ResponsesAnnotation::ContainerFileCitation {
+                            container_id: f.container_id.clone(),
+                            file_id: f.file_id.clone(),
+                            filename: f.filename.clone(),
+                            start_index: 0,
+                            end_index: 0,
+                            index: None,
+                        };
+                        if let Ok(v) = serde_json::to_value(&ann) {
+                            existing.push(v);
+                        }
+                    }
+                    part_obj.insert("annotations".to_string(), Value::Array(existing));
+                    debug!(
+                        stage = "container_annotations_injected",
+                        count = files.len(),
+                        "Injected container_file_citation annotations"
+                    );
+                }
+                if let Ok(json_str) = serde_json::to_string(&json) {
+                    output.push_str("data: ");
+                    output.push_str(&json_str);
+                    output.push_str("\n\n");
+                    continue;
+                }
+            }
+        }
+        output.push_str(line);
+    }
+    Bytes::from(output)
 }
 
 #[cfg(test)]
@@ -779,5 +1129,111 @@ mod tests {
         assert!(trimmed.contains("chars truncated"));
         assert!(trimmed.starts_with("aaa"));
         assert!(trimmed.ends_with("aaa"));
+    }
+
+    fn sample_file(file_id: &str, filename: &str, path: &str) -> ContainerFileRef {
+        ContainerFileRef {
+            container_id: "cntr_test".to_string(),
+            file_id: file_id.to_string(),
+            filename: filename.to_string(),
+            path: path.to_string(),
+            bytes: 42,
+            content_type: Some("text/csv".to_string()),
+            source: crate::api_types::responses::ContainerFileSource::Assistant,
+        }
+    }
+
+    #[test]
+    fn injects_container_file_citation_on_content_part_done() {
+        let files = vec![sample_file("cfile_abc", "out.csv", "/mnt/data/out.csv")];
+        let event = b"data: {\"type\":\"response.content_part.done\",\"part\":{\"type\":\"output_text\",\"text\":\"Done\"}}\n\n";
+        let out = inject_container_file_citations(event, &files);
+        let s = std::str::from_utf8(&out).unwrap();
+        // Pull the JSON payload back out and re-parse.
+        let json_str = s.trim().strip_prefix("data: ").unwrap();
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        let anns = v
+            .get("part")
+            .and_then(|p| p.get("annotations"))
+            .and_then(|a| a.as_array())
+            .expect("annotations array");
+        assert_eq!(anns.len(), 1);
+        let ann = &anns[0];
+        assert_eq!(
+            ann.get("type").and_then(|t| t.as_str()),
+            Some("container_file_citation")
+        );
+        assert_eq!(
+            ann.get("file_id").and_then(|f| f.as_str()),
+            Some("cfile_abc")
+        );
+        assert_eq!(
+            ann.get("filename").and_then(|f| f.as_str()),
+            Some("out.csv")
+        );
+        assert_eq!(
+            ann.get("container_id").and_then(|c| c.as_str()),
+            Some("cntr_test")
+        );
+    }
+
+    #[test]
+    fn preserves_existing_annotations_on_content_part_done() {
+        let files = vec![sample_file("cfile_a", "a.csv", "/mnt/data/a.csv")];
+        let event = b"data: {\"type\":\"response.content_part.done\",\"part\":{\"type\":\"output_text\",\"text\":\"hi\",\"annotations\":[{\"type\":\"file_citation\",\"file_id\":\"file_existing\",\"filename\":\"prior.txt\",\"index\":0}]}}\n\n";
+        let out = inject_container_file_citations(event, &files);
+        let s = std::str::from_utf8(&out).unwrap();
+        let json_str = s.trim().strip_prefix("data: ").unwrap();
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        let anns = v["part"]["annotations"].as_array().unwrap();
+        assert_eq!(anns.len(), 2, "existing annotation should be preserved");
+        assert!(
+            anns.iter()
+                .any(|a| a["type"] == "file_citation" && a["file_id"] == "file_existing")
+        );
+        assert!(
+            anns.iter()
+                .any(|a| a["type"] == "container_file_citation" && a["file_id"] == "cfile_a")
+        );
+    }
+
+    #[test]
+    fn leaves_unrelated_events_untouched() {
+        let files = vec![sample_file("cfile_x", "x", "/mnt/data/x")];
+        let event = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n";
+        let out = inject_container_file_citations(event, &files);
+        // No content_part.done → no annotations injected; passes through
+        // semantically. We deserialize + reserialize so byte-equality
+        // isn't guaranteed, but the parsed shape must match.
+        let s = std::str::from_utf8(&out).unwrap();
+        let json_str = s.trim().strip_prefix("data: ").unwrap();
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(v["type"], "response.output_text.delta");
+        assert_eq!(v["delta"], "hello");
+        assert!(v.get("annotations").is_none());
+    }
+
+    #[test]
+    fn no_op_when_no_captured_files() {
+        let event = b"data: {\"type\":\"response.content_part.done\",\"part\":{\"type\":\"output_text\",\"text\":\"hi\"}}\n\n";
+        let out = inject_container_file_citations(event, &[]);
+        // Pass-through: returned bytes equal the input bytes verbatim.
+        assert_eq!(&out[..], &event[..]);
+    }
+
+    #[test]
+    fn file_created_event_has_expected_fields() {
+        let f = sample_file("cfile_abc", "out.csv", "/mnt/data/out.csv");
+        let bytes = format_file_created("call_1", 0, &f);
+        let s = std::str::from_utf8(&bytes).unwrap();
+        let json_str = s.trim().strip_prefix("data: ").unwrap();
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(v["type"], "response.shell_call.file_created");
+        assert_eq!(v["item_id"], "call_1");
+        assert_eq!(v["file_id"], "cfile_abc");
+        assert_eq!(v["filename"], "out.csv");
+        assert_eq!(v["path"], "/mnt/data/out.csv");
+        assert_eq!(v["container_id"], "cntr_test");
+        assert_eq!(v["source"], "assistant");
     }
 }

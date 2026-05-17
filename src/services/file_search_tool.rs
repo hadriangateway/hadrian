@@ -610,6 +610,7 @@ impl CitationTracker {
             ResponsesAnnotation::FileCitation { index, .. } => *index,
             ResponsesAnnotation::UrlCitation { start_index, .. } => *start_index,
             ResponsesAnnotation::FilePath { index, .. } => *index,
+            ResponsesAnnotation::ContainerFileCitation { start_index, .. } => *start_index,
         });
 
         annotations
