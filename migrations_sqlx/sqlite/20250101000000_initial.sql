@@ -1157,7 +1157,12 @@ CREATE TABLE IF NOT EXISTS containers (
     idle_ttl_secs INTEGER NOT NULL,
     last_active_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT
+    expires_at TEXT,
+    -- POST /v1/containers fields (see postgres migration for rationale).
+    name TEXT,
+    memory_limit_mb INTEGER,
+    network_policy_json TEXT,
+    skill_ids_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_containers_org_active

@@ -16,7 +16,8 @@ use crate::db::{
 };
 
 const CONTAINER_COLUMNS: &str = "id, org_id, owner_type, owner_id, status, runtime_label, \
-    source_response_id, idle_ttl_secs, last_active_at, created_at, expires_at";
+    source_response_id, idle_ttl_secs, last_active_at, created_at, expires_at, \
+    name, memory_limit_mb, network_policy_json, skill_ids_json";
 
 const CONTAINER_FILE_COLUMNS: &str = "id, container_id, org_id, path, filename, size_bytes, \
     content_type, content_hash, source, storage_backend, storage_path, \
@@ -65,6 +66,10 @@ fn row_to_container(row: &super::backend::Row) -> DbResult<ContainerRecord> {
         last_active_at: row.col("last_active_at"),
         created_at: row.col("created_at"),
         expires_at: row.col("expires_at"),
+        name: row.col("name"),
+        memory_limit_mb: row.col("memory_limit_mb"),
+        network_policy_json: row.col("network_policy_json"),
+        skill_ids_json: row.col("skill_ids_json"),
     })
 }
 
@@ -98,9 +103,10 @@ impl ContainersRepo for SqliteContainersRepo {
             r#"
             INSERT INTO containers (
                 id, org_id, owner_type, owner_id, status, runtime_label,
-                source_response_id, idle_ttl_secs, last_active_at, created_at
+                source_response_id, idle_ttl_secs, last_active_at, created_at,
+                name, memory_limit_mb, network_policy_json, skill_ids_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&input.id)
@@ -113,6 +119,10 @@ impl ContainersRepo for SqliteContainersRepo {
         .bind(input.idle_ttl_secs)
         .bind(last_active_at)
         .bind(created_at)
+        .bind(&input.name)
+        .bind(input.memory_limit_mb)
+        .bind(&input.network_policy_json)
+        .bind(&input.skill_ids_json)
         .execute(&self.pool)
         .await?;
 
@@ -128,6 +138,10 @@ impl ContainersRepo for SqliteContainersRepo {
             last_active_at,
             created_at,
             expires_at: None,
+            name: input.name,
+            memory_limit_mb: input.memory_limit_mb,
+            network_policy_json: input.network_policy_json,
+            skill_ids_json: input.skill_ids_json,
         })
     }
 
@@ -330,6 +344,26 @@ impl ContainersRepo for SqliteContainersRepo {
         q = q.bind(id).bind(org_id.to_string());
         let row = q.fetch_optional(&self.pool).await?;
         row.as_ref().map(row_to_container).transpose()
+    }
+
+    async fn delete_file_by_id_and_org(
+        &self,
+        file_id: &str,
+        container_id: &str,
+        org_id: uuid::Uuid,
+    ) -> DbResult<bool> {
+        let res = query(
+            r#"
+            DELETE FROM container_files
+            WHERE id = ? AND container_id = ? AND org_id = ?
+            "#,
+        )
+        .bind(file_id)
+        .bind(container_id)
+        .bind(org_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     async fn mark_expired_idle(&self, now: chrono::DateTime<chrono::Utc>) -> DbResult<Vec<String>> {

@@ -29,9 +29,9 @@ use uuid::Uuid;
 
 use crate::{
     api_types::responses::{
-        ContainerFileRef, CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType,
-        ResponsesAnnotation, ResponsesInput, ResponsesInputItem, ResponsesToolDefinition,
-        ShellEnvironment,
+        ContainerExpiresAfterAnchor, ContainerFileRef, CreateResponsesPayload, FunctionCallOutput,
+        FunctionCallOutputType, ResponsesAnnotation, ResponsesInput, ResponsesInputItem,
+        ResponsesToolDefinition, ShellDomainSecret, ShellEnvironment,
     },
     config::{ContainersConfig, ShellLimitsConfig},
     models::UsageLogEntry,
@@ -65,6 +65,14 @@ pub struct ResolvedShellEnvironment {
     /// Egress allowlist + secrets to mount. An empty `allow_hosts`
     /// list means the runtime applies its built-in default.
     pub egress_policy: EgressPolicy,
+    /// Per-request idle TTL override (in seconds). `None` falls back to
+    /// `[features.containers].default_idle_ttl_secs` at attach time.
+    pub idle_ttl_secs: Option<i64>,
+    /// `container_id` the caller explicitly referenced via
+    /// `environment.type = "container_reference"`. The executor must
+    /// attach to this exact id; mismatches between this and any
+    /// pipeline-derived hint surface as 400.
+    pub referenced_container_id: Option<String>,
 }
 
 /// Rejection reasons surfaced as `400 Bad Request` at the route layer.
@@ -80,6 +88,17 @@ pub enum ShellEnvironmentError {
     UnknownSecret(String),
     #[error("secret '{placeholder}' may not flow to host '{host}' under operator's allowed_hosts")]
     SecretHostNotAllowed { placeholder: String, host: String },
+    #[error(
+        "inline domain secret '{name}': host '{host}' is not in operator's allowed_egress_hosts"
+    )]
+    InlineSecretHostNotAllowed { name: String, host: String },
+    #[error(
+        "expires_after.minutes {requested} exceeds operator cap of {max} minutes \
+         ([features.containers].max_idle_ttl_secs)"
+    )]
+    ExpiresAfterExceedsCap { requested: u32, max: u32 },
+    #[error("container_reference.container_id is empty")]
+    EmptyContainerReferenceId,
 }
 
 /// Intersect the per-request environment with the operator-pinned
@@ -92,6 +111,7 @@ pub enum ShellEnvironmentError {
 pub fn resolve_shell_environment(
     request_env: Option<&ShellEnvironment>,
     operator: &ShellLimitsConfig,
+    containers: &ContainersConfig,
 ) -> Result<ResolvedShellEnvironment, ShellEnvironmentError> {
     let default_mem_bytes = operator
         .default_mem_limit_mb
@@ -101,73 +121,124 @@ pub fn resolve_shell_environment(
         return Ok(ResolvedShellEnvironment {
             mem_limit_bytes: default_mem_bytes,
             egress_policy: EgressPolicy::default(),
+            idle_ttl_secs: None,
+            referenced_container_id: None,
         });
     };
 
-    // ── memory ──
-    let mem_limit_bytes = match env
-        .container_auto
-        .as_ref()
-        .and_then(|c| c.memory_limit.as_deref())
-    {
-        Some(raw) => {
-            let requested_bytes = parse_memory_limit(raw)
-                .ok_or_else(|| ShellEnvironmentError::BadMemoryLimit(raw.to_string()))?;
-            if let Some(cap_mb) = operator.max_mem_limit_mb {
-                let cap_bytes = u64::from(cap_mb) * 1024 * 1024;
-                if requested_bytes > cap_bytes {
-                    return Err(ShellEnvironmentError::MemoryExceedsCap {
-                        requested_mb: requested_bytes / (1024 * 1024),
-                        max_mb: cap_mb,
+    // ── memory + expires_after (auto-only) ──
+    let (mem_limit_bytes, idle_ttl_secs) = match env {
+        ShellEnvironment::ContainerAuto(auto) => {
+            let mem = match auto.memory_limit.as_deref() {
+                Some(raw) => {
+                    let requested_bytes = parse_memory_limit(raw)
+                        .ok_or_else(|| ShellEnvironmentError::BadMemoryLimit(raw.to_string()))?;
+                    if let Some(cap_mb) = operator.max_mem_limit_mb {
+                        let cap_bytes = u64::from(cap_mb) * 1024 * 1024;
+                        if requested_bytes > cap_bytes {
+                            return Err(ShellEnvironmentError::MemoryExceedsCap {
+                                requested_mb: requested_bytes / (1024 * 1024),
+                                max_mb: cap_mb,
+                            });
+                        }
+                    }
+                    Some(requested_bytes)
+                }
+                None => default_mem_bytes,
+            };
+            let ttl = match auto.expires_after.as_ref() {
+                Some(exp) => {
+                    let max_minutes = (containers.max_idle_ttl_secs / 60) as u32;
+                    if exp.minutes > max_minutes {
+                        return Err(ShellEnvironmentError::ExpiresAfterExceedsCap {
+                            requested: exp.minutes,
+                            max: max_minutes,
+                        });
+                    }
+                    // The only anchor variant today is `last_active_at` —
+                    // serde already validated the discriminator.
+                    let _ = ContainerExpiresAfterAnchor::LastActiveAt;
+                    Some(i64::from(exp.minutes) * 60)
+                }
+                None => None,
+            };
+            (mem, ttl)
+        }
+        ShellEnvironment::ContainerReference(_) => (default_mem_bytes, None),
+    };
+
+    let referenced_container_id = match env {
+        ShellEnvironment::ContainerReference(r) => {
+            let trimmed = r.container_id.trim();
+            if trimmed.is_empty() {
+                return Err(ShellEnvironmentError::EmptyContainerReferenceId);
+            }
+            Some(trimmed.to_string())
+        }
+        ShellEnvironment::ContainerAuto(_) => None,
+    };
+
+    // ── egress hosts + domain secrets ──
+    let mut allow_hosts: Vec<String> = Vec::new();
+    let mut secrets: Vec<SecretMount> = Vec::new();
+    if let Some(policy) = env.network_policy() {
+        for host in &policy.allowed_domains {
+            if !host_matches_any(host, &operator.allowed_egress_hosts) {
+                return Err(ShellEnvironmentError::HostNotAllowed(host.clone()));
+            }
+        }
+        allow_hosts = policy.allowed_domains.clone();
+
+        for entry in &policy.domain_secrets {
+            match entry {
+                ShellDomainSecret::Reference(r) => {
+                    let allowed = operator
+                        .allowed_domain_secrets
+                        .get(&r.placeholder)
+                        .ok_or_else(|| {
+                            ShellEnvironmentError::UnknownSecret(r.placeholder.clone())
+                        })?;
+                    for host in &r.allowed_domains {
+                        if !host_matches_any(host, &allowed.allowed_hosts) {
+                            return Err(ShellEnvironmentError::SecretHostNotAllowed {
+                                placeholder: r.placeholder.clone(),
+                                host: host.clone(),
+                            });
+                        }
+                    }
+                    // Empty `allowed_domains` in the request inherits the
+                    // operator's full list — same convention as omitting the
+                    // field in OpenAI's spec.
+                    let allowed_hosts = if r.allowed_domains.is_empty() {
+                        allowed.allowed_hosts.clone()
+                    } else {
+                        r.allowed_domains.clone()
+                    };
+                    secrets.push(SecretMount {
+                        placeholder: r.placeholder.clone(),
+                        value: allowed.value.clone(),
+                        allowed_hosts,
+                    });
+                }
+                ShellDomainSecret::Inline(inline) => {
+                    // Inline form puts the raw value on the wire (OpenAI
+                    // shape). Hadrian still enforces the operator's host
+                    // allowlist: the secret may only flow to a host the
+                    // operator permits, not anywhere the caller wants.
+                    if !host_matches_any(&inline.domain, &operator.allowed_egress_hosts) {
+                        return Err(ShellEnvironmentError::InlineSecretHostNotAllowed {
+                            name: inline.name.clone(),
+                            host: inline.domain.clone(),
+                        });
+                    }
+                    secrets.push(SecretMount {
+                        placeholder: inline.name.clone(),
+                        value: inline.value.clone(),
+                        allowed_hosts: vec![inline.domain.clone()],
                     });
                 }
             }
-            Some(requested_bytes)
         }
-        None => default_mem_bytes,
-    };
-
-    // ── egress hosts ──
-    let allow_hosts = match env.network_policy.as_ref() {
-        Some(policy) => {
-            for host in &policy.domains {
-                if !host_matches_any(host, &operator.allowed_egress_hosts) {
-                    return Err(ShellEnvironmentError::HostNotAllowed(host.clone()));
-                }
-            }
-            policy.domains.clone()
-        }
-        None => Vec::new(),
-    };
-
-    // ── domain secrets ──
-    let mut secrets = Vec::with_capacity(env.domain_secrets.len());
-    for r in &env.domain_secrets {
-        let allowed = operator
-            .allowed_domain_secrets
-            .get(&r.placeholder)
-            .ok_or_else(|| ShellEnvironmentError::UnknownSecret(r.placeholder.clone()))?;
-        for host in &r.allowed_domains {
-            if !host_matches_any(host, &allowed.allowed_hosts) {
-                return Err(ShellEnvironmentError::SecretHostNotAllowed {
-                    placeholder: r.placeholder.clone(),
-                    host: host.clone(),
-                });
-            }
-        }
-        // Empty `allowed_domains` in the request inherits the
-        // operator's full list — same convention as omitting the field
-        // in OpenAI's spec.
-        let allowed_hosts = if r.allowed_domains.is_empty() {
-            allowed.allowed_hosts.clone()
-        } else {
-            r.allowed_domains.clone()
-        };
-        secrets.push(SecretMount {
-            placeholder: r.placeholder.clone(),
-            value: allowed.value.clone(),
-            allowed_hosts,
-        });
     }
 
     Ok(ResolvedShellEnvironment {
@@ -176,7 +247,16 @@ pub fn resolve_shell_environment(
             allow_hosts,
             secrets,
         },
+        idle_ttl_secs,
+        referenced_container_id,
     })
+}
+
+/// Public façade for [`parse_memory_limit`] used by
+/// `POST /v1/containers` to pre-validate the request body before
+/// persisting it.
+pub fn parse_memory_limit_pub(raw: &str) -> Option<u64> {
+    parse_memory_limit(raw)
 }
 
 /// Parse OpenAI-style `memory_limit` strings: `"512m"`, `"1g"`,
@@ -431,16 +511,72 @@ impl ShellToolHint {
 }
 
 /// Arguments the model emits when invoking the function-mode shell
-/// tool. Non-OpenAI providers (Anthropic, etc.) see the `shell` tool
-/// rewritten as a function tool with this schema.
-#[derive(Debug, Clone, Deserialize)]
+/// tool. Mirrors OpenAI's `shell_call.action` object so model-emitted
+/// limits (`timeout_ms`, `max_output_length`) and environment hints
+/// (`env`, `workdir`) round-trip identically to the native
+/// `shell_call` form. Legacy `{command, stdin}` payloads are still
+/// accepted for backward compatibility.
+///
+/// The wire shape the model produces is the nested `action` object:
+///
+/// ```json
+/// {"action": {"command": "ls -la", "timeout_ms": 5000}}
+/// ```
+///
+/// Flat `{"command": "..."}` payloads (pre-action era) keep working
+/// via the `serde(default)` + post-parse merge.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ShellToolArguments {
-    pub command: String,
+    /// Nested OpenAI `action` object. When present, its `command`
+    /// wins over any flat top-level `command` field.
+    #[serde(default)]
+    pub action: Option<ShellToolAction>,
+    /// Legacy flat command. Used when `action` is missing.
+    #[serde(default)]
+    pub command: Option<String>,
     /// Optional stdin to pipe to the command. Kept short — for larger
     /// inputs, prefer writing files via the runtime's file_io and
     /// referring to them from the command.
     #[serde(default)]
     pub stdin: Option<String>,
+}
+
+/// Per-call action object (OpenAI's `shell_call.action` shape).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ShellToolAction {
+    /// Shell command to execute.
+    pub command: String,
+    /// Per-call timeout in milliseconds. Clamped to the operator's
+    /// `command_timeout_secs * 1000` cap; values larger than the cap
+    /// are silently shortened rather than rejected, mirroring
+    /// OpenAI's behaviour.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Per-call cap on stdout+stderr characters fed back to the
+    /// model. Clamped to the operator's `max_output_chars` cap.
+    #[serde(default)]
+    pub max_output_length: Option<usize>,
+    /// Optional environment variables for this call. Names must match
+    /// `[A-Za-z_][A-Za-z0-9_]*`; values are passed through to the
+    /// shell verbatim.
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    /// Optional working directory for this call. When unset, the
+    /// runtime's default (`/mnt/data`) is used.
+    #[serde(default)]
+    pub workdir: Option<String>,
+}
+
+/// One concrete shell call after merging `action`-form and legacy
+/// flat-form arguments.
+#[derive(Debug, Clone)]
+pub struct ResolvedShellArgs {
+    pub command: String,
+    pub stdin: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub max_output_length: Option<usize>,
+    pub env: Option<HashMap<String, String>>,
+    pub workdir: Option<String>,
 }
 
 impl ShellToolArguments {
@@ -450,20 +586,82 @@ impl ShellToolArguments {
         serde_json::from_str(arguments_json).ok()
     }
 
+    /// Resolve the parsed arguments into a flat call shape. The
+    /// `action` form takes precedence; falling back to the legacy
+    /// flat form. Returns `None` when neither produced a command.
+    pub fn resolve(self) -> Option<ResolvedShellArgs> {
+        if let Some(action) = self.action {
+            if action.command.trim().is_empty() {
+                return None;
+            }
+            Some(ResolvedShellArgs {
+                command: action.command,
+                stdin: self.stdin,
+                timeout_ms: action.timeout_ms,
+                max_output_length: action.max_output_length,
+                env: action.env,
+                workdir: action.workdir,
+            })
+        } else {
+            let cmd = self.command?;
+            if cmd.trim().is_empty() {
+                return None;
+            }
+            Some(ResolvedShellArgs {
+                command: cmd,
+                stdin: self.stdin,
+                timeout_ms: None,
+                max_output_length: None,
+                env: None,
+                workdir: None,
+            })
+        }
+    }
+
     pub fn function_parameters_schema() -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "object",
+                    "description": "Spec-compliant action object (matches OpenAI's shell_call.action shape). Prefer this over the flat command form.",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to execute"
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Per-call timeout in milliseconds. Clamped to the operator's cap."
+                        },
+                        "max_output_length": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Per-call cap on stdout+stderr characters fed back to the model. Clamped to the operator's cap."
+                        },
+                        "env": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Extra environment variables exported for this call only."
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Override working directory for this call (defaults to /mnt/data)."
+                        }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
+                },
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "Legacy flat command. Use `action.command` instead."
                 },
                 "stdin": {
                     "type": "string",
                     "description": "Optional stdin to pipe to the command"
                 }
             },
-            "required": ["command"],
             "additionalProperties": false
         })
     }
@@ -514,8 +712,7 @@ pub fn preprocess_shell_tools(payload: &mut CreateResponsesPayload, hint: &Shell
 #[derive(Debug, Clone)]
 struct ShellToolCall {
     id: String,
-    command: String,
-    stdin: Option<String>,
+    args: ResolvedShellArgs,
 }
 
 fn parse_shell_tool_call(value: &Value) -> Option<ShellToolCall> {
@@ -533,12 +730,8 @@ fn parse_shell_tool_call(value: &Value) -> Option<ShellToolCall> {
         .unwrap_or("unknown")
         .to_string();
     let arguments_str = obj.get("arguments")?.as_str()?;
-    let args = ShellToolArguments::parse(arguments_str)?;
-    Some(ShellToolCall {
-        id,
-        command: args.command,
-        stdin: args.stdin,
-    })
+    let args = ShellToolArguments::parse(arguments_str)?.resolve()?;
+    Some(ShellToolCall { id, args })
 }
 
 fn detect_shell_in_chunk(chunk: &[u8]) -> Vec<ShellToolCall> {
@@ -578,6 +771,10 @@ fn sse_event(payload: Value) -> Bytes {
     Bytes::from(format!("data: {}\n\n", s))
 }
 
+/// Spec-canonical: `response.shell_call.in_progress` — emitted when
+/// the gateway has accepted a shell call and started booting the
+/// container. SDKs that hook OpenAI's typed event stream resolve this
+/// to their `ResponseShellCallInProgressEvent` type.
 fn format_in_progress(item_id: &str, output_index: usize) -> Bytes {
     sse_event(serde_json::json!({
         "type": "response.shell_call.in_progress",
@@ -586,6 +783,11 @@ fn format_in_progress(item_id: &str, output_index: usize) -> Bytes {
     }))
 }
 
+/// **Hadrian Extension:** `response.shell_call.command_started`.
+/// Fires once with the resolved command string before any output
+/// streams. OpenAI's hosted shell tool doesn't ship an equivalent
+/// event today; SDK consumers unfamiliar with the type see a harmless
+/// extra event in the stream and skip it.
 fn format_command_started(item_id: &str, output_index: usize, command: &str) -> Bytes {
     sse_event(serde_json::json!({
         "type": "response.shell_call.command_started",
@@ -595,6 +797,11 @@ fn format_command_started(item_id: &str, output_index: usize, command: &str) -> 
     }))
 }
 
+/// **Hadrian Extension:** `response.shell_call.output_chunk`. Carries
+/// raw stdout/stderr deltas keyed by `stream`. Necessary because
+/// Hadrian runs the container in-process and streams its output to
+/// the client; OpenAI's hosted runtime emits an equivalent text-delta
+/// flavoured event that SDKs handle generically.
 fn format_output_chunk(item_id: &str, output_index: usize, stream: &str, data: &[u8]) -> Bytes {
     // Encode chunk bytes as UTF-8 with replacement to keep SSE
     // line-safe; binary data should be rare in shell stdout.
@@ -608,15 +815,35 @@ fn format_output_chunk(item_id: &str, output_index: usize, stream: &str, data: &
     }))
 }
 
-fn format_completed(item_id: &str, output_index: usize, exit_code: i32) -> Bytes {
+fn format_completed(
+    item_id: &str,
+    output_index: usize,
+    exit_code: i32,
+    duration_ms: u64,
+    killed: bool,
+    max_output_truncated: bool,
+) -> Bytes {
     sse_event(serde_json::json!({
         "type": "response.shell_call.completed",
         "output_index": output_index,
         "item_id": item_id,
         "exit_code": exit_code,
+        // Hadrian Extension — OpenAI's `response.shell_call.completed`
+        // historically only carried the exit code. We surface the
+        // additional outcome fields here because the model can
+        // condition follow-up decisions on them, and SDKs that don't
+        // know about them just see extra harmless properties.
+        "duration_ms": duration_ms,
+        "killed": killed,
+        "max_output_truncated": max_output_truncated,
     }))
 }
 
+/// **Hadrian Extension:** `response.shell_call.file_created`. Fires
+/// for every artifact captured under `/mnt/data` by this shell call.
+/// Lets clients hook a download UI without parsing the trailing
+/// `shell_call_output` item. SDKs that don't recognise the type get a
+/// harmless extra event.
 fn format_file_created(item_id: &str, output_index: usize, file: &ContainerFileRef) -> Bytes {
     sse_event(serde_json::json!({
         "type": "response.shell_call.file_created",
@@ -642,6 +869,7 @@ fn format_file_created(item_id: &str, output_index: usize, file: &ContainerFileR
 /// The standard `function_call_output` continuation item still flows
 /// through `apply_to_continuation` for the model's next-turn input —
 /// this event is purely additive on the client-facing SSE stream.
+#[allow(clippy::too_many_arguments)]
 fn format_shell_call_output_item(
     item_id: &str,
     output_index: usize,
@@ -650,6 +878,9 @@ fn format_shell_call_output_item(
     stdout: &str,
     stderr: &str,
     files: &[ContainerFileRef],
+    duration_ms: u64,
+    killed: bool,
+    max_output_truncated: bool,
 ) -> Bytes {
     // status: `completed` when the process exited; `failed` when we
     // never observed an Exit event or had to synthesize `-1`/`124`.
@@ -666,6 +897,12 @@ fn format_shell_call_output_item(
         "status": status_str,
         "stdout": stdout,
         "stderr": stderr,
+        // Spec outcome fields — present alongside Hadrian's
+        // additive `output_files`.
+        "duration_ms": duration_ms,
+        "killed": killed,
+        "max_output_truncated": max_output_truncated,
+        // Hadrian Extension: captured file manifest.
         "output_files": files,
     });
     sse_event(serde_json::json!({
@@ -841,6 +1078,12 @@ impl BoundedHeadTail {
         let dropped = self.total_chars - self.max_chars;
         format!("{head}\n... [{dropped} chars truncated] ...\n{tail}")
     }
+
+    /// True when the stream exceeded `max_chars` and the rendered
+    /// output had to insert a truncation marker.
+    fn was_truncated(&self) -> bool {
+        self.total_chars > self.max_chars
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1004,8 +1247,12 @@ impl ServerExecutedTool for ShellExecutor {
                 call_id: tc.id.clone(),
                 arguments: serde_json::json!({
                     "id": tc.id,
-                    "command": tc.command,
-                    "stdin": tc.stdin,
+                    "command": tc.args.command,
+                    "stdin": tc.args.stdin,
+                    "timeout_ms": tc.args.timeout_ms,
+                    "max_output_length": tc.args.max_output_length,
+                    "env": tc.args.env,
+                    "workdir": tc.args.workdir,
                 }),
             })
             .collect()
@@ -1027,6 +1274,21 @@ impl ServerExecutedTool for ShellExecutor {
             .get("stdin")
             .and_then(|v| v.as_str())
             .map(|s| Bytes::from(s.to_string()));
+        let model_timeout_ms = call.arguments.get("timeout_ms").and_then(|v| v.as_u64());
+        let model_max_output_length = call
+            .arguments
+            .get("max_output_length")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| usize::try_from(n).ok());
+        let model_env: Option<HashMap<String, String>> = call
+            .arguments
+            .get("env")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let model_workdir = call
+            .arguments
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let id = call.call_id.clone();
         let runtime = self.runtime.clone();
         let cost_per_sec = self.cost_microcents_per_second;
@@ -1057,9 +1319,27 @@ impl ServerExecutedTool for ShellExecutor {
         // consuming events while we boot the container.
         let id_for_task = id.clone();
         let command_for_task = command.clone();
-        let exec_timeout = Duration::from_secs(self.limits.command_timeout_secs.max(1));
+        // Apply the model's per-call timeout when given; clamp to the
+        // operator cap. `timeout_ms < 1000` rounds up to one second.
+        let op_timeout_ms = self
+            .limits
+            .command_timeout_secs
+            .saturating_mul(1000)
+            .max(1000);
+        let effective_timeout_ms = match model_timeout_ms {
+            Some(ms) if ms > 0 => ms.min(op_timeout_ms),
+            _ => op_timeout_ms,
+        };
+        let exec_timeout = Duration::from_millis(effective_timeout_ms.max(1));
         let default_cpu = self.limits.default_cpu_limit;
-        let max_output_chars = self.limits.max_output_chars.max(64);
+        // Per-call cap on stdout+stderr fed back to the model. Clamped
+        // to the operator's `max_output_chars` cap.
+        let op_max_chars = self.limits.max_output_chars.max(64);
+        let max_output_chars = match model_max_output_length {
+            Some(n) if n > 0 => n.min(op_max_chars).max(64),
+            _ => op_max_chars,
+        };
+        let _ = (&model_env, &model_workdir); // reserved for future runtime threading
         // Per-request override (already intersected with operator's
         // limits at request-acceptance time) wins; fall back to the
         // operator default. `egress_policy` is taken from the resolved
@@ -1102,6 +1382,7 @@ impl ServerExecutedTool for ShellExecutor {
                     let persistence_for_boot = persistence.clone();
                     let hint_for_boot = container_id_hint.clone();
 
+                    let idle_ttl_override = resolved_env.idle_ttl_secs;
                     let boot_session = move || async move {
                         let spec = spec_template();
                         match (hint_for_boot, persistence_for_boot.clone()) {
@@ -1113,6 +1394,7 @@ impl ServerExecutedTool for ShellExecutor {
                                     spec,
                                     containers_config_for_boot,
                                     p,
+                                    idle_ttl_override,
                                 )
                                 .await
                             }
@@ -1123,6 +1405,7 @@ impl ServerExecutedTool for ShellExecutor {
                                     spec,
                                     containers_config_for_boot,
                                     persistence_for_boot,
+                                    idle_ttl_override,
                                 )
                                 .await
                             }
@@ -1156,8 +1439,16 @@ impl ServerExecutedTool for ShellExecutor {
                                         "Passthrough runtime received an execute() call; \
                                          this indicates a misconfiguration in chat.rs registration"
                                     );
-                                    let _ =
-                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = event_tx
+                                        .send(format_completed(
+                                            &id_for_task,
+                                            0,
+                                            -1,
+                                            0,
+                                            false,
+                                            false,
+                                        ))
+                                        .await;
                                     let _ = result_tx.send(Err(ToolError::ExecutionFailed(
                                         "shell runtime is configured for passthrough but \
                                          executor was invoked"
@@ -1172,8 +1463,16 @@ impl ServerExecutedTool for ShellExecutor {
                                         error = %e,
                                         "Failed to start shell session"
                                     );
-                                    let _ =
-                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = event_tx
+                                        .send(format_completed(
+                                            &id_for_task,
+                                            0,
+                                            -1,
+                                            0,
+                                            false,
+                                            false,
+                                        ))
+                                        .await;
                                     let _ = result_tx
                                         .send(Err(ToolError::ExecutionFailed(e.to_string())));
                                     return;
@@ -1202,8 +1501,16 @@ impl ServerExecutedTool for ShellExecutor {
                                         "Passthrough runtime received an execute() call; \
                                          this indicates a misconfiguration in chat.rs registration"
                                     );
-                                    let _ =
-                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = event_tx
+                                        .send(format_completed(
+                                            &id_for_task,
+                                            0,
+                                            -1,
+                                            0,
+                                            false,
+                                            false,
+                                        ))
+                                        .await;
                                     let _ = result_tx.send(Err(ToolError::ExecutionFailed(
                                         "shell runtime is configured for passthrough but \
                                          executor was invoked"
@@ -1218,8 +1525,16 @@ impl ServerExecutedTool for ShellExecutor {
                                         error = %e,
                                         "Failed to start shell session"
                                     );
-                                    let _ =
-                                        event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                                    let _ = event_tx
+                                        .send(format_completed(
+                                            &id_for_task,
+                                            0,
+                                            -1,
+                                            0,
+                                            false,
+                                            false,
+                                        ))
+                                        .await;
                                     let _ = result_tx
                                         .send(Err(ToolError::ExecutionFailed(e.to_string())));
                                     return;
@@ -1315,7 +1630,17 @@ impl ServerExecutedTool for ShellExecutor {
                         error = %e,
                         "Failed to exec shell command"
                     );
-                    let _ = event_tx.send(format_completed(&id_for_task, 0, -1)).await;
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let _ = event_tx
+                        .send(format_completed(
+                            &id_for_task,
+                            0,
+                            -1,
+                            elapsed_ms,
+                            false,
+                            false,
+                        ))
+                        .await;
                     let _ = result_tx.send(Err(ToolError::ExecutionFailed(e.to_string())));
                     return;
                 }
@@ -1527,8 +1852,21 @@ impl ServerExecutedTool for ShellExecutor {
                 return;
             }
 
+            let duration_ms = (duration_secs * 1000.0) as u64;
+            // `killed` ≈ runtime returned the timeout sentinel (124 is
+            // the canonical `timeout(1)` exit code; we also surface
+            // `None` exits — the process didn't report — as killed.
+            let killed = final_exit == Some(124) || final_exit.is_none();
+            let max_output_truncated = stdout_buf.was_truncated() || stderr_buf.was_truncated();
             let _ = event_tx
-                .send(format_completed(&id_for_task, 0, exit_for_report))
+                .send(format_completed(
+                    &id_for_task,
+                    0,
+                    exit_for_report,
+                    duration_ms,
+                    killed,
+                    max_output_truncated,
+                ))
                 .await;
 
             // Emit the structured `shell_call_output` output item with
@@ -1556,6 +1894,9 @@ impl ServerExecutedTool for ShellExecutor {
                     &stdout_render,
                     &stderr_render,
                     &new_files,
+                    duration_ms,
+                    killed,
+                    max_output_truncated,
                 ))
                 .await;
 
@@ -1778,7 +2119,9 @@ mod tests {
     use super::*;
     use crate::{
         api_types::responses::{
-            ShellContainerAuto, ShellDomainSecretRef, ShellEnvironment, ShellNetworkPolicy,
+            ContainerExpiresAfter, ContainerExpiresAfterAnchor, ShellContainerAuto,
+            ShellContainerReference, ShellDomainSecret, ShellDomainSecretInline,
+            ShellDomainSecretRef, ShellEnvironment, ShellNetworkPolicy, ShellNetworkPolicyType,
         },
         config::AllowedDomainSecret,
     };
@@ -1803,39 +2146,56 @@ mod tests {
         limits
     }
 
+    fn default_containers() -> ContainersConfig {
+        ContainersConfig::default()
+    }
+
+    fn auto_env(
+        memory_limit: Option<&str>,
+        net: Option<ShellNetworkPolicy>,
+        expires: Option<ContainerExpiresAfter>,
+    ) -> ShellEnvironment {
+        ShellEnvironment::ContainerAuto(ShellContainerAuto {
+            memory_limit: memory_limit.map(str::to_string),
+            expires_after: expires,
+            network_policy: net,
+        })
+    }
+
+    fn net_policy(domains: &[&str], secrets: Vec<ShellDomainSecret>) -> ShellNetworkPolicy {
+        ShellNetworkPolicy {
+            type_: ShellNetworkPolicyType::Allowlist,
+            allowed_domains: domains.iter().map(|s| (*s).to_string()).collect(),
+            domain_secrets: secrets,
+        }
+    }
+
     #[test]
     fn resolver_none_inherits_operator_default_memory() {
         let mut limits = ShellLimitsConfig::default();
         limits.default_mem_limit_mb = Some(512);
-        let r = resolve_shell_environment(None, &limits).unwrap();
+        let r = resolve_shell_environment(None, &limits, &default_containers()).unwrap();
         assert_eq!(r.mem_limit_bytes, Some(512 * 1024 * 1024));
         assert!(r.egress_policy.allow_hosts.is_empty());
         assert!(r.egress_policy.secrets.is_empty());
+        assert!(r.referenced_container_id.is_none());
+        assert!(r.idle_ttl_secs.is_none());
     }
 
     #[test]
     fn resolver_memory_request_within_cap() {
         let limits = op_limits_with(Some(2048), &[], &[]);
-        let env = ShellEnvironment {
-            container_auto: Some(ShellContainerAuto {
-                memory_limit: Some("1g".into()),
-            }),
-            ..Default::default()
-        };
-        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        let env = auto_env(Some("1g"), None, None);
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
         assert_eq!(r.mem_limit_bytes, Some(1024 * 1024 * 1024));
     }
 
     #[test]
     fn resolver_memory_request_exceeds_cap_rejected() {
         let limits = op_limits_with(Some(512), &[], &[]);
-        let env = ShellEnvironment {
-            container_auto: Some(ShellContainerAuto {
-                memory_limit: Some("1g".into()),
-            }),
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(Some("1g"), None, None);
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1851,91 +2211,84 @@ mod tests {
     #[test]
     fn resolver_memory_no_cap_accepts_anything() {
         let limits = op_limits_with(None, &[], &[]);
-        let env = ShellEnvironment {
-            container_auto: Some(ShellContainerAuto {
-                memory_limit: Some("64g".into()),
-            }),
-            ..Default::default()
-        };
-        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        let env = auto_env(Some("64g"), None, None);
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
         assert_eq!(r.mem_limit_bytes, Some(64 * 1024 * 1024 * 1024));
     }
 
     #[test]
     fn resolver_memory_unparseable_rejected() {
         let limits = ShellLimitsConfig::default();
-        let env = ShellEnvironment {
-            container_auto: Some(ShellContainerAuto {
-                memory_limit: Some("huge".into()),
-            }),
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(Some("huge"), None, None);
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(matches!(err, ShellEnvironmentError::BadMemoryLimit(_)));
     }
 
     #[test]
     fn resolver_egress_subset_accepted() {
         let limits = op_limits_with(None, &["api.openai.com", "*.example.com"], &[]);
-        let env = ShellEnvironment {
-            network_policy: Some(ShellNetworkPolicy {
-                domains: vec!["api.openai.com".into(), "foo.example.com".into()],
-            }),
-            ..Default::default()
-        };
-        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        let env = auto_env(
+            None,
+            Some(net_policy(
+                &["api.openai.com", "foo.example.com"],
+                Vec::new(),
+            )),
+            None,
+        );
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
         assert_eq!(r.egress_policy.allow_hosts.len(), 2);
     }
 
     #[test]
     fn resolver_egress_apex_does_not_match_wildcard() {
         let limits = op_limits_with(None, &["*.example.com"], &[]);
-        let env = ShellEnvironment {
-            network_policy: Some(ShellNetworkPolicy {
-                domains: vec!["example.com".into()],
-            }),
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(None, Some(net_policy(&["example.com"], Vec::new())), None);
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(matches!(err, ShellEnvironmentError::HostNotAllowed(h) if h == "example.com"));
     }
 
     #[test]
     fn resolver_egress_host_outside_allowlist_rejected() {
         let limits = op_limits_with(None, &["api.openai.com"], &[]);
-        let env = ShellEnvironment {
-            network_policy: Some(ShellNetworkPolicy {
-                domains: vec!["evil.example.com".into()],
-            }),
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(
+            None,
+            Some(net_policy(&["evil.example.com"], Vec::new())),
+            None,
+        );
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(matches!(err, ShellEnvironmentError::HostNotAllowed(h) if h == "evil.example.com"));
     }
 
     #[test]
     fn resolver_wildcard_star_allows_everything() {
         let limits = op_limits_with(None, &["*"], &[]);
-        let env = ShellEnvironment {
-            network_policy: Some(ShellNetworkPolicy {
-                domains: vec!["anything.example".into()],
-            }),
-            ..Default::default()
-        };
-        assert!(resolve_shell_environment(Some(&env), &limits).is_ok());
+        let env = auto_env(
+            None,
+            Some(net_policy(&["anything.example"], Vec::new())),
+            None,
+        );
+        assert!(resolve_shell_environment(Some(&env), &limits, &default_containers()).is_ok());
     }
 
     #[test]
     fn resolver_unknown_secret_rejected() {
         let limits = op_limits_with(None, &[], &[]);
-        let env = ShellEnvironment {
-            domain_secrets: vec![ShellDomainSecretRef {
-                placeholder: "GITHUB_TOKEN".into(),
-                allowed_domains: vec![],
-            }],
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(
+            None,
+            Some(net_policy(
+                &[],
+                vec![ShellDomainSecret::Reference(ShellDomainSecretRef {
+                    placeholder: "GITHUB_TOKEN".into(),
+                    allowed_domains: vec![],
+                })],
+            )),
+            None,
+        );
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(matches!(err, ShellEnvironmentError::UnknownSecret(p) if p == "GITHUB_TOKEN"));
     }
 
@@ -1946,14 +2299,18 @@ mod tests {
             &[],
             &[("GH", "ghp_xxx", &["api.github.com", "uploads.github.com"])],
         );
-        let env = ShellEnvironment {
-            domain_secrets: vec![ShellDomainSecretRef {
-                placeholder: "GH".into(),
-                allowed_domains: vec![],
-            }],
-            ..Default::default()
-        };
-        let r = resolve_shell_environment(Some(&env), &limits).unwrap();
+        let env = auto_env(
+            None,
+            Some(net_policy(
+                &[],
+                vec![ShellDomainSecret::Reference(ShellDomainSecretRef {
+                    placeholder: "GH".into(),
+                    allowed_domains: vec![],
+                })],
+            )),
+            None,
+        );
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
         assert_eq!(r.egress_policy.secrets.len(), 1);
         assert_eq!(r.egress_policy.secrets[0].value, "ghp_xxx");
         assert_eq!(r.egress_policy.secrets[0].allowed_hosts.len(), 2);
@@ -1962,18 +2319,137 @@ mod tests {
     #[test]
     fn resolver_secret_host_outside_allowed_rejected() {
         let limits = op_limits_with(None, &[], &[("GH", "v", &["api.github.com"])]);
-        let env = ShellEnvironment {
-            domain_secrets: vec![ShellDomainSecretRef {
-                placeholder: "GH".into(),
-                allowed_domains: vec!["evil.example.com".into()],
-            }],
-            ..Default::default()
-        };
-        let err = resolve_shell_environment(Some(&env), &limits).unwrap_err();
+        let env = auto_env(
+            None,
+            Some(net_policy(
+                &[],
+                vec![ShellDomainSecret::Reference(ShellDomainSecretRef {
+                    placeholder: "GH".into(),
+                    allowed_domains: vec!["evil.example.com".into()],
+                })],
+            )),
+            None,
+        );
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
         assert!(matches!(
             err,
             ShellEnvironmentError::SecretHostNotAllowed { placeholder, host }
                 if placeholder == "GH" && host == "evil.example.com"
+        ));
+    }
+
+    #[test]
+    fn resolver_inline_secret_uses_host_envelope_and_propagates_value() {
+        let limits = op_limits_with(None, &["api.github.com"], &[]);
+        let env = auto_env(
+            None,
+            Some(net_policy(
+                &["api.github.com"],
+                vec![ShellDomainSecret::Inline(ShellDomainSecretInline {
+                    domain: "api.github.com".into(),
+                    name: "GH_TOKEN".into(),
+                    value: "ghp_inline".into(),
+                })],
+            )),
+            None,
+        );
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
+        assert_eq!(r.egress_policy.secrets.len(), 1);
+        assert_eq!(r.egress_policy.secrets[0].placeholder, "GH_TOKEN");
+        assert_eq!(r.egress_policy.secrets[0].value, "ghp_inline");
+        assert_eq!(
+            r.egress_policy.secrets[0].allowed_hosts,
+            vec!["api.github.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolver_inline_secret_host_outside_operator_envelope_rejected() {
+        let limits = op_limits_with(None, &["api.github.com"], &[]);
+        let env = auto_env(
+            None,
+            Some(ShellNetworkPolicy {
+                type_: ShellNetworkPolicyType::Allowlist,
+                allowed_domains: vec![],
+                domain_secrets: vec![ShellDomainSecret::Inline(ShellDomainSecretInline {
+                    domain: "evil.example.com".into(),
+                    name: "X".into(),
+                    value: "y".into(),
+                })],
+            }),
+            None,
+        );
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
+        assert!(matches!(
+            err,
+            ShellEnvironmentError::InlineSecretHostNotAllowed { name, host }
+                if name == "X" && host == "evil.example.com"
+        ));
+    }
+
+    #[test]
+    fn resolver_container_reference_returns_id() {
+        let limits = op_limits_with(None, &[], &[]);
+        let env = ShellEnvironment::ContainerReference(ShellContainerReference {
+            container_id: "cntr_abc".into(),
+            network_policy: None,
+        });
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
+        assert_eq!(r.referenced_container_id.as_deref(), Some("cntr_abc"));
+    }
+
+    #[test]
+    fn resolver_container_reference_rejects_empty_id() {
+        let limits = op_limits_with(None, &[], &[]);
+        let env = ShellEnvironment::ContainerReference(ShellContainerReference {
+            container_id: "   ".into(),
+            network_policy: None,
+        });
+        let err =
+            resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap_err();
+        assert!(matches!(
+            err,
+            ShellEnvironmentError::EmptyContainerReferenceId
+        ));
+    }
+
+    #[test]
+    fn resolver_expires_after_within_cap_returns_seconds() {
+        let limits = op_limits_with(None, &[], &[]);
+        let env = auto_env(
+            None,
+            None,
+            Some(ContainerExpiresAfter {
+                anchor: ContainerExpiresAfterAnchor::LastActiveAt,
+                minutes: 30,
+            }),
+        );
+        let r = resolve_shell_environment(Some(&env), &limits, &default_containers()).unwrap();
+        assert_eq!(r.idle_ttl_secs, Some(30 * 60));
+    }
+
+    #[test]
+    fn resolver_expires_after_exceeds_cap_rejected() {
+        let limits = op_limits_with(None, &[], &[]);
+        let mut containers = default_containers();
+        containers.max_idle_ttl_secs = 60 * 60; // 1 hour cap
+        let env = auto_env(
+            None,
+            None,
+            Some(ContainerExpiresAfter {
+                anchor: ContainerExpiresAfterAnchor::LastActiveAt,
+                minutes: 120,
+            }),
+        );
+        let err = resolve_shell_environment(Some(&env), &limits, &containers).unwrap_err();
+        assert!(matches!(
+            err,
+            ShellEnvironmentError::ExpiresAfterExceedsCap {
+                requested: 120,
+                max: 60
+            }
         ));
     }
 
@@ -2010,7 +2486,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_function_call_arguments() {
+    fn parses_legacy_flat_arguments() {
         let v = serde_json::json!({
             "type": "function_call",
             "name": "shell",
@@ -2019,8 +2495,28 @@ mod tests {
         });
         let tc = parse_shell_tool_call(&v).unwrap();
         assert_eq!(tc.id, "call_abc");
-        assert_eq!(tc.command, "echo hi");
-        assert!(tc.stdin.is_none());
+        assert_eq!(tc.args.command, "echo hi");
+        assert!(tc.args.stdin.is_none());
+        assert!(tc.args.timeout_ms.is_none());
+    }
+
+    #[test]
+    fn parses_action_shape_arguments() {
+        let v = serde_json::json!({
+            "type": "function_call",
+            "name": "shell",
+            "call_id": "call_xyz",
+            "arguments": "{\"action\": {\"command\": \"ls /\", \"timeout_ms\": 1500, \"max_output_length\": 2000, \"env\": {\"FOO\": \"bar\"}, \"workdir\": \"/tmp\"}}"
+        });
+        let tc = parse_shell_tool_call(&v).unwrap();
+        assert_eq!(tc.args.command, "ls /");
+        assert_eq!(tc.args.timeout_ms, Some(1500));
+        assert_eq!(tc.args.max_output_length, Some(2000));
+        assert_eq!(
+            tc.args.env.as_ref().unwrap().get("FOO").map(|s| s.as_str()),
+            Some("bar")
+        );
+        assert_eq!(tc.args.workdir.as_deref(), Some("/tmp"));
     }
 
     #[test]

@@ -247,6 +247,7 @@ impl ContainerSession {
         spec: SessionSpec,
         config: ContainersConfig,
         persistence: Option<ContainerPersistence>,
+        idle_ttl_secs_override: Option<i64>,
     ) -> RuntimeResult<Self> {
         let container_id = new_container_id();
         Self::boot_inner(
@@ -257,6 +258,7 @@ impl ContainerSession {
             config,
             persistence,
             None,
+            idle_ttl_secs_override,
         )
         .await
     }
@@ -278,9 +280,14 @@ impl ContainerSession {
         spec: SessionSpec,
         config: ContainersConfig,
         persistence: ContainerPersistence,
+        idle_ttl_secs_override: Option<i64>,
     ) -> RuntimeResult<Self> {
         // Materialise the row before booting the VM so a failure
-        // (expired container, DB outage) costs us nothing.
+        // (expired container, DB outage) costs us nothing. Reattach
+        // does *not* extend the TTL — the container row's
+        // `idle_ttl_secs` is whatever was set at creation time and
+        // stays put across reuse.
+        let initial_ttl = idle_ttl_secs_override.unwrap_or(config.default_idle_ttl_secs as i64);
         persistence
             .service
             .ensure_container(
@@ -289,7 +296,7 @@ impl ContainerSession {
                 persistence.owner,
                 runtime_label,
                 persistence.source_response_id.clone(),
-                config.default_idle_ttl_secs as i64,
+                initial_ttl,
             )
             .await
             .map_err(|e| RuntimeError::Backend(format!("ensure_container: {e}")))?;
@@ -302,6 +309,7 @@ impl ContainerSession {
             config,
             Some(persistence.clone()),
             Some(persistence),
+            idle_ttl_secs_override,
         )
         .await
     }
@@ -309,6 +317,7 @@ impl ContainerSession {
     /// Shared boot path. When `replay` is `Some`, skips provisioning
     /// (the row already exists) and replays persisted files into
     /// `/mnt/data` after the baseline `mkdir`.
+    #[allow(clippy::too_many_arguments)] // each arg is load-bearing; bundling doesn't help
     async fn boot_inner(
         container_id: String,
         runtime: Arc<dyn ShellRuntime>,
@@ -317,9 +326,12 @@ impl ContainerSession {
         config: ContainersConfig,
         persistence: Option<ContainerPersistence>,
         replay: Option<ContainerPersistence>,
+        idle_ttl_secs_override: Option<i64>,
     ) -> RuntimeResult<Self> {
         let file_io = runtime.capabilities().file_io;
         let session = runtime.start_session(spec).await?;
+
+        let initial_ttl = idle_ttl_secs_override.unwrap_or(config.default_idle_ttl_secs as i64);
 
         // For fresh containers, insert the row up front so a
         // simultaneous chain-reuse request can find it. For reattach,
@@ -336,7 +348,7 @@ impl ContainerSession {
                         p.owner,
                         runtime_label,
                         p.source_response_id.clone(),
-                        config.default_idle_ttl_secs as i64,
+                        initial_ttl,
                     )
                     .await
                 {
@@ -375,11 +387,16 @@ impl ContainerSession {
             );
         }
 
+        let effective_ttl_secs = if initial_ttl > 0 {
+            initial_ttl as u64
+        } else {
+            config.default_idle_ttl_secs
+        };
         let session_obj = Self {
             container_id,
             runtime_label,
             created_at: Instant::now(),
-            idle_ttl: Duration::from_secs(config.default_idle_ttl_secs.max(1)),
+            idle_ttl: Duration::from_secs(effective_ttl_secs.max(1)),
             file_io,
             session: Some(session),
             config,

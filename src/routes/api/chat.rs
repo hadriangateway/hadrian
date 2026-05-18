@@ -1387,6 +1387,7 @@ pub async fn api_v1_responses(
         crate::services::shell_tool::resolve_shell_environment(
             request_env,
             &state.config.features.server_tools.shell_limits,
+            &state.config.features.containers,
         )
         .map_err(|e| {
             ApiError::new(
@@ -1583,6 +1584,43 @@ pub async fn api_v1_responses(
         &state,
         auth.as_ref().map(|e| &e.0),
     );
+
+    // If the request targets a specific container (via
+    // `environment.type = "container_reference"` or implicitly via
+    // `previous_response_id`), union that container's stored skill
+    // ids into `payload.skills` so `resolve_and_inject_skills` mounts
+    // them. Matches OpenAI's spec where skills are bound to the
+    // container, not to the response.
+    if let (Some(svc), Some(org_id)) = (state.containers_service.as_ref(), principal.org_id) {
+        let candidate_container_id: Option<String> = match (
+            resolved_shell_env.referenced_container_id.as_deref(),
+            payload.previous_response_id.as_deref(),
+            state.responses_store.as_ref(),
+        ) {
+            (Some(referenced), _, _) => Some(referenced.to_string()),
+            (None, Some(prev), Some(store)) => store
+                .get(prev, org_id)
+                .await
+                .ok()
+                .and_then(|r| r.container_id),
+            _ => None,
+        };
+        if let Some(cid) = candidate_container_id
+            && let Ok(record) = svc.get_container(&cid, org_id).await
+            && matches!(record.status, crate::db::repos::ContainerStatus::Active)
+            && let Some(json) = record.skill_ids_json.as_deref()
+            && let Ok(bound) = serde_json::from_str::<Vec<String>>(json)
+            && !bound.is_empty()
+        {
+            let mut merged = payload.skills.clone().unwrap_or_default();
+            for s in bound {
+                if !merged.contains(&s) {
+                    merged.push(s);
+                }
+            }
+            payload.skills = Some(merged);
+        }
+    }
     // Snapshot the caller's original `instructions` before skill
     // resolution rewrites them with inlined SKILL.md content. The
     // foreground persistence block below restores this snapshot when
@@ -1741,6 +1779,21 @@ pub async fn api_v1_responses(
     // In concurrent mode, we race guardrails with the LLM call
     // Clone provider_config early - we need it later for file_search callback
     let saved_provider_config = provider_config.clone();
+
+    // Gateway-side compaction (non-OpenAI providers only). Runs after
+    // skills resolution so the rolling token estimate includes the
+    // injected SKILL.md content but before the provider call. We
+    // log + continue on any compactor error: an oversize-but-uncompacted
+    // payload still has a fair chance of working at the provider.
+    if let Err(e) = crate::services::compactor::apply_gateway_compaction(
+        &state,
+        &saved_provider_config,
+        &mut payload,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "Gateway compaction failed; continuing with original payload");
+    }
     let (response, provider_name, model_name, provider_config) = if use_concurrent_guardrails {
         let input_guardrails = state.input_guardrails.as_ref().unwrap();
         let user_id = auth
@@ -1972,21 +2025,68 @@ pub async fn api_v1_responses(
             &state,
             auth.as_ref().map(|e| &e.0),
         );
-        // Phase 4: implicit container reuse via `previous_response_id`
-        // chaining. Walking the prior response's row gives us a clean
-        // fall-through path when the container has expired or been
-        // deleted — we silently start fresh instead of erroring, since
-        // the caller didn't explicitly reference a container.
-        let container_id_hint = match (
-            payload.previous_response_id.as_deref(),
-            principal.org_id,
-            state.responses_store.as_ref(),
-            state.containers_service.as_ref(),
-        ) {
-            (Some(prev_id), Some(org_id), Some(store), Some(containers_svc)) => {
-                resolve_chained_container_id(store, containers_svc, prev_id, org_id).await
+        // Explicit `environment.type = "container_reference"` wins
+        // over implicit `previous_response_id` chaining: when the
+        // caller named a container we attach to that exact one, and
+        // return a 400 here if it isn't usable. Implicit chaining
+        // silently falls through to a fresh container on miss because
+        // the caller didn't promise anything.
+        let container_id_hint = if let Some(ref referenced) =
+            resolved_shell_env.referenced_container_id
+        {
+            match (principal.org_id, state.containers_service.as_ref()) {
+                (Some(org_id), Some(containers_svc)) => {
+                    match containers_svc.get_container(referenced, org_id).await {
+                        Ok(c) if matches!(c.status, crate::db::repos::ContainerStatus::Active) => {
+                            Some(referenced.clone())
+                        }
+                        Ok(c) => {
+                            return Err(ApiError::new(
+                                StatusCode::BAD_REQUEST,
+                                "container_not_reusable",
+                                format!(
+                                    "Container '{}' is in status '{}' and cannot be referenced",
+                                    referenced,
+                                    c.status.as_str()
+                                ),
+                            ));
+                        }
+                        Err(_) => {
+                            return Err(ApiError::new(
+                                StatusCode::NOT_FOUND,
+                                "container_not_found",
+                                format!(
+                                    "Container '{}' was not found in this organization",
+                                    referenced
+                                ),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "containers_persistence_disabled",
+                        "Container references require persistence to be enabled".to_string(),
+                    ));
+                }
             }
-            _ => None,
+        } else {
+            // Implicit container reuse via `previous_response_id`
+            // chaining. Walking the prior response's row gives us a
+            // clean fall-through path when the container has expired
+            // or been deleted — we silently start fresh.
+            match (
+                payload.previous_response_id.as_deref(),
+                principal.org_id,
+                state.responses_store.as_ref(),
+                state.containers_service.as_ref(),
+            ) {
+                (Some(prev_id), Some(org_id), Some(store), Some(containers_svc)) => {
+                    resolve_chained_container_id(store, containers_svc, prev_id, org_id).await
+                }
+                _ => None,
+            }
         };
         crate::services::responses_pipeline::apply_streaming_pipeline(
             &state,

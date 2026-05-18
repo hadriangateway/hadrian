@@ -1386,13 +1386,28 @@ CREATE TABLE IF NOT EXISTS containers (
     -- we can drop a runtime backend without rewriting history.
     runtime_label VARCHAR(64) NOT NULL,
     -- Response this container was originally provisioned for. Nullable
-    -- to keep the door open for Phase 4 `POST /v1/containers` (manual
-    -- create) which is unattached at first.
+    -- because `POST /v1/containers` creates a container unattached to
+    -- any response (it gets used by future responses via
+    -- `container_reference`).
     source_response_id VARCHAR(64),
     idle_ttl_secs BIGINT NOT NULL,
     last_active_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ
+    expires_at TIMESTAMPTZ,
+    -- Optional display name supplied at `POST /v1/containers` time
+    -- (max 255 chars by OpenAI's convention).
+    name VARCHAR(255),
+    -- Memory ceiling stored at creation. Persisted so future reattach
+    -- requests can recompute the resolved env consistently. Nullable
+    -- when not specified (runtime default applies).
+    memory_limit_mb INTEGER,
+    -- JSON-encoded `network_policy` saved at creation time so reuse
+    -- through `container_reference` carries the original egress policy
+    -- (operator caps still apply per request).
+    network_policy_json TEXT,
+    -- JSON array of skill UUIDs bound to this container. Materialised
+    -- on every session boot.
+    skill_ids_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_containers_org_active

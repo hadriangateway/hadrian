@@ -133,6 +133,97 @@ pub struct ResponsesPersistenceConfig {
     /// when unset.
     #[serde(default)]
     pub webhook: Option<ResponsesWebhookConfig>,
+
+    /// Gateway-side context compaction for non-OpenAI providers (the
+    /// canonical OpenAI compaction directive is otherwise forwarded
+    /// verbatim). Disabled by default.
+    #[serde(default)]
+    pub compaction: ResponsesCompactionConfig,
+}
+
+/// Operator-side defaults for the gateway compactor. When a request
+/// includes `context_management = [{type: "compaction", ...}]` and the
+/// upstream provider does not natively support server-side compaction
+/// (i.e. anything other than OpenAI / Azure OpenAI), Hadrian runs the
+/// compactor before dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ResponsesCompactionConfig {
+    /// Master switch. When false, gateway-side compaction never runs
+    /// regardless of request directives; non-OpenAI providers still
+    /// see the unedited payload (matching pre-compactor behaviour).
+    #[serde(default = "default_compaction_enabled")]
+    pub enabled: bool,
+    /// Strategy used when the request didn't specify one. Picks
+    /// `truncate` so the default behaviour is deterministic + free.
+    #[serde(default = "default_compaction_default_strategy")]
+    pub default_strategy: ResponsesCompactionStrategy,
+    /// Fallback `compact_threshold` (in tokens) when the request
+    /// didn't specify one. The default 12_000 leaves headroom under
+    /// the smaller non-OpenAI context windows (Bedrock claude-haiku
+    /// ~200k, but typical app prompts stay well below the limit).
+    #[serde(default = "default_compaction_threshold")]
+    pub default_threshold_tokens: u32,
+    /// Number of most-recent items the compactor must keep intact.
+    /// Older items are dropped (truncate) or replaced by a summary
+    /// (llm). Default 6.
+    #[serde(default = "default_compaction_keep_recent")]
+    pub keep_recent_items: usize,
+    /// Default prompt the `llm` strategy uses to summarise dropped
+    /// items. Overridden per-request via
+    /// `context_management.compaction.prompt`. Includes a placeholder
+    /// describing what the summary will be inserted as.
+    #[serde(default = "default_compaction_prompt")]
+    pub default_prompt: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsesCompactionStrategy {
+    /// Summarise dropped items via the active provider.
+    Llm,
+    /// Drop oldest non-system items until the rolling token estimate
+    /// falls under the threshold.
+    #[default]
+    Truncate,
+}
+
+impl Default for ResponsesCompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_compaction_enabled(),
+            default_strategy: default_compaction_default_strategy(),
+            default_threshold_tokens: default_compaction_threshold(),
+            keep_recent_items: default_compaction_keep_recent(),
+            default_prompt: default_compaction_prompt(),
+        }
+    }
+}
+
+fn default_compaction_enabled() -> bool {
+    false
+}
+
+fn default_compaction_default_strategy() -> ResponsesCompactionStrategy {
+    ResponsesCompactionStrategy::Truncate
+}
+
+fn default_compaction_threshold() -> u32 {
+    12_000
+}
+
+fn default_compaction_keep_recent() -> usize {
+    6
+}
+
+fn default_compaction_prompt() -> String {
+    "Summarize the prior conversation in <= 250 words. Preserve concrete decisions, \
+     user-stated constraints, file paths and IDs, and unresolved questions. Drop \
+     redundant pleasantries. Output a single paragraph; the result will be inserted \
+     as system context for the model to consult in the remaining turns."
+        .to_string()
 }
 
 impl Default for ResponsesPersistenceConfig {
@@ -144,6 +235,7 @@ impl Default for ResponsesPersistenceConfig {
             max_in_progress_secs: default_responses_max_in_progress_secs(),
             retry: ResponsesRetryConfig::default(),
             webhook: None,
+            compaction: ResponsesCompactionConfig::default(),
         }
     }
 }
@@ -537,6 +629,13 @@ pub struct ContainersConfig {
     #[serde(default = "default_containers_idle_ttl_secs")]
     pub default_idle_ttl_secs: u64,
 
+    /// Hard cap on `expires_after.minutes` per request and on
+    /// `POST /v1/containers` creation. Requests above this cap reject
+    /// with 400. Default 86_400 (60 days), matching OpenAI's
+    /// hosted-container maximum.
+    #[serde(default = "default_containers_max_idle_ttl_secs")]
+    pub max_idle_ttl_secs: u64,
+
     /// Hard cap on the number of new/changed files captured per shell
     /// exec. Excess files are dropped with a warning. Default 64.
     #[serde(default = "default_containers_max_files_per_exec")]
@@ -570,6 +669,7 @@ impl Default for ContainersConfig {
         Self {
             enabled: default_containers_enabled(),
             default_idle_ttl_secs: default_containers_idle_ttl_secs(),
+            max_idle_ttl_secs: default_containers_max_idle_ttl_secs(),
             max_files_per_exec: default_containers_max_files_per_exec(),
             max_bytes_per_file: default_containers_max_bytes_per_file(),
             max_bytes_per_session: default_containers_max_bytes_per_session(),
@@ -585,6 +685,11 @@ fn default_containers_enabled() -> bool {
 
 fn default_containers_idle_ttl_secs() -> u64 {
     1200
+}
+
+fn default_containers_max_idle_ttl_secs() -> u64 {
+    // 60 days, matching OpenAI's published hosted-container cap.
+    60 * 24 * 60 * 60
 }
 
 fn default_containers_max_files_per_exec() -> usize {

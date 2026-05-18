@@ -1097,27 +1097,55 @@ pub struct ShellTool {
     pub environment: Option<ShellEnvironment>,
 }
 
-/// Per-request runtime-environment overrides. All fields are optional;
-/// omitted fields inherit operator defaults.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShellEnvironment {
-    /// Container auto-provisioning hints (memory, etc.).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub container_auto: Option<ShellContainerAuto>,
-    /// Egress allowlist. The supplied `domains` must be a subset of
-    /// `[features.server_tools.shell_limits].allowed_egress_hosts`;
-    /// hosts not in the operator allowlist cause a `400`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network_policy: Option<ShellNetworkPolicy>,
-    /// References to operator-configured secrets to inject for
-    /// outbound traffic. Placeholders must match a key under
-    /// `[features.server_tools.shell_limits].allowed_domain_secrets`;
-    /// unknown placeholders cause a `400`. The caller never supplies
-    /// raw secret values — only the placeholder name and the subset of
-    /// allowed destinations.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub domain_secrets: Vec<ShellDomainSecretRef>,
+/// Per-request runtime-environment overrides. Tagged on `type` per
+/// OpenAI's `shell` tool spec:
+///
+/// - `container_auto` — let the gateway provision a container, with
+///   optional `memory_limit`, `expires_after`, and `network_policy`.
+/// - `container_reference` — attach to a specific `container_id`
+///   created earlier via `POST /v1/containers` (or chained via a prior
+///   response). Operator caps still apply at execution time.
+///
+/// Hadrian historically accepted a flat object with `container_auto`
+/// as a nested field plus environment-level `domain_secrets`; that
+/// shape is no longer accepted — the wire format must match OpenAI's
+/// SDK contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShellEnvironment {
+    /// Provision a fresh (or reuse a chained) container with the
+    /// supplied policy. Equivalent to OpenAI's
+    /// `{"type": "container_auto", …}`.
+    ContainerAuto(ShellContainerAuto),
+    /// Attach to an existing container by id. Used when the caller
+    /// pre-created a container via `POST /v1/containers` and wants
+    /// every response to land in that workspace.
+    ContainerReference(ShellContainerReference),
+}
+
+impl ShellEnvironment {
+    /// True when the environment is the auto variant. Used by the
+    /// request-resolver to decide whether to consult container-level
+    /// fields like `memory_limit` and `expires_after`.
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ShellEnvironment::ContainerAuto(_))
+    }
+
+    /// Egress policy regardless of variant.
+    pub fn network_policy(&self) -> Option<&ShellNetworkPolicy> {
+        match self {
+            ShellEnvironment::ContainerAuto(a) => a.network_policy.as_ref(),
+            ShellEnvironment::ContainerReference(r) => r.network_policy.as_ref(),
+        }
+    }
+
+    /// `container_id` when explicitly referenced.
+    pub fn container_reference_id(&self) -> Option<&str> {
+        match self {
+            ShellEnvironment::ContainerReference(r) => Some(r.container_id.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Container auto-provisioning overrides (the OpenAI `container_auto`
@@ -1129,23 +1157,105 @@ pub struct ShellContainerAuto {
     /// case-insensitively. Capped by the operator's `max_mem_limit_mb`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
+    /// Idle TTL applied to this container. Caps the operator default
+    /// when present; never extends beyond `[features.containers].max_idle_ttl_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_after: Option<ContainerExpiresAfter>,
+    /// Network policy applied to outbound traffic from the container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<ShellNetworkPolicy>,
 }
 
-/// Per-domain egress policy (the OpenAI `network_policy` shape).
+/// Reference to an existing container created via
+/// `POST /v1/containers`. Per OpenAI's spec, the network policy can
+/// still be tightened per-request; widening beyond the container's
+/// stored policy (or the operator caps) is rejected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellContainerReference {
+    /// `cntr_<hex>` of the container to attach to. Must belong to the
+    /// caller's organization and be in `active` status.
+    pub container_id: String,
+    /// Network policy applied to outbound traffic from the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<ShellNetworkPolicy>,
+}
+
+/// Container TTL hint. Mirrors OpenAI's `expires_after` shape — only
+/// `last_active_at` is honored today (the same anchor the operator's
+/// idle reaper uses), with `minutes` setting the per-container idle
+/// TTL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerExpiresAfter {
+    /// Anchor for the TTL countdown. Today only `"last_active_at"` is
+    /// supported; unknown anchors reject with 400.
+    #[serde(default)]
+    pub anchor: ContainerExpiresAfterAnchor,
+    /// Minutes after `anchor` when the container expires. Validated
+    /// against `[features.containers].max_idle_ttl_secs / 60`.
+    pub minutes: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerExpiresAfterAnchor {
+    #[default]
+    LastActiveAt,
+}
+
+/// Per-domain egress policy. Matches OpenAI's `network_policy` shape:
+/// `{ "type": "allowlist", "allowed_domains": [...], "domain_secrets": [...] }`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellNetworkPolicy {
+    /// Policy kind. Only `allowlist` is supported today; the field is
+    /// here for forward compatibility with future OpenAI additions.
+    #[serde(default, rename = "type")]
+    pub type_: ShellNetworkPolicyType,
     /// Hostnames or hostname patterns (`*.example.com`) the container
     /// may make outbound requests to. Must be a subset of the
     /// operator's `allowed_egress_hosts`.
     #[serde(default)]
-    pub domains: Vec<String>,
+    pub allowed_domains: Vec<String>,
+    /// Secrets injected for outbound traffic. Accepts either OpenAI's
+    /// inline `{domain, name, value}` form or Hadrian's safer
+    /// `{placeholder, allowed_domains}` reference form — see
+    /// [`ShellDomainSecret`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_secrets: Vec<ShellDomainSecret>,
 }
 
-/// Caller's reference to one of the operator-configured domain
-/// secrets. The raw value never crosses the wire — the caller supplies
-/// the placeholder name and which subset of the operator-permitted
-/// hosts the secret may flow to.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellNetworkPolicyType {
+    #[default]
+    Allowlist,
+}
+
+/// One entry in `network_policy.domain_secrets`. Accepts two forms via
+/// untagged dispatch so OpenAI SDKs and Hadrian-aware callers both
+/// work:
+///
+/// - **Inline (OpenAI)** — `{ "domain": "...", "name": "...", "value": "..." }`
+///   the secret value travels on the wire. Useful for ad-hoc tokens
+///   the caller owns directly.
+/// - **Reference (Hadrian extension)** — `{ "placeholder": "...", "allowed_domains": [...] }`
+///   matches an operator-configured secret in
+///   `[features.server_tools.shell_limits].allowed_domain_secrets` so
+///   the raw value never leaves the gateway.
+///
+/// Reference form is parsed first so a `{placeholder, ...}` payload
+/// never accidentally matches the inline shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ShellDomainSecret {
+    Reference(ShellDomainSecretRef),
+    Inline(ShellDomainSecretInline),
+}
+
+/// Hadrian-extension placeholder reference into the operator's
+/// pre-configured secret store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShellDomainSecretRef {
@@ -1157,6 +1267,21 @@ pub struct ShellDomainSecretRef {
     /// means "all hosts the operator permits for this secret".
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+}
+
+/// OpenAI-compatible inline secret. The raw value travels with the
+/// request; the gateway scopes it to `domain` at egress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellDomainSecretInline {
+    /// Host (or `*.suffix`) the secret may flow to.
+    pub domain: String,
+    /// Environment-variable name the secret is exposed as inside the
+    /// container.
+    pub name: String,
+    /// Raw secret value. Subject to the same operator host caps as the
+    /// reference form.
+    pub value: String,
 }
 
 impl ShellTool {
@@ -1623,6 +1748,12 @@ pub enum ContextManagementItem {
     /// `compact_threshold`, the provider emits a compaction item in
     /// the same response stream and prunes context before continuing
     /// inference.
+    ///
+    /// For non-OpenAI providers Hadrian runs a **gateway-side**
+    /// compactor before dispatch. The Hadrian-extension `strategy`
+    /// and `prompt` fields let the caller pick the algorithm and
+    /// (when strategy is `llm`) override the default summarisation
+    /// prompt.
     Compaction {
         /// Token count that triggers a compaction pass. Provider
         /// validates the range.
@@ -1631,12 +1762,38 @@ pub enum ContextManagementItem {
             serialize_with = "serialize_as_integer"
         )]
         compact_threshold: Option<f64>,
+        /// **Hadrian Extension:** which compactor to run when behind a
+        /// provider without native server-side compaction (Anthropic,
+        /// Bedrock, Vertex). Omitting the field uses the operator
+        /// default from `[features.responses.compaction].default_strategy`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strategy: Option<CompactionStrategy>,
+        /// **Hadrian Extension:** override prompt for `strategy = llm`.
+        /// Empty / missing falls back to the operator default. Ignored
+        /// when strategy is `truncate` or the request is routed to a
+        /// provider with native compaction (forwarded verbatim).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
     },
     /// **Hadrian Extension:** Forward-compatibility catch-all for
     /// `type` values Hadrian doesn't know about. The raw value is
     /// preserved and forwarded to the upstream provider unchanged.
     #[serde(other)]
     Other,
+}
+
+/// **Hadrian Extension:** compactor strategy for non-OpenAI providers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionStrategy {
+    /// Summarise older items via a single follow-up call to the
+    /// active provider; replace them with a `compaction` input item
+    /// carrying the summary. Higher quality, costs one extra inference.
+    Llm,
+    /// Drop oldest non-system items until under `compact_threshold`.
+    /// Deterministic and free; preserves no narrative.
+    Truncate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1967,17 +2124,47 @@ mod context_management_tests {
         let items: Vec<ContextManagementItem> = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(items.len(), 1);
         match &items[0] {
-            ContextManagementItem::Compaction { compact_threshold } => {
+            ContextManagementItem::Compaction {
+                compact_threshold,
+                strategy,
+                prompt,
+            } => {
                 assert_eq!(compact_threshold.unwrap() as i64, 200000);
+                assert!(strategy.is_none());
+                assert!(prompt.is_none());
             }
             ContextManagementItem::Other => {
                 panic!("expected compaction variant, got Other");
             }
         }
         // Re-serialize and confirm the threshold is emitted as an
-        // integer (matches OpenAI's wire format, not float).
+        // integer (matches OpenAI's wire format, not float) and the
+        // Hadrian-extension fields are omitted when absent.
         let round = serde_json::to_value(&items).unwrap();
         assert_eq!(round, raw);
+    }
+
+    #[test]
+    fn compaction_accepts_hadrian_extension_fields() {
+        let raw = serde_json::json!([{
+            "type": "compaction",
+            "compact_threshold": 8000,
+            "strategy": "llm",
+            "prompt": "Summarize the conversation so far in <= 200 words."
+        }]);
+        let items: Vec<ContextManagementItem> = serde_json::from_value(raw).unwrap();
+        match &items[0] {
+            ContextManagementItem::Compaction {
+                compact_threshold,
+                strategy,
+                prompt,
+            } => {
+                assert_eq!(compact_threshold.unwrap() as i64, 8000);
+                assert_eq!(*strategy, Some(CompactionStrategy::Llm));
+                assert!(prompt.as_deref().unwrap().starts_with("Summarize"));
+            }
+            ContextManagementItem::Other => panic!("expected compaction"),
+        }
     }
 
     #[test]

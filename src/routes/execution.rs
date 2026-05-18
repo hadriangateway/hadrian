@@ -68,7 +68,9 @@ fn build_shell_tool_hint(
         .as_ref()
         .and_then(|tools| tools.iter().find_map(|t| t.as_shell()))
         .and_then(|s| s.environment.as_ref());
-    let resolved = resolve_shell_environment(request_env, shell_limits).ok();
+    let resolved =
+        resolve_shell_environment(request_env, shell_limits, &state.config.features.containers)
+            .ok();
 
     let mem_limit_mb = resolved
         .as_ref()

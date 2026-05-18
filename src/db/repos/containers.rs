@@ -61,7 +61,7 @@ pub struct ContainerRecord {
     /// runtime doesn't require a migration.
     pub runtime_label: String,
     /// Response this container was originally provisioned for.
-    /// `None` for Phase 4 manually-created containers.
+    /// `None` for containers created via `POST /v1/containers`.
     pub source_response_id: Option<String>,
     pub idle_ttl_secs: i64,
     pub last_active_at: DateTime<Utc>,
@@ -69,6 +69,14 @@ pub struct ContainerRecord {
     /// Set when status transitions to `Expired` (so we know when the
     /// VM stopped backing the row).
     pub expires_at: Option<DateTime<Utc>>,
+    /// Optional display name supplied at creation time.
+    pub name: Option<String>,
+    /// Memory ceiling captured at creation. `None` ⇒ runtime default.
+    pub memory_limit_mb: Option<i64>,
+    /// JSON-encoded network policy applied to this container.
+    pub network_policy_json: Option<String>,
+    /// JSON array of skill UUIDs bound to this container.
+    pub skill_ids_json: Option<String>,
 }
 
 /// Fields needed to create a new container row.
@@ -83,6 +91,10 @@ pub struct NewContainer {
     pub source_response_id: Option<String>,
     pub idle_ttl_secs: i64,
     pub created_at: DateTime<Utc>,
+    pub name: Option<String>,
+    pub memory_limit_mb: Option<i64>,
+    pub network_policy_json: Option<String>,
+    pub skill_ids_json: Option<String>,
 }
 
 impl NewContainer {
@@ -107,6 +119,10 @@ impl NewContainer {
             source_response_id,
             idle_ttl_secs,
             created_at,
+            name: None,
+            memory_limit_mb: None,
+            network_policy_json: None,
+            skill_ids_json: None,
         }
     }
 }
@@ -277,4 +293,14 @@ pub trait ContainersRepo: Send + Sync {
     /// the caller can evict matching entries from the in-memory
     /// session registry.
     async fn mark_expired_idle(&self, now: DateTime<Utc>) -> DbResult<Vec<String>>;
+
+    /// Org-scoped delete of one `container_files` row. Returns true
+    /// when a row was removed. Bytes inside the row are dropped along
+    /// with the metadata.
+    async fn delete_file_by_id_and_org(
+        &self,
+        file_id: &str,
+        container_id: &str,
+        org_id: Uuid,
+    ) -> DbResult<bool>;
 }

@@ -14,9 +14,16 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::{debug, error};
 use uuid::Uuid;
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
 
 use crate::{
     api_types::responses::{ContainerFileRef, ContainerFileSource},
@@ -135,6 +142,47 @@ impl ContainersService {
             container_id = %record.id,
             org_id = %record.org_id,
             "Inserted containers row"
+        );
+        Ok(record)
+    }
+
+    /// `POST /v1/containers` — create an unattached container row.
+    /// The VM is not booted yet; the row's `network_policy_json` /
+    /// `memory_limit_mb` / `skill_ids_json` are picked up when the
+    /// first response references this container.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_explicit(
+        &self,
+        container_id: String,
+        org_id: Uuid,
+        owner: ResponseOwner,
+        runtime_label: impl Into<String>,
+        idle_ttl_secs: i64,
+        name: Option<String>,
+        memory_limit_mb: Option<i64>,
+        network_policy_json: Option<String>,
+        skill_ids_json: Option<String>,
+    ) -> ContainersServiceResult<ContainerRecord> {
+        let created_at = truncate_to_millis(Utc::now());
+        let mut new = NewContainer::from_owner(
+            container_id,
+            org_id,
+            owner,
+            runtime_label,
+            None,
+            idle_ttl_secs,
+            created_at,
+        );
+        new.name = name;
+        new.memory_limit_mb = memory_limit_mb;
+        new.network_policy_json = network_policy_json;
+        new.skill_ids_json = skill_ids_json;
+        let record = self.repo().insert(new).await?;
+        debug!(
+            stage = "container_created",
+            container_id = %record.id,
+            org_id = %record.org_id,
+            "Created container via POST /v1/containers"
         );
         Ok(record)
     }
@@ -351,6 +399,71 @@ impl ContainersService {
         now: chrono::DateTime<chrono::Utc>,
     ) -> ContainersServiceResult<Vec<String>> {
         Ok(self.repo().mark_expired_idle(now).await?)
+    }
+
+    /// Org-scoped delete of one container_file row. Returns
+    /// `NotFound` when the row doesn't exist (or belongs to a
+    /// different container / org).
+    pub async fn delete_file(
+        &self,
+        container_id: &str,
+        file_id: &str,
+        org_id: Uuid,
+    ) -> ContainersServiceResult<()> {
+        let removed = self
+            .repo()
+            .delete_file_by_id_and_org(file_id, container_id, org_id)
+            .await?;
+        if removed {
+            Ok(())
+        } else {
+            Err(ContainersServiceError::NotFound)
+        }
+    }
+
+    /// Upsert one file under an existing container. Used by
+    /// `POST /v1/containers/{id}/files`. Returns the canonical record
+    /// (the repo's view of the row, post-conflict resolution).
+    #[allow(clippy::too_many_arguments)] // each arg is load-bearing for the persisted row
+    pub async fn upload_file(
+        &self,
+        container_id: &str,
+        org_id: Uuid,
+        path: String,
+        filename: String,
+        content_type: Option<String>,
+        content: Vec<u8>,
+        source: ContainerFileSource,
+        source_response_id: Option<String>,
+        source_call_id: Option<String>,
+    ) -> ContainersServiceResult<ContainerFileRecord> {
+        // Compute a sha256 of the bytes; this is what the
+        // capture/exec paths persist so an uploaded file behaves the
+        // same as a captured one downstream.
+        let content_hash_hex = sha256_hex(&content);
+        let file_id = format!("cfile_{}", uuid::Uuid::new_v4().simple());
+        let now = truncate_to_millis(Utc::now());
+        let new = NewContainerFile {
+            id: file_id,
+            container_id: container_id.to_string(),
+            org_id,
+            path,
+            filename,
+            size_bytes: content.len() as i64,
+            content_type,
+            content_hash: content_hash_hex,
+            source: match source {
+                ContainerFileSource::User => ContainerFileSourceKind::User,
+                ContainerFileSource::Assistant => ContainerFileSourceKind::Assistant,
+            },
+            storage_backend: StorageBackend::Database,
+            file_data: Some(content),
+            storage_path: None,
+            source_response_id,
+            source_call_id,
+            created_at: now,
+        };
+        Ok(self.repo().upsert_file(new).await?)
     }
 
     /// Stamp the `container_id` column on a `responses` row so the

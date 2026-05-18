@@ -4,6 +4,8 @@ pub mod audit_logs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod background_executor;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod compactor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod container_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod containers;

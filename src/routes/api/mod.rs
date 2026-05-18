@@ -856,17 +856,20 @@ pub(crate) fn api_v1_routes(limits: ApiBodyLimits) -> Router<AppState> {
             "/v1/responses/{response_id}/cancel",
             post(responses_lookup::api_v1_responses_cancel),
         )
+        .route("/v1/containers", post(containers::api_v1_containers_create))
         .route(
             "/v1/containers/{container_id}",
             get(containers::api_v1_containers_get).delete(containers::api_v1_containers_delete),
         )
         .route(
             "/v1/containers/{container_id}/files",
-            get(containers::api_v1_containers_list_files),
+            get(containers::api_v1_containers_list_files)
+                .post(containers::api_v1_containers_file_upload),
         )
         .route(
             "/v1/containers/{container_id}/files/{file_id}",
-            get(containers::api_v1_containers_file_get),
+            get(containers::api_v1_containers_file_get)
+                .delete(containers::api_v1_containers_file_delete),
         )
         .route(
             "/v1/containers/{container_id}/files/{file_id}/content",

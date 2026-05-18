@@ -13,7 +13,8 @@ use crate::db::{
 };
 
 const CONTAINER_COLUMNS: &str = "id, org_id, owner_type::TEXT, owner_id, status, runtime_label, \
-    source_response_id, idle_ttl_secs, last_active_at, created_at, expires_at";
+    source_response_id, idle_ttl_secs, last_active_at, created_at, expires_at, \
+    name, memory_limit_mb, network_policy_json, skill_ids_json";
 
 const CONTAINER_FILE_COLUMNS: &str = "id, container_id, org_id, path, filename, size_bytes, \
     content_type, content_hash, source, storage_backend::TEXT, storage_path, \
@@ -67,6 +68,10 @@ fn row_to_container(row: &sqlx::postgres::PgRow) -> DbResult<ContainerRecord> {
         last_active_at: row.get("last_active_at"),
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
+        name: row.get("name"),
+        memory_limit_mb: row.get::<Option<i32>, _>("memory_limit_mb").map(i64::from),
+        network_policy_json: row.get("network_policy_json"),
+        skill_ids_json: row.get("skill_ids_json"),
     })
 }
 
@@ -98,9 +103,10 @@ impl ContainersRepo for PostgresContainersRepo {
             r#"
             INSERT INTO containers (
                 id, org_id, owner_type, owner_id, status, runtime_label,
-                source_response_id, idle_ttl_secs, last_active_at, created_at
+                source_response_id, idle_ttl_secs, last_active_at, created_at,
+                name, memory_limit_mb, network_policy_json, skill_ids_json
             )
-            VALUES ($1, $2, $3::response_owner_type, $4, $5, $6, $7, $8, $9, $9)
+            VALUES ($1, $2, $3::response_owner_type, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12, $13)
             RETURNING {CONTAINER_COLUMNS}
             "#
         );
@@ -114,6 +120,10 @@ impl ContainersRepo for PostgresContainersRepo {
             .bind(&input.source_response_id)
             .bind(input.idle_ttl_secs)
             .bind(input.created_at)
+            .bind(&input.name)
+            .bind(input.memory_limit_mb.map(|m| m as i32))
+            .bind(&input.network_policy_json)
+            .bind(&input.skill_ids_json)
             .fetch_one(&self.write_pool)
             .await?;
         row_to_container(&row)
@@ -304,6 +314,26 @@ impl ContainersRepo for PostgresContainersRepo {
         }
         let row = q.fetch_optional(&self.write_pool).await?;
         row.as_ref().map(row_to_container).transpose()
+    }
+
+    async fn delete_file_by_id_and_org(
+        &self,
+        file_id: &str,
+        container_id: &str,
+        org_id: Uuid,
+    ) -> DbResult<bool> {
+        let res = sqlx::query(
+            r#"
+            DELETE FROM container_files
+            WHERE id = $1 AND container_id = $2 AND org_id = $3
+            "#,
+        )
+        .bind(file_id)
+        .bind(container_id)
+        .bind(org_id)
+        .execute(&self.write_pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     async fn mark_expired_idle(&self, now: chrono::DateTime<chrono::Utc>) -> DbResult<Vec<String>> {

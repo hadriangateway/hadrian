@@ -154,6 +154,61 @@ pub async fn execute_persisted_response(
     let model_name = resolved.model;
     payload.model = Some(model_name.clone());
 
+    // Re-validate the request's shell `environment` overrides against
+    // the current operator limits. Foreground already checked at
+    // admission time, but the operator config may have tightened
+    // between admission and execution — re-checking ensures we never
+    // launch a session that exceeds the current envelope. Misconfig
+    // is permanent for this row (`BadPayload`), not retried.
+    //
+    // We resolve this before skills so container-bound skills can be
+    // merged into `payload.skills` ahead of skill resolution.
+    let resolved_shell_env_pre = {
+        let request_env = first_shell_environment(&payload);
+        crate::services::shell_tool::resolve_shell_environment(
+            request_env,
+            &state.config.features.server_tools.shell_limits,
+            &state.config.features.containers,
+        )
+        .map_err(|e| {
+            BackgroundExecuteError::BadPayload(format!("shell environment rejected: {e}"))
+        })?
+    };
+
+    // Union container-bound skills into `payload.skills` (matches
+    // OpenAI's spec where skills bind to the container). We consider
+    // both explicit `container_reference` and implicit
+    // `previous_response_id` chaining.
+    if let Some(svc) = state.containers_service.as_ref() {
+        let candidate_container_id: Option<String> = match (
+            resolved_shell_env_pre.referenced_container_id.as_deref(),
+            payload.previous_response_id.as_deref(),
+        ) {
+            (Some(referenced), _) => Some(referenced.to_string()),
+            (None, Some(prev)) => store
+                .get(prev, record.org_id)
+                .await
+                .ok()
+                .and_then(|r| r.container_id),
+            _ => None,
+        };
+        if let Some(cid) = candidate_container_id
+            && let Ok(c) = svc.get_container(&cid, record.org_id).await
+            && matches!(c.status, crate::db::repos::ContainerStatus::Active)
+            && let Some(json) = c.skill_ids_json.as_deref()
+            && let Ok(bound) = serde_json::from_str::<Vec<String>>(json)
+            && !bound.is_empty()
+        {
+            let mut merged = payload.skills.clone().unwrap_or_default();
+            for s in bound {
+                if !merged.contains(&s) {
+                    merged.push(s);
+                }
+            }
+            payload.skills = Some(merged);
+        }
+    }
+
     // Resolve skills using the org from the persisted row. Mirrors the
     // foreground path: SKILL.md is prepended to instructions and the
     // returned mounts are threaded into apply_streaming_pipeline so
@@ -163,17 +218,13 @@ pub async fn execute_persisted_response(
         .await
         .map_err(|e| BackgroundExecuteError::BadPayload(format!("skill resolution failed: {e}")))?;
 
-    // Re-validate the request's shell `environment` overrides against
-    // the current operator limits. Foreground already checked at
-    // admission time, but the operator config may have tightened
-    // between admission and execution — re-checking ensures we never
-    // launch a session that exceeds the current envelope. Misconfig
-    // is permanent for this row (`BadPayload`), not retried.
+    // Final resolved env (re-do after potential payload changes).
     let resolved_shell_env = {
         let request_env = first_shell_environment(&payload);
         crate::services::shell_tool::resolve_shell_environment(
             request_env,
             &state.config.features.server_tools.shell_limits,
+            &state.config.features.containers,
         )
         .map_err(|e| {
             BackgroundExecuteError::BadPayload(format!("shell environment rejected: {e}"))
@@ -198,6 +249,15 @@ pub async fn execute_persisted_response(
     } else {
         Vec::new()
     };
+
+    // Gateway-side compaction for non-OpenAI providers. Best-effort:
+    // an error here means the original payload still flows through.
+    if let Err(e) =
+        crate::services::compactor::apply_gateway_compaction(&state, &provider_config, &mut payload)
+            .await
+    {
+        tracing::warn!(error = %e, "Background gateway compaction failed; continuing with original payload");
+    }
 
     // Sovereignty requirements are checked at request-creation time
     // for the foreground path; in the background we trust the row.
@@ -259,30 +319,61 @@ pub async fn execute_persisted_response(
         }
     };
 
-    // Same chained-container lookup the foreground does. Implicit
-    // reuse: any non-active prior container falls back to a fresh one
-    // rather than erroring.
-    let container_id_hint = match (
-        payload.previous_response_id.as_deref(),
-        state.containers_service.as_ref(),
-    ) {
-        (Some(prev_id), Some(containers_svc)) => {
-            let prev = store
-                .get(prev_id, record.org_id)
-                .await
-                .ok()
-                .and_then(|r| r.container_id);
-            match prev {
-                Some(cid) => match containers_svc.get_container(&cid, record.org_id).await {
-                    Ok(c) if matches!(c.status, crate::db::repos::ContainerStatus::Active) => {
-                        Some(cid)
-                    }
-                    _ => None,
-                },
-                None => None,
+    // Explicit `container_reference` wins over implicit chaining.
+    // Foreground validates at admission and returns 400; the row that
+    // reached here has already been admitted, so an explicit reference
+    // failing now is fatal for this run (`BadPayload`, not retried).
+    let container_id_hint = if let Some(ref referenced) = resolved_shell_env.referenced_container_id
+    {
+        let svc = state.containers_service.as_ref().ok_or_else(|| {
+            BackgroundExecuteError::BadPayload(
+                "container_reference requires persistence to be enabled".into(),
+            )
+        })?;
+        match svc.get_container(referenced, record.org_id).await {
+            Ok(c) if matches!(c.status, crate::db::repos::ContainerStatus::Active) => {
+                Some(referenced.clone())
+            }
+            Ok(c) => {
+                return Err(BackgroundExecuteError::BadPayload(format!(
+                    "container '{}' is in status '{}' and cannot be referenced",
+                    referenced,
+                    c.status.as_str()
+                )));
+            }
+            Err(_) => {
+                return Err(BackgroundExecuteError::BadPayload(format!(
+                    "container '{}' was not found in this organization",
+                    referenced
+                )));
             }
         }
-        _ => None,
+    } else {
+        // Implicit chaining via `previous_response_id`. Any
+        // non-active prior container silently falls back to a fresh
+        // one rather than erroring.
+        match (
+            payload.previous_response_id.as_deref(),
+            state.containers_service.as_ref(),
+        ) {
+            (Some(prev_id), Some(containers_svc)) => {
+                let prev = store
+                    .get(prev_id, record.org_id)
+                    .await
+                    .ok()
+                    .and_then(|r| r.container_id);
+                match prev {
+                    Some(cid) => match containers_svc.get_container(&cid, record.org_id).await {
+                        Ok(c) if matches!(c.status, crate::db::repos::ContainerStatus::Active) => {
+                            Some(cid)
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                }
+            }
+            _ => None,
+        }
     };
 
     // Build a `UsageLogEntry` so model-token usage from this

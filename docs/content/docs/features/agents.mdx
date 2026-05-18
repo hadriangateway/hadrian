@@ -73,22 +73,63 @@ declared and optional environment overrides:
     {
       "type": "shell",
       "environment": {
-        "container_auto": { "memory_limit": "1g" },
-        "network_policy": { "domains": ["pypi.org", "files.pythonhosted.org"] }
+        "type": "container_auto",
+        "memory_limit": "1g",
+        "expires_after": { "anchor": "last_active_at", "minutes": 30 },
+        "network_policy": {
+          "type": "allowlist",
+          "allowed_domains": ["pypi.org", "files.pythonhosted.org"],
+          "domain_secrets": [
+            { "domain": "api.github.com", "name": "GITHUB_TOKEN", "value": "ghp_…" }
+          ]
+        }
       }
     }
   ]
 }
 ```
 
+To attach to an existing container (created via `POST /v1/containers` or
+chained from an earlier response), use `container_reference`:
+
+```json
+{
+  "model": "gpt-5.2",
+  "input": "Continue from where we left off.",
+  "tools": [
+    {
+      "type": "shell",
+      "environment": {
+        "type": "container_reference",
+        "container_id": "cntr_abc123…"
+      }
+    }
+  ]
+}
+```
+
+The `domain_secrets` array accepts either OpenAI's inline form
+(`{ domain, name, value }` — the raw secret travels with the request)
+or Hadrian's safer reference form (`{ placeholder, allowed_domains }`,
+matched against `[features.server_tools.shell_limits].allowed_domain_secrets`
+so the value never leaves the gateway).
+
 The model emits shell calls; Hadrian executes them and streams progress events back as
 they happen:
 
-- `response.shell_call.in_progress`
-- `response.shell_call.command_started`
-- `response.shell_call.output_chunk` (stdout / stderr deltas)
-- `response.shell_call.file_created` (every captured file from `/mnt/data`)
-- `response.shell_call.completed` (exit code)
+- `response.shell_call.in_progress` — spec.
+- `response.shell_call.command_started` — **Hadrian extension.** Resolved command string.
+- `response.shell_call.output_chunk` — **Hadrian extension.** stdout / stderr deltas.
+- `response.shell_call.file_created` — **Hadrian extension.** One event per captured file
+  under `/mnt/data`.
+- `response.shell_call.completed` — spec, with `exit_code`, plus the Hadrian-extension
+  outcome fields `duration_ms`, `killed`, and `max_output_truncated`.
+- `response.output_item.done` carrying a `shell_call_output` item — spec. The item adds the
+  same outcome fields plus the Hadrian-extension `output_files` array.
+
+SDKs that hook OpenAI's typed event stream resolve `in_progress` / `completed` /
+`output_item.done` to their built-in event types; the Hadrian-extension events fall through
+as untyped JSON the consumer can opt into.
 
 Output longer than 8&nbsp;000 characters is head + tail trimmed before being fed back to the
 model, so it should redirect long output to a file under `/mnt/data` and follow up with
@@ -141,18 +182,39 @@ surfaced two ways:
 
 ## Containers
 
-Every shell-tool response provisions a container. Inspect and manage them:
+Every shell-tool response provisions a container. You can also create one explicitly with
+`POST /v1/containers` and bind future responses to it via
+`environment.type = "container_reference"`:
 
 ```
-GET    /v1/containers/{cntr_id}              # Metadata + TTL
-GET    /v1/containers/{cntr_id}/files        # List files in /mnt/data
-GET    /v1/containers/{cntr_id}/files/{id}   # File metadata
-GET    /v1/containers/{cntr_id}/files/{id}/content  # Raw bytes
-DELETE /v1/containers/{cntr_id}              # Tear down + cascade delete files
+POST   /v1/containers                                  # Create an empty container
+GET    /v1/containers/{cntr_id}                        # Metadata + TTL
+DELETE /v1/containers/{cntr_id}                        # Tear down + cascade delete files
+POST   /v1/containers/{cntr_id}/files                  # Multipart upload into /mnt/data
+GET    /v1/containers/{cntr_id}/files                  # List files in /mnt/data
+GET    /v1/containers/{cntr_id}/files/{id}             # File metadata
+DELETE /v1/containers/{cntr_id}/files/{id}             # Remove a file
+GET    /v1/containers/{cntr_id}/files/{id}/content     # Raw bytes
 ```
 
-Chain across responses by sending `previous_response_id`. The shell tool reattaches to the
-same container, so files and `/mnt/data` state are preserved between turns.
+`POST /v1/containers` accepts:
+
+```json
+{
+  "name": "my-workspace",
+  "memory_limit": "1g",
+  "expires_after": { "anchor": "last_active_at", "minutes": 60 },
+  "network_policy": {
+    "type": "allowlist",
+    "allowed_domains": ["pypi.org"]
+  },
+  "skills": ["<skill-uuid-1>"]
+}
+```
+
+The row is created with no live VM; the runtime boots on the first shell call that references
+it. Chain across responses by sending `previous_response_id` for implicit reuse, or
+`environment.type = "container_reference"` for explicit attachment.
 
 ### TTL & expiry
 
@@ -179,12 +241,52 @@ than the operator's defaults, but the request is bounded by what the operator pi
 - **Memory** — `default_mem_limit_mb`, `max_mem_limit_mb`. Per-request `memory_limit`
   must fit inside the cap.
 - **Egress** — `allowed_egress_hosts` is an operator allowlist; per-request
-  `network_policy.domains` must be a subset. Empty allowlist = inherit the runtime
+  `network_policy.allowed_domains` must be a subset. Empty allowlist = inherit the runtime
   default (microsandbox: full network; opensandbox: deny-all).
 - **Domain secrets** — `allowed_domain_secrets` lets the operator pre-configure
   placeholder secrets (e.g. `GITHUB_TOKEN`) that the model can refer to by name without
-  ever seeing the value. Per-request `domain_secrets[].allowed_domains` must be a subset.
+  ever seeing the value. Per-request `network_policy.domain_secrets[].allowed_domains`
+  must be a subset.
 - **Command timeout** — `command_timeout_secs` caps each individual shell exec.
+
+## Context compaction
+
+OpenAI's Responses API supports a `context_management` directive that triggers server-side
+compaction when the rolling token estimate crosses a threshold. Hadrian forwards the
+directive **verbatim** to providers that support it natively (OpenAI, Azure OpenAI); for
+every other provider (Anthropic, Bedrock, Vertex) it runs a **gateway-side compactor**
+before dispatch.
+
+```json
+"context_management": [
+  {
+    "type": "compaction",
+    "compact_threshold": 8000,
+    "strategy": "llm",
+    "prompt": "Summarize prior turns in <= 200 words; preserve constraints + file paths."
+  }
+]
+```
+
+Two strategies, picked by the request's Hadrian-extension `strategy` field (defaulting to
+`[features.responses.compaction].default_strategy`):
+
+- **`truncate`** — Drop the oldest non-system items until the estimate falls under the
+  threshold, replacing them with a single Hadrian compaction marker message. Free, deterministic.
+- **`llm`** — Summarise the dropped items via a one-shot call to the same provider/model
+  (using the `prompt` field — or `default_prompt` — to drive the summariser), and replace
+  them with a system message carrying the summary.
+
+Operator defaults live under `[features.responses.compaction]`:
+
+```toml
+[features.responses.compaction]
+enabled = true                     # default false — opt in to gateway compaction
+default_strategy = "truncate"      # "llm" | "truncate"
+default_threshold_tokens = 12_000  # falls back to this when the request omits it
+keep_recent_items = 6              # most recent N items are never compacted
+default_prompt = "..."             # summarisation prompt for the llm strategy
+```
 
 ## Background mode
 

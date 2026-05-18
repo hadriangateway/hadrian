@@ -1,15 +1,19 @@
-//! Read-only `/v1/containers/*` endpoints for the shell-tool
-//! `/mnt/data` artifact store.
+//! `/v1/containers/*` endpoints for the shell-tool `/mnt/data`
+//! artifact store. Spec-parity surface for OpenAI's Container resource:
 //!
-//! Phase 3 ships GET routes only:
+//! - `POST   /v1/containers`                         — create a container
+//! - `GET    /v1/containers/{container_id}`          — retrieve metadata
+//! - `DELETE /v1/containers/{container_id}`          — soft-delete
+//! - `POST   /v1/containers/{container_id}/files`    — upload a file
+//! - `GET    /v1/containers/{container_id}/files`    — list files
+//! - `GET    /v1/containers/{container_id}/files/{file_id}` — file metadata
+//! - `GET    /v1/containers/{container_id}/files/{file_id}/content` — raw bytes
+//! - `DELETE /v1/containers/{container_id}/files/{file_id}` — remove a file
 //!
-//! - `GET /v1/containers/{container_id}` — container metadata
-//! - `GET /v1/containers/{container_id}/files` — list files in the container
-//! - `GET /v1/containers/{container_id}/files/{file_id}` — file metadata
-//! - `GET /v1/containers/{container_id}/files/{file_id}/content` — raw bytes
-//!
-//! `POST` and `DELETE` routes are reserved for Phase 4 (cross-response
-//! reuse + lifecycle management).
+//! `POST /v1/containers` creates an *empty* container row (no live VM
+//! yet) so subsequent responses can attach to it via
+//! `environment.type = "container_reference"`. The VM boots on first
+//! shell call against the row.
 
 #![cfg(feature = "server")]
 
@@ -67,12 +71,34 @@ pub struct WireContainer {
     idle_ttl_secs: i64,
     /// **Hadrian Extension:** runtime that backed the session.
     runtime: String,
+    /// Optional display name set at creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Memory ceiling captured at creation, in MiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_limit_mb: Option<i64>,
+    /// `expires_after` block echoed back per OpenAI's spec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_after: Option<WireExpiresAfter>,
+    /// **Hadrian Extension:** network policy bound to this container
+    /// at creation time (or `null` when none was set). Returned as the
+    /// same JSON shape that goes into the request body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_policy: Option<serde_json::Value>,
+    /// **Hadrian Extension:** skill UUIDs bound to this container.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skill_ids: Vec<String>,
     /// **Hadrian Extension:** response this container was originally
-    /// provisioned for. Always set for Phase 3 (containers can only
-    /// be created via a response); Phase 4's manual create will leave
-    /// it null.
+    /// provisioned for, when implicit-created from a response. `null`
+    /// when the container was created via `POST /v1/containers`.
     #[serde(skip_serializing_if = "Option::is_none")]
     source_response_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WireExpiresAfter {
+    anchor: &'static str,
+    minutes: i64,
 }
 
 /// Wire shape for one `container.file` row. Matches OpenAI's response
@@ -127,6 +153,23 @@ fn container_to_wire(record: ContainerRecord) -> WireContainer {
         .expires_at
         .map(|t| t.timestamp())
         .unwrap_or_else(|| record.last_active_at.timestamp() + record.idle_ttl_secs);
+    let expires_after = if record.idle_ttl_secs > 0 {
+        Some(WireExpiresAfter {
+            anchor: "last_active_at",
+            minutes: record.idle_ttl_secs / 60,
+        })
+    } else {
+        None
+    };
+    let network_policy = record
+        .network_policy_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let skill_ids = record
+        .skill_ids_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default();
     WireContainer {
         id: record.id,
         object: OBJECT_CONTAINER,
@@ -136,6 +179,11 @@ fn container_to_wire(record: ContainerRecord) -> WireContainer {
         expires_at,
         idle_ttl_secs: record.idle_ttl_secs,
         runtime: record.runtime_label,
+        name: record.name,
+        memory_limit_mb: record.memory_limit_mb,
+        expires_after,
+        network_policy,
+        skill_ids,
         source_response_id: record.source_response_id,
     }
 }
@@ -236,6 +284,215 @@ fn map_service_err(e: ContainersServiceError) -> ApiError {
             )
         }
     }
+}
+
+/// Request body for `POST /v1/containers`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateContainerRequest {
+    /// Optional display name (max 255 chars).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional memory ceiling. Accepts OpenAI's `"1g"` / `"512m"`
+    /// strings; parsed case-insensitively. Capped by the operator's
+    /// `[features.server_tools.shell_limits].max_mem_limit_mb`.
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+    /// Optional idle-TTL hint. Per OpenAI's spec: `{anchor:
+    /// "last_active_at", minutes: N}`. Capped by
+    /// `[features.containers].max_idle_ttl_secs / 60`.
+    #[serde(default)]
+    pub expires_after: Option<crate::api_types::responses::ContainerExpiresAfter>,
+    /// Optional network policy (same shape as
+    /// `tools.shell.environment.network_policy`).
+    #[serde(default)]
+    pub network_policy: Option<crate::api_types::responses::ShellNetworkPolicy>,
+    /// **Hadrian Extension:** skill UUIDs to mount whenever a session
+    /// is booted against this container.
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+/// `POST /v1/containers` — create an unattached container.
+#[cfg_attr(feature = "utoipa", utoipa::path(
+    post,
+    path = "/api/v1/containers",
+    tag = "containers",
+    request_body(content = Object, description = "Container creation request"),
+    responses(
+        (status = 200, description = "The created container metadata"),
+        (status = 400, description = "Request rejected", body = crate::openapi::ErrorResponse),
+        (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponse),
+        (status = 403, description = "Authorization denied", body = crate::openapi::ErrorResponse),
+        (status = 501, description = "Persistence disabled", body = crate::openapi::ErrorResponse),
+    ),
+    security(("api_key" = []))
+))]
+pub async fn api_v1_containers_create(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthenticatedRequest>>,
+    authz: Option<Extension<AuthzContext>>,
+    Json(body): Json<CreateContainerRequest>,
+) -> Result<Json<WireContainer>, ApiError> {
+    let svc = resolve_service(&state)?;
+    enforce_authz(authz.as_ref(), auth.as_ref(), "write").await?;
+    let org_id = require_caller_org(auth.as_ref())?;
+
+    let owner = crate::services::responses_pipeline::derive_response_owner(
+        &state,
+        auth.as_ref().map(|e| &e.0),
+    )
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "authentication_required",
+            "Container creation requires an authenticated owner",
+        )
+    })?;
+
+    let containers_cfg = &state.config.features.containers;
+    let shell_limits = &state.config.features.server_tools.shell_limits;
+
+    // ── Memory limit (request → bytes → MiB column) ──
+    let memory_limit_mb: Option<i64> = match body.memory_limit.as_deref() {
+        Some(raw) => {
+            let bytes =
+                crate::services::shell_tool::parse_memory_limit_pub(raw).ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_memory_limit",
+                        format!("invalid memory_limit '{raw}'"),
+                    )
+                })?;
+            if let Some(cap_mb) = shell_limits.max_mem_limit_mb {
+                let cap_bytes = u64::from(cap_mb) * 1024 * 1024;
+                if bytes > cap_bytes {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "memory_limit_exceeds_cap",
+                        format!(
+                            "memory_limit {} MB exceeds operator cap {} MB",
+                            bytes / (1024 * 1024),
+                            cap_mb
+                        ),
+                    ));
+                }
+            }
+            Some(i64::try_from(bytes / (1024 * 1024)).unwrap_or(i64::MAX))
+        }
+        None => None,
+    };
+
+    // ── expires_after ──
+    let idle_ttl_secs = match body.expires_after.as_ref() {
+        Some(exp) => {
+            let max_minutes = (containers_cfg.max_idle_ttl_secs / 60) as u32;
+            if exp.minutes > max_minutes {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "expires_after_exceeds_cap",
+                    format!(
+                        "expires_after.minutes {} exceeds operator cap of {} minutes",
+                        exp.minutes, max_minutes
+                    ),
+                ));
+            }
+            i64::from(exp.minutes) * 60
+        }
+        None => containers_cfg.default_idle_ttl_secs as i64,
+    };
+
+    // ── network_policy: validate against operator caps (resolver
+    //    accepts both inline + reference forms) and persist verbatim.
+    if let Some(ref np) = body.network_policy {
+        // Wrap in a minimal `ShellEnvironment::ContainerAuto` so the
+        // existing resolver does the validation work.
+        let env = crate::api_types::responses::ShellEnvironment::ContainerAuto(
+            crate::api_types::responses::ShellContainerAuto {
+                memory_limit: None,
+                expires_after: None,
+                network_policy: Some(np.clone()),
+            },
+        );
+        crate::services::shell_tool::resolve_shell_environment(
+            Some(&env),
+            shell_limits,
+            containers_cfg,
+        )
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "network_policy_rejected",
+                e.to_string(),
+            )
+        })?;
+    }
+    let network_policy_json = body
+        .network_policy
+        .as_ref()
+        .map(|np| serde_json::to_string(np).unwrap_or_default());
+
+    // ── skills: validate UUIDs and existence ──
+    let mut skill_uuids: Vec<String> = Vec::with_capacity(body.skills.len());
+    for s in &body.skills {
+        let parsed = Uuid::parse_str(s).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_skill_id",
+                format!("skill id '{s}' is not a valid UUID"),
+            )
+        })?;
+        skill_uuids.push(parsed.to_string());
+    }
+    let skill_ids_json = if skill_uuids.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&skill_uuids).unwrap_or_default())
+    };
+
+    // Choose the runtime label so future requests reusing this
+    // container know which runtime backend is expected. When no shell
+    // runtime is configured we still let the row exist so that an
+    // operator switching from `passthrough_openai` to e.g.
+    // `microsandbox` later doesn't have to recreate containers.
+    let runtime_label = match &state.config.features.shell {
+        crate::config::ShellRuntimeConfig::None => "none",
+        crate::config::ShellRuntimeConfig::PassthroughOpenAI => "passthrough_openai",
+        crate::config::ShellRuntimeConfig::ClientPassthrough => "client_passthrough",
+        #[cfg(feature = "runtime-microsandbox")]
+        crate::config::ShellRuntimeConfig::Microsandbox(_) => "microsandbox",
+        #[cfg(feature = "runtime-opensandbox")]
+        crate::config::ShellRuntimeConfig::OpenSandbox(_) => "opensandbox",
+    };
+
+    let container_id = format!("cntr_{}", Uuid::new_v4().simple());
+    let name = body.name.clone();
+    if let Some(ref n) = name
+        && n.len() > 255
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "name_too_long",
+            "name must be 255 chars or fewer",
+        ));
+    }
+
+    let record = svc
+        .create_explicit(
+            container_id,
+            org_id,
+            owner,
+            runtime_label,
+            idle_ttl_secs,
+            name,
+            memory_limit_mb,
+            network_policy_json,
+            skill_ids_json,
+        )
+        .await
+        .map_err(map_service_err)?;
+
+    Ok(Json(container_to_wire(record)))
 }
 
 /// `GET /v1/containers/{container_id}` — retrieve a container.
@@ -489,6 +746,183 @@ pub async fn api_v1_containers_file_content(
     Ok(response)
 }
 
+/// `POST /v1/containers/{container_id}/files` — upload a file into a
+/// container's `/mnt/data`. Accepts `multipart/form-data` with a
+/// `file` part (required) and optional `path` / `content_type` parts.
+/// Matches OpenAI's upload contract.
+#[cfg_attr(feature = "utoipa", utoipa::path(
+    post,
+    path = "/api/v1/containers/{container_id}/files",
+    tag = "containers",
+    params(("container_id" = String, Path)),
+    responses(
+        (status = 200, description = "Uploaded file metadata"),
+        (status = 400, description = "Request rejected", body = crate::openapi::ErrorResponse),
+        (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponse),
+        (status = 403, description = "Authorization denied", body = crate::openapi::ErrorResponse),
+        (status = 404, description = "Container not found", body = crate::openapi::ErrorResponse),
+        (status = 413, description = "Payload too large", body = crate::openapi::ErrorResponse),
+        (status = 501, description = "Persistence disabled", body = crate::openapi::ErrorResponse),
+    ),
+    security(("api_key" = []))
+))]
+pub async fn api_v1_containers_file_upload(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthenticatedRequest>>,
+    authz: Option<Extension<AuthzContext>>,
+    Path(container_id): Path<String>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<WireContainerFile>, ApiError> {
+    let svc = resolve_service(&state)?;
+    enforce_authz(authz.as_ref(), auth.as_ref(), "write").await?;
+    let org_id = require_caller_org(auth.as_ref())?;
+
+    // 404 the upload up front when the container isn't reachable.
+    let container = svc
+        .get_container(&container_id, org_id)
+        .await
+        .map_err(map_service_err)?;
+    if !matches!(container.status, crate::db::repos::ContainerStatus::Active) {
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "container_not_reusable",
+            format!(
+                "container is in status '{}' and cannot accept uploads",
+                container.status.as_str()
+            ),
+        ));
+    }
+
+    let max_bytes = state.config.features.containers.max_bytes_per_file as usize;
+    let mut filename: Option<String> = None;
+    let mut content_bytes: Option<Vec<u8>> = None;
+    let mut content_type_field: Option<String> = None;
+    let mut path_field: Option<String> = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_multipart",
+            format!("malformed multipart request: {e}"),
+        )
+    })? {
+        match field.name().unwrap_or("") {
+            "file" => {
+                filename = field.file_name().map(str::to_string);
+                content_type_field = field.content_type().map(str::to_string);
+                let data = field.bytes().await.map_err(|e| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_multipart",
+                        format!("failed to read file part: {e}"),
+                    )
+                })?;
+                if data.len() > max_bytes {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "file_too_large",
+                        format!(
+                            "file size {} exceeds operator cap of {} bytes",
+                            data.len(),
+                            max_bytes
+                        ),
+                    ));
+                }
+                content_bytes = Some(data.to_vec());
+            }
+            "path" => {
+                path_field = Some(field.text().await.unwrap_or_default());
+            }
+            "content_type" => {
+                content_type_field = Some(field.text().await.unwrap_or_default());
+            }
+            _ => {
+                // Skip unknown parts silently — OpenAI clients
+                // sometimes attach `purpose` or similar markers.
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let content = content_bytes.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing_file_part",
+            "multipart upload must include a 'file' part",
+        )
+    })?;
+    let filename = filename.unwrap_or_else(|| "upload".to_string());
+    // Normalize path: must live under /mnt/data. Anything else is
+    // rebased to `/mnt/data/<basename>` so callers can't escape the
+    // workdir via `../`.
+    const MNT: &str = crate::services::container_session::MNT_DATA;
+    let path = match path_field {
+        Some(p) if !p.is_empty() => {
+            let normalised = p.trim_start_matches('/').to_string();
+            if normalised.contains("..") {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_path",
+                    "path may not contain '..'",
+                ));
+            }
+            if normalised.starts_with("mnt/data/") {
+                format!("/{normalised}")
+            } else {
+                format!("{MNT}/{normalised}")
+            }
+        }
+        _ => format!("{MNT}/{filename}"),
+    };
+
+    let record = svc
+        .upload_file(
+            &container_id,
+            org_id,
+            path,
+            filename,
+            content_type_field,
+            content,
+            crate::api_types::responses::ContainerFileSource::User,
+            None,
+            None,
+        )
+        .await
+        .map_err(map_service_err)?;
+    Ok(Json(file_to_wire(record)))
+}
+
+/// `DELETE /v1/containers/{container_id}/files/{file_id}` — remove
+/// a file from a container.
+#[cfg_attr(feature = "utoipa", utoipa::path(
+    delete,
+    path = "/api/v1/containers/{container_id}/files/{file_id}",
+    tag = "containers",
+    params(("container_id" = String, Path), ("file_id" = String, Path)),
+    responses(
+        (status = 204, description = "File deleted"),
+        (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponse),
+        (status = 403, description = "Authorization denied", body = crate::openapi::ErrorResponse),
+        (status = 404, description = "File not found", body = crate::openapi::ErrorResponse),
+        (status = 501, description = "Persistence disabled", body = crate::openapi::ErrorResponse),
+    ),
+    security(("api_key" = []))
+))]
+pub async fn api_v1_containers_file_delete(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthenticatedRequest>>,
+    authz: Option<Extension<AuthzContext>>,
+    Path((container_id, file_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let svc = resolve_service(&state)?;
+    enforce_authz(authz.as_ref(), auth.as_ref(), "delete").await?;
+    let org_id = require_caller_org(auth.as_ref())?;
+    svc.delete_file(&container_id, &file_id, org_id)
+        .await
+        .map_err(map_service_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Build an RFC 6266 `Content-Disposition: attachment` header value
 /// that survives any byte sequence in `filename`.
 ///
@@ -556,6 +990,10 @@ mod tests {
             last_active_at: chrono::Utc.timestamp_opt(1_000_000, 0).unwrap(),
             created_at: chrono::Utc.timestamp_opt(999_000, 0).unwrap(),
             expires_at: None,
+            name: None,
+            memory_limit_mb: None,
+            network_policy_json: None,
+            skill_ids_json: None,
         }
     }
 
