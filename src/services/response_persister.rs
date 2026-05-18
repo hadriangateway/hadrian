@@ -62,6 +62,12 @@ pub fn wrap_streaming_with_persistence(
         let mut terminal_event_persisted = false;
         let mut sequence_number: i64 = initial_sequence_number;
         let mut cancelled = false;
+        // Lazily filled when the first terminal event is detected so
+        // we can inject `container_id` into the response payload (the
+        // upstream provider doesn't know about Hadrian containers).
+        // Fetched once per response; `None` after the lookup means no
+        // shell-tool session was attached.
+        let mut container_id_for_event: Option<Option<String>> = None;
 
         loop {
             tokio::select! {
@@ -88,8 +94,32 @@ pub fn wrap_streaming_with_persistence(
                     sse_buffer.extend(&chunk);
                     for event in sse_buffer.extract_complete_events() {
                         let is_terminal = inspect_terminal_event(&event);
+
+                        // On the first terminal event, look up the
+                        // response record once and cache its
+                        // container_id so we can stamp it into both the
+                        // forwarded SSE event and the persisted event
+                        // payload. Upstream providers don't know about
+                        // Hadrian-hosted containers, so without this
+                        // injection clients only see container_id on
+                        // the GET retrieve path.
+                        if is_terminal.is_some() && container_id_for_event.is_none() {
+                            let lookup = store
+                                .get(&response_id, org_id)
+                                .await
+                                .ok()
+                                .and_then(|r| r.container_id);
+                            container_id_for_event = Some(lookup);
+                        }
+                        let event = if is_terminal.is_some()
+                            && let Some(Some(ref cid)) = container_id_for_event
+                        {
+                            inject_container_id_into_event(&event, cid).unwrap_or(event)
+                        } else {
+                            event
+                        };
                         if final_response_object.is_none()
-                            && let Some((resp_obj, status)) = is_terminal.clone()
+                            && let Some((resp_obj, status)) = inspect_terminal_event(&event)
                         {
                             final_response_object = Some(resp_obj);
                             terminal_status = Some(status);
@@ -193,9 +223,27 @@ pub fn wrap_streaming_with_persistence(
                 ResponseStatus::Incomplete => "response.incomplete",
                 _ => "response.completed",
             };
+            // Resolve container_id once for the synthetic event too.
+            // Re-read if we never hit a terminal event during the
+            // stream (so `container_id_for_event` is still `None`).
+            let container_id_synth: Option<String> = match container_id_for_event.take() {
+                Some(cid) => cid,
+                None => store
+                    .get(&response_id, org_id)
+                    .await
+                    .ok()
+                    .and_then(|r| r.container_id),
+            };
+            let mut response_obj = serde_json::json!({
+                "id": response_id.clone(),
+                "status": status.as_str(),
+            });
+            if let Some(ref cid) = container_id_synth {
+                response_obj["container_id"] = Value::String(cid.clone());
+            }
             let payload = serde_json::json!({
                 "type": synth_type,
-                "response": { "id": response_id.clone(), "status": status.as_str() },
+                "response": response_obj,
             });
             let synth_event = NewResponseEvent {
                 response_id: response_id.clone(),
@@ -247,6 +295,58 @@ pub fn wrap_streaming_with_persistence(
         rx.recv().await.map(|item| (item, rx))
     });
     Response::from_parts(parts, Body::from_stream(stream))
+}
+
+/// Rewrite a terminal SSE event's `data:` payload to stamp
+/// `response.container_id`. Upstream providers don't emit this for
+/// Hadrian-hosted containers, so we inject it on the way out so the
+/// streaming surface matches what `GET /v1/responses/{id}` returns.
+///
+/// Returns `None` when the event has no parseable `data:` JSON line,
+/// or when the payload already carries a matching container_id (so
+/// passthrough_openai responses round-trip unchanged).
+fn inject_container_id_into_event(event: &[u8], container_id: &str) -> Option<Bytes> {
+    let s = std::str::from_utf8(event).ok()?;
+    let mut out = String::with_capacity(event.len() + container_id.len() + 24);
+    let mut mutated = false;
+    for line in s.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if let Some(data) = trimmed.strip_prefix("data:") {
+            let data = data.trim_start();
+            if !data.is_empty()
+                && data != "[DONE]"
+                && let Ok(mut json) = serde_json::from_str::<Value>(data)
+                && let Some(resp) = json.get_mut("response").and_then(|r| r.as_object_mut())
+            {
+                let existing = resp
+                    .get("container_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if existing.as_deref() != Some(container_id) {
+                    resp.insert(
+                        "container_id".to_string(),
+                        Value::String(container_id.to_string()),
+                    );
+                    out.push_str("data: ");
+                    out.push_str(&serde_json::to_string(&json).ok()?);
+                    // Preserve the original frame's line terminator.
+                    if line.ends_with("\r\n") {
+                        out.push_str("\r\n");
+                    } else if line.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    mutated = true;
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if mutated {
+        Some(Bytes::from(out))
+    } else {
+        None
+    }
 }
 
 /// Recognise an SSE event that terminates the response and carries the
@@ -326,6 +426,22 @@ mod tests {
     fn ignores_done_sentinel() {
         let raw = b"data: [DONE]\n\n";
         assert!(inspect_terminal_event(raw).is_none());
+    }
+
+    #[test]
+    fn injects_container_id_into_terminal_event() {
+        let raw = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\"}}\n\n";
+        let out = inject_container_id_into_event(raw, "cntr_xyz").expect("should mutate");
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains("\"container_id\":\"cntr_xyz\""), "got: {s}");
+        // Header line preserved verbatim.
+        assert!(s.starts_with("event: response.completed\n"));
+    }
+
+    #[test]
+    fn injection_skipped_when_already_present() {
+        let raw = b"data: {\"type\":\"response.completed\",\"response\":{\"container_id\":\"cntr_xyz\"}}\n\n";
+        assert!(inject_container_id_into_event(raw, "cntr_xyz").is_none());
     }
 }
 

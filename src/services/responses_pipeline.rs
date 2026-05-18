@@ -133,6 +133,18 @@ pub enum SkillResolutionError {
     NoService,
     #[error("skill lookup failed: {0}")]
     Db(String),
+    #[error("only `version = \"latest\"` is supported (got `{0}`)")]
+    UnsupportedVersion(String),
+    #[error("inline skill `{name}` has invalid base64 data: {detail}")]
+    InvalidBase64 { name: String, detail: String },
+    #[error(
+        "inline skill `{name}` uses media_type `{media_type}` — only `text/markdown` is supported today"
+    )]
+    UnsupportedMediaType { name: String, media_type: String },
+    #[error("inline skill `{name}` payload is not valid UTF-8")]
+    InvalidUtf8 { name: String },
+    #[error("inline skill name must be non-empty")]
+    EmptyInlineName,
 }
 
 /// Resolve `payload.skills` to mountable bundles and prepend each
@@ -151,60 +163,21 @@ pub async fn resolve_and_inject_skills(
     payload: &mut CreateResponsesPayload,
     org_id: Option<Uuid>,
 ) -> Result<Vec<SkillMount>, SkillResolutionError> {
-    let Some(ref skill_ids) = payload.skills else {
+    let Some(ref skills) = payload.skills else {
         return Ok(Vec::new());
     };
-    if skill_ids.is_empty() {
+    if skills.is_empty() {
         return Ok(Vec::new());
     }
-    let services = state
-        .services
-        .as_ref()
-        .ok_or(SkillResolutionError::NoService)?;
-    let org = org_id.ok_or(SkillResolutionError::MissingOrg)?;
 
-    let mut mounts = Vec::with_capacity(skill_ids.len());
-    let mut preamble_sections = Vec::with_capacity(skill_ids.len());
+    let mut mounts = Vec::with_capacity(skills.len());
+    let mut preamble_sections = Vec::with_capacity(skills.len());
 
-    for raw in skill_ids {
-        let id = Uuid::parse_str(raw).map_err(|_| SkillResolutionError::InvalidId(raw.clone()))?;
-        let skill = services
-            .skills
-            .get_by_id_and_org(id, org)
-            .await
-            .map_err(|e| SkillResolutionError::Db(e.to_string()))?
-            .ok_or_else(|| SkillResolutionError::NotFound(raw.clone()))?;
-
-        let mount_path = format!("/skills/{}", skill.id);
-        let files = skill
-            .files
-            .iter()
-            .map(|f| MountedFile {
-                relative_path: f.path.clone(),
-                content: Bytes::from(f.content.clone().into_bytes()),
-            })
-            .collect();
-        if let Some(main) = skill.files.iter().find(|f| f.path == SKILL_MAIN_FILE) {
-            preamble_sections.push(format!(
-                "## Skill: {name}\n{description}\n\nFiles available under: {mount_path}/\n\n{content}",
-                name = skill.name,
-                description = skill.description,
-                mount_path = mount_path,
-                content = main.content,
-            ));
-        } else {
-            preamble_sections.push(format!(
-                "## Skill: {name}\n{description}\n\nFiles available under: {mount_path}/",
-                name = skill.name,
-                description = skill.description,
-                mount_path = mount_path,
-            ));
-        }
-        mounts.push(SkillMount {
-            skill_id: skill.id.to_string(),
-            mount_path,
-            files,
-        });
+    for entry in skills {
+        let mount = resolve_one_skill(state, org_id, entry).await?;
+        let preamble = mount.build_preamble();
+        preamble_sections.push(preamble);
+        mounts.push(mount.into_skill_mount());
     }
 
     if !preamble_sections.is_empty() {
@@ -219,6 +192,159 @@ pub async fn resolve_and_inject_skills(
     }
 
     Ok(mounts)
+}
+
+/// Intermediate form between a parsed `RequestSkill` and a runtime
+/// `SkillMount`. Carries the display-name + description so we can
+/// build a consistent preamble section regardless of whether the
+/// skill came from the database or an inline bundle.
+#[derive(Debug)]
+struct ResolvedSkill {
+    skill_id: String,
+    name: String,
+    description: String,
+    mount_path: String,
+    files: Vec<MountedFile>,
+    /// `SKILL.md` content when present — used to embed in the preamble.
+    main_content: Option<String>,
+}
+
+impl ResolvedSkill {
+    fn build_preamble(&self) -> String {
+        match &self.main_content {
+            Some(content) => format!(
+                "## Skill: {name}\n{description}\n\nFiles available under: {mount_path}/\n\n{content}",
+                name = self.name,
+                description = self.description,
+                mount_path = self.mount_path,
+                content = content,
+            ),
+            None => format!(
+                "## Skill: {name}\n{description}\n\nFiles available under: {mount_path}/",
+                name = self.name,
+                description = self.description,
+                mount_path = self.mount_path,
+            ),
+        }
+    }
+
+    fn into_skill_mount(self) -> SkillMount {
+        SkillMount {
+            skill_id: self.skill_id,
+            mount_path: self.mount_path,
+            files: self.files,
+        }
+    }
+}
+
+async fn resolve_one_skill(
+    state: &AppState,
+    org_id: Option<Uuid>,
+    entry: &crate::api_types::RequestSkill,
+) -> Result<ResolvedSkill, SkillResolutionError> {
+    match entry {
+        crate::api_types::RequestSkill::SkillReference(reference) => {
+            // Version pin: only `latest` (and the absence of a value)
+            // are honored today. Reject anything else loudly so callers
+            // discover the gap instead of silently getting `latest`.
+            if let Some(v) = reference.version.as_deref()
+                && v != "latest"
+            {
+                return Err(SkillResolutionError::UnsupportedVersion(v.to_string()));
+            }
+            let services = state
+                .services
+                .as_ref()
+                .ok_or(SkillResolutionError::NoService)?;
+            let org = org_id.ok_or(SkillResolutionError::MissingOrg)?;
+            let id = Uuid::parse_str(&reference.skill_id)
+                .map_err(|_| SkillResolutionError::InvalidId(reference.skill_id.clone()))?;
+            let skill = services
+                .skills
+                .get_by_id_and_org(id, org)
+                .await
+                .map_err(|e| SkillResolutionError::Db(e.to_string()))?
+                .ok_or_else(|| SkillResolutionError::NotFound(reference.skill_id.clone()))?;
+
+            let mount_path = format!("/skills/{}", skill.id);
+            let main_content = skill
+                .files
+                .iter()
+                .find(|f| f.path == SKILL_MAIN_FILE)
+                .map(|f| f.content.clone());
+            let files = skill
+                .files
+                .iter()
+                .map(|f| MountedFile {
+                    relative_path: f.path.clone(),
+                    content: Bytes::from(f.content.clone().into_bytes()),
+                })
+                .collect();
+            Ok(ResolvedSkill {
+                skill_id: skill.id.to_string(),
+                name: skill.name,
+                description: skill.description,
+                mount_path,
+                files,
+                main_content,
+            })
+        }
+        crate::api_types::RequestSkill::Inline(inline) => resolve_inline_skill(inline),
+    }
+}
+
+fn resolve_inline_skill(
+    inline: &crate::api_types::InlineSkill,
+) -> Result<ResolvedSkill, SkillResolutionError> {
+    if inline.name.trim().is_empty() {
+        return Err(SkillResolutionError::EmptyInlineName);
+    }
+    let crate::api_types::InlineSkillSource::Base64 { media_type, data } = &inline.source;
+    if media_type != "text/markdown" {
+        return Err(SkillResolutionError::UnsupportedMediaType {
+            name: inline.name.clone(),
+            media_type: media_type.clone(),
+        });
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| SkillResolutionError::InvalidBase64 {
+            name: inline.name.clone(),
+            detail: e.to_string(),
+        })?;
+    let content = String::from_utf8(bytes).map_err(|_| SkillResolutionError::InvalidUtf8 {
+        name: inline.name.clone(),
+    })?;
+    // Synthetic per-request id derived from the payload hash so the
+    // mount path is stable across foreground/background dispatch but
+    // doesn't collide with stored skill UUIDs.
+    let synthetic_id = inline_skill_synthetic_id(&inline.name, &content);
+    let mount_path = format!("/skills/{synthetic_id}");
+    let files = vec![MountedFile {
+        relative_path: SKILL_MAIN_FILE.to_string(),
+        content: Bytes::from(content.clone().into_bytes()),
+    }];
+    Ok(ResolvedSkill {
+        skill_id: synthetic_id,
+        name: inline.name.clone(),
+        description: inline.description.clone(),
+        mount_path,
+        files,
+        main_content: Some(content),
+    })
+}
+
+/// Synthetic id used as the mount-path segment for inline skills.
+/// Hash-based so the same payload reuses the same path across the
+/// foreground / background lanes (otherwise the response that resumes
+/// from a background tick would mount the skill at a different path).
+fn inline_skill_synthetic_id(name: &str, content: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    content.hash(&mut hasher);
+    format!("skill_inline_{:016x}", hasher.finish())
 }
 
 /// Wrap a streaming Responses-API response with the full server-side
@@ -639,5 +765,79 @@ fn add_usage(
             (None, Some(b)) => target.upstream_inference_cost = Some(b),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use base64::Engine as _;
+
+    use super::*;
+    use crate::api_types::{InlineSkill, InlineSkillSource};
+
+    #[test]
+    fn inline_markdown_skill_resolves_to_skill_md() {
+        let payload = "# Useful skill\n\nDo a thing.";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let inline = InlineSkill {
+            name: "useful".into(),
+            description: "Does a thing".into(),
+            source: InlineSkillSource::Base64 {
+                media_type: "text/markdown".into(),
+                data: encoded,
+            },
+        };
+        let mount = resolve_inline_skill(&inline).expect("should resolve");
+        assert!(mount.skill_id.starts_with("skill_inline_"));
+        assert_eq!(mount.mount_path, format!("/skills/{}", mount.skill_id));
+        assert_eq!(mount.files.len(), 1);
+        assert_eq!(mount.files[0].relative_path, SKILL_MAIN_FILE);
+        assert_eq!(
+            std::str::from_utf8(&mount.files[0].content).unwrap(),
+            payload
+        );
+        let preamble = mount.build_preamble();
+        assert!(preamble.contains("## Skill: useful"));
+        assert!(preamble.contains(payload));
+    }
+
+    #[test]
+    fn inline_rejects_unsupported_media_type() {
+        let inline = InlineSkill {
+            name: "useful".into(),
+            description: "x".into(),
+            source: InlineSkillSource::Base64 {
+                media_type: "application/zip".into(),
+                data: "AAAA".into(),
+            },
+        };
+        let err = resolve_inline_skill(&inline).expect_err("should fail");
+        assert!(
+            matches!(err, SkillResolutionError::UnsupportedMediaType { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_rejects_invalid_base64() {
+        let inline = InlineSkill {
+            name: "x".into(),
+            description: "x".into(),
+            source: InlineSkillSource::Base64 {
+                media_type: "text/markdown".into(),
+                data: "not valid base64 !!!".into(),
+            },
+        };
+        let err = resolve_inline_skill(&inline).expect_err("should fail");
+        assert!(matches!(err, SkillResolutionError::InvalidBase64 { .. }));
+    }
+
+    #[test]
+    fn inline_synthetic_id_stable_for_same_payload() {
+        let a = inline_skill_synthetic_id("foo", "bar");
+        let b = inline_skill_synthetic_id("foo", "bar");
+        assert_eq!(a, b);
+        let c = inline_skill_synthetic_id("foo", "different");
+        assert_ne!(a, c);
     }
 }

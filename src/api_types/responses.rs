@@ -753,8 +753,13 @@ pub struct ShellCallOutput {
     pub type_: ShellCallOutputType,
     /// Call ID issued by the model for this shell tool call.
     pub id: String,
-    /// The command that was executed.
-    pub command: String,
+    /// Shell commands that were executed, in order. Joined into a
+    /// single script for execution; final `exit_code` is the script's.
+    pub commands: Vec<String>,
+    /// Working directory the script ran in. Omitted when the runtime
+    /// default (`/mnt/data`) was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
     /// Exit code returned by the command.
     pub exit_code: i32,
     /// Final status — typically `completed` or `failed`.
@@ -766,6 +771,11 @@ pub struct ShellCallOutput {
     /// Truncated stderr for the model's context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// Echoes the model-emitted `shell_call.action.max_output_length` so
+    /// clients can see what the model asked for. Omitted when the model
+    /// didn't request a limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_length: Option<usize>,
     /// **Hadrian Extension:** Files written to `/mnt/data` during this
     /// command. Populated when the configured shell runtime supports
     /// `file_io` and `[features.containers]` is enabled. Each entry's
@@ -1226,9 +1236,29 @@ pub struct ShellNetworkPolicy {
     pub domain_secrets: Vec<ShellDomainSecret>,
 }
 
+/// Discriminator on `network_policy.type`. Today only `allowlist` is
+/// defined; the `Other` catch-all preserves the upstream value so a
+/// future OpenAI addition (e.g. `denylist`) doesn't reject requests at
+/// the gateway. The shell executor still applies the allowlist policy
+/// regardless — operators get unknown types logged and treated as
+/// `allowlist`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", untagged)]
+pub enum ShellNetworkPolicyType {
+    Known(KnownShellNetworkPolicyType),
+    /// Forward-compat: anything the gateway hasn't been taught yet.
+    Other(String),
+}
+
+impl Default for ShellNetworkPolicyType {
+    fn default() -> Self {
+        Self::Known(KnownShellNetworkPolicyType::Allowlist)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ShellNetworkPolicyType {
+pub enum KnownShellNetworkPolicyType {
     #[default]
     Allowlist,
 }
@@ -1267,6 +1297,59 @@ pub struct ShellDomainSecretRef {
     /// means "all hosts the operator permits for this secret".
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+}
+
+/// One entry in `skills` on a `/v1/responses` or `/v1/containers`
+/// request. Tagged per OpenAI's spec:
+///
+/// - `skill_reference` resolves a stored skill by UUID.
+/// - `inline` embeds an ephemeral skill bundle in the request itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RequestSkill {
+    /// Mount a skill that was previously created via the skills API.
+    SkillReference(SkillReference),
+    /// Mount an ephemeral skill bundle carried inline on the request.
+    Inline(InlineSkill),
+}
+
+/// Reference to an existing skill resource (Hadrian skill UUID).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillReference {
+    /// Hadrian skill UUID. Must belong to the caller's org.
+    pub skill_id: String,
+    /// Version pin. Only `"latest"` is supported today; passing any
+    /// other value rejects the request with 400 so callers don't
+    /// silently get the latest when they asked for a pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// Inline skill bundle. Mounted under `/skills/<synthetic-id>/` for
+/// the lifetime of the request (or the container, when supplied at
+/// container creation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InlineSkill {
+    /// Display name for the skill. Surfaced to the model in the
+    /// auto-prepended `instructions` preamble.
+    pub name: String,
+    /// Human-readable description. Also surfaced to the model.
+    pub description: String,
+    /// Encoded payload. `source.type = "base64"` only today.
+    pub source: InlineSkillSource,
+}
+
+/// Payload of an [`InlineSkill`]. Tagged so future encodings (e.g.
+/// `url`, `file_id`) slot in without breaking older clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InlineSkillSource {
+    /// Base64-encoded payload. `media_type` controls how the bytes are
+    /// interpreted: `text/markdown` ⇒ single `SKILL.md`. Other media
+    /// types reject with 400 until multi-file (zip) support lands.
+    Base64 { media_type: String, data: String },
 }
 
 /// OpenAI-compatible inline secret. The raw value travels with the
@@ -1711,16 +1794,34 @@ pub struct CreateResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sovereignty_requirements: Option<crate::config::SovereigntyRequirements>,
 
-    /// **Hadrian Extension:** Skill bundle IDs to mount into the
-    /// session for tools that support skill mounting (e.g. the shell
-    /// runtime). Each entry is a skill UUID owned by the caller's
-    /// organization; unknown IDs fail the request with 400.
+    /// Skills to mount into the shell-tool session.
     ///
-    /// Each skill's `SKILL.md` is prepended to `instructions` so the
-    /// model knows the skill is available; all skill files are
+    /// Mirrors OpenAI's typed shape — each entry is either a reference
+    /// to a stored skill or an inline bundle:
+    ///
+    /// ```json
+    /// [
+    ///   {"type": "skill_reference", "skill_id": "<uuid>", "version": "latest"},
+    ///   {"type": "inline", "name": "extract-csv", "description": "...",
+    ///    "source": {"type": "base64", "media_type": "text/markdown", "data": "..."}}
+    /// ]
+    /// ```
+    ///
+    /// For `skill_reference`, `skill_id` is a Hadrian skill UUID
+    /// owned by the caller's org. `version` is optional; only
+    /// `"latest"` (the default) is supported today — pinned versions
+    /// reject with 400 until version-pinning lands.
+    ///
+    /// For `inline`, the decoded `source.data` is mounted as an
+    /// ephemeral skill bundle: `text/markdown` is treated as the
+    /// `SKILL.md` content; other media types are rejected today.
+    ///
+    /// Each resolved skill's `SKILL.md` is prepended to `instructions`
+    /// so the model knows the skill is available; all skill files are
     /// materialized under `/skills/<skill_id>/` inside the sandbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skills: Option<Vec<String>>,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Object>))]
+    pub skills: Option<Vec<RequestSkill>>,
 
     /// Context management directives. Forwarded verbatim to providers
     /// that support server-side compaction (OpenAI, Azure OpenAI); for

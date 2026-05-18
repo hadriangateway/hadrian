@@ -140,6 +140,41 @@ impl ContainersRepo for PostgresContainersRepo {
         row.map(|r| row_to_container(&r)).transpose()
     }
 
+    async fn list_by_org(
+        &self,
+        org_id: Uuid,
+        limit: i64,
+        after: Option<&str>,
+    ) -> DbResult<Vec<ContainerRecord>> {
+        // Keyset cursor: resolve `after` (an opaque cntr_… id) into a
+        // `(created_at, id)` pair via a correlated subquery scoped to
+        // the same org. Cross-org ids fall through to `NULL` rows from
+        // the subquery and the comparison shorts to NULL (no match), so
+        // the caller can't enumerate other orgs by guessing ids.
+        let sql = format!(
+            r#"
+            SELECT {CONTAINER_COLUMNS} FROM containers
+            WHERE org_id = $1
+              AND (
+                $2::TEXT IS NULL
+                OR (created_at, id) < (
+                  SELECT created_at, id FROM containers
+                  WHERE id = $2 AND org_id = $1
+                )
+              )
+            ORDER BY created_at DESC, id DESC
+            LIMIT $3
+            "#
+        );
+        let rows = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(&self.read_pool)
+            .await?;
+        rows.iter().map(row_to_container).collect()
+    }
+
     async fn upsert_file(&self, input: NewContainerFile) -> DbResult<ContainerFileRecord> {
         // ON CONFLICT keeps the original row's id stable so any
         // annotation that already cited the prior version still

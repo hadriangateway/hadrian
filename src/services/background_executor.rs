@@ -83,6 +83,22 @@ fn first_shell_environment(
         .and_then(|s| s.environment.as_ref())
 }
 
+/// Local copy of the foreground helper. Avoids leaking a chat.rs
+/// helper through `pub`. See `routes/api/chat.rs::skills_have_same_identity`.
+fn skills_have_same_identity_bg(
+    a: &crate::api_types::RequestSkill,
+    b: &crate::api_types::RequestSkill,
+) -> bool {
+    use crate::api_types::RequestSkill;
+    match (a, b) {
+        (RequestSkill::SkillReference(x), RequestSkill::SkillReference(y)) => {
+            x.skill_id == y.skill_id
+        }
+        (RequestSkill::Inline(x), RequestSkill::Inline(y)) => x.name == y.name,
+        _ => false,
+    }
+}
+
 fn shell_tool_requested(payload: &crate::api_types::CreateResponsesPayload) -> bool {
     let Some(tools) = payload.tools.as_ref() else {
         return false;
@@ -196,13 +212,16 @@ pub async fn execute_persisted_response(
             && let Ok(c) = svc.get_container(&cid, record.org_id).await
             && matches!(c.status, crate::db::repos::ContainerStatus::Active)
             && let Some(json) = c.skill_ids_json.as_deref()
-            && let Ok(bound) = serde_json::from_str::<Vec<String>>(json)
+            && let Ok(bound) = serde_json::from_str::<Vec<crate::api_types::RequestSkill>>(json)
             && !bound.is_empty()
         {
             let mut merged = payload.skills.clone().unwrap_or_default();
-            for s in bound {
-                if !merged.contains(&s) {
-                    merged.push(s);
+            for incoming in bound {
+                let dup = merged
+                    .iter()
+                    .any(|existing| skills_have_same_identity_bg(existing, &incoming));
+                if !dup {
+                    merged.push(incoming);
                 }
             }
             payload.skills = Some(merged);

@@ -232,6 +232,22 @@ pub trait ContainersRepo: Send + Sync {
     /// distinguishing the two cases.
     async fn get_by_id_and_org(&self, id: &str, org_id: Uuid) -> DbResult<Option<ContainerRecord>>;
 
+    /// List containers in an org, newest-first.
+    ///
+    /// `after` is a literal `cntr_…` id (OpenAI's cursor shape). The
+    /// repo resolves it to a `(created_at, id)` keyset and returns the
+    /// next page strictly after that position. Fetches `limit + 1` rows
+    /// so the caller can determine `has_more`.
+    ///
+    /// Returns the rows in `created_at DESC, id DESC` order. Unknown or
+    /// cross-org `after` values resolve to an empty page (no leakage).
+    async fn list_by_org(
+        &self,
+        org_id: Uuid,
+        limit: i64,
+        after: Option<&str>,
+    ) -> DbResult<Vec<ContainerRecord>>;
+
     /// Upsert a container_file row. If `(container_id, path)` is
     /// already present, replaces the existing row (path-level
     /// idempotency for overwrites) while keeping the row's `id`

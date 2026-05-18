@@ -167,6 +167,24 @@ pub(super) async fn apply_output_guardrails(
 /// Returns true if the resolved provider can handle a shell-tool spec
 /// forwarded verbatim (i.e. it implements OpenAI's hosted shell-tool
 /// runtime). Used to gate `ShellRuntimeConfig::PassthroughOpenAI`.
+/// Two skill entries refer to the same logical skill iff their type
+/// + identity match. Used by the container-bound merge to avoid
+/// mounting the same skill twice when a request both names it
+/// explicitly and inherits it from a `container_reference`.
+fn skills_have_same_identity(
+    a: &crate::api_types::RequestSkill,
+    b: &crate::api_types::RequestSkill,
+) -> bool {
+    use crate::api_types::RequestSkill;
+    match (a, b) {
+        (RequestSkill::SkillReference(x), RequestSkill::SkillReference(y)) => {
+            x.skill_id == y.skill_id
+        }
+        (RequestSkill::Inline(x), RequestSkill::Inline(y)) => x.name == y.name,
+        _ => false,
+    }
+}
+
 fn provider_supports_passthrough_shell(provider: &crate::config::ProviderConfig) -> bool {
     use crate::config::ProviderConfig;
     matches!(provider, ProviderConfig::OpenAi(_)) || {
@@ -1609,13 +1627,20 @@ pub async fn api_v1_responses(
             && let Ok(record) = svc.get_container(&cid, org_id).await
             && matches!(record.status, crate::db::repos::ContainerStatus::Active)
             && let Some(json) = record.skill_ids_json.as_deref()
-            && let Ok(bound) = serde_json::from_str::<Vec<String>>(json)
+            && let Ok(bound) = serde_json::from_str::<Vec<crate::api_types::RequestSkill>>(json)
             && !bound.is_empty()
         {
+            // Merge container-bound skills into the request, dropping
+            // duplicates by identity: same skill_id for references,
+            // same name for inline bundles. The OpenAI spec treats
+            // container-bound skills as additive to per-request ones.
             let mut merged = payload.skills.clone().unwrap_or_default();
-            for s in bound {
-                if !merged.contains(&s) {
-                    merged.push(s);
+            for incoming in bound {
+                let dup = merged
+                    .iter()
+                    .any(|existing| skills_have_same_identity(existing, &incoming));
+                if !dup {
+                    merged.push(incoming);
                 }
             }
             payload.skills = Some(merged);
@@ -1635,23 +1660,18 @@ pub async fn api_v1_responses(
     )
     .await
     .map_err(|e| {
+        use crate::services::responses_pipeline::SkillResolutionError as SRE;
         let code = match &e {
-            crate::services::responses_pipeline::SkillResolutionError::InvalidId(_)
-            | crate::services::responses_pipeline::SkillResolutionError::NotFound(_)
-            | crate::services::responses_pipeline::SkillResolutionError::MissingOrg => {
-                "invalid_skill_reference"
+            SRE::InvalidId(_) | SRE::NotFound(_) | SRE::MissingOrg => "invalid_skill_reference",
+            SRE::UnsupportedVersion(_) => "unsupported_skill_version",
+            SRE::InvalidBase64 { .. } | SRE::InvalidUtf8 { .. } | SRE::EmptyInlineName => {
+                "invalid_inline_skill"
             }
-            crate::services::responses_pipeline::SkillResolutionError::NoService => {
-                "skills_not_configured"
-            }
-            crate::services::responses_pipeline::SkillResolutionError::Db(_) => {
-                "skill_lookup_failed"
-            }
+            SRE::UnsupportedMediaType { .. } => "unsupported_inline_skill_media_type",
+            SRE::NoService => "skills_not_configured",
+            SRE::Db(_) => "skill_lookup_failed",
         };
-        let status = if matches!(
-            e,
-            crate::services::responses_pipeline::SkillResolutionError::Db(_)
-        ) {
+        let status = if matches!(e, SRE::Db(_)) {
             StatusCode::INTERNAL_SERVER_ERROR
         } else {
             StatusCode::BAD_REQUEST

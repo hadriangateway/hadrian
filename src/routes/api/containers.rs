@@ -125,13 +125,17 @@ pub struct WireContainerFile {
 }
 
 /// Wrapper for list endpoints. Matches OpenAI's `list` object shape
-/// (with `data`, `has_more`, plus extension cursors for forward/back
-/// pagination — Phase 4 will populate the cursors).
+/// (with `data`, `has_more`, plus optional `first_id` / `last_id` for
+/// cursor pagination on endpoints that need it).
 #[derive(Serialize)]
 pub struct WireList<T: Serialize> {
     object: &'static str,
     data: Vec<T>,
     has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +144,20 @@ pub struct ListFilesQuery {
     /// Phase 3 has no cursor pagination yet — Phase 4 will add `after`.
     #[serde(default)]
     limit: Option<i64>,
+}
+
+/// Query params for `GET /v1/containers`. Matches OpenAI's cursor
+/// shape — `after` is an opaque `cntr_<hex>` id and pagination flows
+/// newest-first.
+#[derive(Debug, Deserialize)]
+pub struct ListContainersQuery {
+    /// Page size. Clamped to `[1, 100]` (default 20).
+    #[serde(default)]
+    limit: Option<i64>,
+    /// Cursor: the `cntr_<hex>` id of the last item from a prior page.
+    /// Unknown ids return an empty page rather than 404.
+    #[serde(default)]
+    after: Option<String>,
 }
 
 fn container_to_wire(record: ContainerRecord) -> WireContainer {
@@ -258,6 +276,65 @@ async fn enforce_authz(
         .map_err(|e| ApiError::new(StatusCode::FORBIDDEN, "authorization_denied", e.to_string()))
 }
 
+/// Surface-level validation for skill entries before they're persisted
+/// onto a container row. Mirrors what `resolve_and_inject_skills` will
+/// later enforce on request — we run it eagerly here so a misshaped
+/// `inline` skill never makes it onto a stored row.
+fn validate_skill_entry(entry: &crate::api_types::RequestSkill) -> Result<(), ApiError> {
+    match entry {
+        crate::api_types::RequestSkill::SkillReference(reference) => {
+            Uuid::parse_str(&reference.skill_id).map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_skill_id",
+                    format!("skill id '{}' is not a valid UUID", reference.skill_id),
+                )
+            })?;
+            if let Some(v) = reference.version.as_deref()
+                && v != "latest"
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_skill_version",
+                    format!("only `version = \"latest\"` is supported (got `{v}`)"),
+                ));
+            }
+            Ok(())
+        }
+        crate::api_types::RequestSkill::Inline(inline) => {
+            if inline.name.trim().is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_inline_skill",
+                    "inline skill `name` must be non-empty",
+                ));
+            }
+            let crate::api_types::InlineSkillSource::Base64 { media_type, data } = &inline.source;
+            if media_type != "text/markdown" {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_inline_skill_media_type",
+                    format!(
+                        "inline skill `{}` uses media_type `{media_type}` — only `text/markdown` is supported today",
+                        inline.name
+                    ),
+                ));
+            }
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(data.as_bytes())
+                .map_err(|e| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_inline_skill",
+                        format!("inline skill `{}` base64: {e}", inline.name),
+                    )
+                })?;
+            Ok(())
+        }
+    }
+}
+
 fn map_service_err(e: ContainersServiceError) -> ApiError {
     match e {
         ContainersServiceError::NotFound => ApiError::new(
@@ -307,10 +384,11 @@ pub struct CreateContainerRequest {
     /// `tools.shell.environment.network_policy`).
     #[serde(default)]
     pub network_policy: Option<crate::api_types::responses::ShellNetworkPolicy>,
-    /// **Hadrian Extension:** skill UUIDs to mount whenever a session
-    /// is booted against this container.
+    /// Skills to mount whenever a session is booted against this
+    /// container. Matches OpenAI's typed shape — see
+    /// [`crate::api_types::RequestSkill`].
     #[serde(default)]
-    pub skills: Vec<String>,
+    pub skills: Vec<crate::api_types::RequestSkill>,
 }
 
 /// `POST /v1/containers` — create an unattached container.
@@ -432,22 +510,21 @@ pub async fn api_v1_containers_create(
         .as_ref()
         .map(|np| serde_json::to_string(np).unwrap_or_default());
 
-    // ── skills: validate UUIDs and existence ──
-    let mut skill_uuids: Vec<String> = Vec::with_capacity(body.skills.len());
-    for s in &body.skills {
-        let parsed = Uuid::parse_str(s).map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_skill_id",
-                format!("skill id '{s}' is not a valid UUID"),
-            )
-        })?;
-        skill_uuids.push(parsed.to_string());
+    // ── skills: validate references + inline payloads up front so an
+    //    invalid skill never makes it onto the container row. We don't
+    //    actually mount them here — that happens on the first response
+    //    the container backs. Validation: shape, base64 decode, and
+    //    media_type. Stored verbatim so per-response resolve picks up
+    //    the same payload.
+    if !body.skills.is_empty() {
+        for entry in &body.skills {
+            validate_skill_entry(entry)?;
+        }
     }
-    let skill_ids_json = if skill_uuids.is_empty() {
+    let skill_ids_json = if body.skills.is_empty() {
         None
     } else {
-        Some(serde_json::to_string(&skill_uuids).unwrap_or_default())
+        Some(serde_json::to_string(&body.skills).unwrap_or_default())
     };
 
     // Choose the runtime label so future requests reusing this
@@ -493,6 +570,53 @@ pub async fn api_v1_containers_create(
         .map_err(map_service_err)?;
 
     Ok(Json(container_to_wire(record)))
+}
+
+/// `GET /v1/containers` — list containers in the caller's org,
+/// newest-first. Matches OpenAI's cursor pagination shape.
+#[cfg_attr(feature = "utoipa", utoipa::path(
+    get,
+    path = "/api/v1/containers",
+    tag = "containers",
+    params(
+        ("limit" = Option<i64>, Query, description = "Page size, clamped to 1..=100 (default 20)"),
+        ("after" = Option<String>, Query, description = "Cursor: cntr_<hex> id of the last item from a prior page"),
+    ),
+    responses(
+        (status = 200, description = "Containers in the org"),
+        (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponse),
+        (status = 403, description = "Authorization denied", body = crate::openapi::ErrorResponse),
+        (status = 501, description = "Persistence disabled", body = crate::openapi::ErrorResponse),
+    ),
+    security(("api_key" = []))
+))]
+pub async fn api_v1_containers_list(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthenticatedRequest>>,
+    authz: Option<Extension<AuthzContext>>,
+    Query(params): Query<ListContainersQuery>,
+) -> Result<Json<WireList<WireContainer>>, ApiError> {
+    let svc = resolve_service(&state)?;
+    enforce_authz(authz.as_ref(), auth.as_ref(), "read").await?;
+    let org_id = require_caller_org(auth.as_ref())?;
+
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let mut rows = svc
+        .list_containers(org_id, limit + 1, params.after.as_deref())
+        .await
+        .map_err(map_service_err)?;
+    let has_more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    let first_id = rows.first().map(|r| r.id.clone());
+    let last_id = rows.last().map(|r| r.id.clone());
+    let data = rows.into_iter().map(container_to_wire).collect();
+    Ok(Json(WireList {
+        object: OBJECT_LIST,
+        data,
+        has_more,
+        first_id,
+        last_id,
+    }))
 }
 
 /// `GET /v1/containers/{container_id}` — retrieve a container.
@@ -575,6 +699,8 @@ pub async fn api_v1_containers_list_files(
         object: OBJECT_LIST,
         data,
         has_more,
+        first_id: None,
+        last_id: None,
     }))
 }
 

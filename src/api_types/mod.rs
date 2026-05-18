@@ -15,4 +15,6 @@ pub use images::{
     CreateImageEditRequest, CreateImageRequest, CreateImageVariationRequest, ImageQuality,
     ImageSize,
 };
-pub use responses::{CreateResponsesPayload, ResponsesReasoningEffort};
+pub use responses::{
+    CreateResponsesPayload, InlineSkill, InlineSkillSource, RequestSkill, ResponsesReasoningEffort,
+};

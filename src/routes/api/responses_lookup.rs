@@ -53,6 +53,14 @@ pub struct WireResponse {
     usage: Value,
     #[serde(skip_serializing_if = "Value::is_null")]
     error: Value,
+    /// Container the shell-tool session for this response was attached
+    /// to. Surfaced so callers can chain via
+    /// `environment.type = "container_reference"` without scraping
+    /// output items. `null` when the request had no shell tool, when
+    /// container persistence is disabled, or before the shell tool
+    /// first runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    container_id: Option<String>,
     /// Echo selected request-payload fields so the response carries the
     /// instructions, tools, etc. that originally drove it — same as
     /// OpenAI's Retrieve endpoint.
@@ -112,6 +120,7 @@ fn record_to_wire(record: &ResponseRecord) -> WireResponse {
         output: record.output.clone().unwrap_or(Value::Null),
         usage: record.usage.clone().unwrap_or(Value::Null),
         error: record.error.clone().unwrap_or(Value::Null),
+        container_id: record.container_id.clone(),
         echoed,
     }
 }

@@ -511,32 +511,23 @@ impl ShellToolHint {
 }
 
 /// Arguments the model emits when invoking the function-mode shell
-/// tool. Mirrors OpenAI's `shell_call.action` object so model-emitted
-/// limits (`timeout_ms`, `max_output_length`) and environment hints
-/// (`env`, `workdir`) round-trip identically to the native
-/// `shell_call` form. Legacy `{command, stdin}` payloads are still
-/// accepted for backward compatibility.
-///
-/// The wire shape the model produces is the nested `action` object:
+/// tool. Mirrors OpenAI's `shell_call.action` object: `commands` is a
+/// sequence of shell strings executed in order in the same session,
+/// with optional `working_directory`, `env`, `timeout_ms`, and
+/// `max_output_length` overrides.
 ///
 /// ```json
-/// {"action": {"command": "ls -la", "timeout_ms": 5000}}
+/// {"action": {"commands": ["cd src", "ls -la"], "timeout_ms": 5000}}
 /// ```
-///
-/// Flat `{"command": "..."}` payloads (pre-action era) keep working
-/// via the `serde(default)` + post-parse merge.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ShellToolArguments {
-    /// Nested OpenAI `action` object. When present, its `command`
-    /// wins over any flat top-level `command` field.
+    /// Nested OpenAI `action` object carrying the commands and
+    /// per-call overrides.
     #[serde(default)]
     pub action: Option<ShellToolAction>,
-    /// Legacy flat command. Used when `action` is missing.
-    #[serde(default)]
-    pub command: Option<String>,
-    /// Optional stdin to pipe to the command. Kept short — for larger
-    /// inputs, prefer writing files via the runtime's file_io and
-    /// referring to them from the command.
+    /// Optional stdin piped to the joined command script. Hadrian
+    /// extension — kept because the spec doesn't carry stdin and some
+    /// useful flows (`base64 -d > out`) need it.
     #[serde(default)]
     pub stdin: Option<String>,
 }
@@ -544,8 +535,12 @@ pub struct ShellToolArguments {
 /// Per-call action object (OpenAI's `shell_call.action` shape).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ShellToolAction {
-    /// Shell command to execute.
-    pub command: String,
+    /// Shell command lines to execute, in order, in the same session.
+    /// Joined with newlines and run as a single script — exit_code is
+    /// the script's final exit status. Use explicit `&&` chains inside
+    /// one entry when the model wants short-circuit semantics.
+    #[serde(default)]
+    pub commands: Vec<String>,
     /// Per-call timeout in milliseconds. Clamped to the operator's
     /// `command_timeout_secs * 1000` cap; values larger than the cap
     /// are silently shortened rather than rejected, mirroring
@@ -564,19 +559,33 @@ pub struct ShellToolAction {
     /// Optional working directory for this call. When unset, the
     /// runtime's default (`/mnt/data`) is used.
     #[serde(default)]
-    pub workdir: Option<String>,
+    pub working_directory: Option<String>,
 }
 
-/// One concrete shell call after merging `action`-form and legacy
-/// flat-form arguments.
+/// One concrete shell call after parsing the `action` shape.
 #[derive(Debug, Clone)]
 pub struct ResolvedShellArgs {
-    pub command: String,
+    /// Spec-shaped command list — joined into a script for execution.
+    pub commands: Vec<String>,
     pub stdin: Option<String>,
     pub timeout_ms: Option<u64>,
     pub max_output_length: Option<usize>,
     pub env: Option<HashMap<String, String>>,
-    pub workdir: Option<String>,
+    pub working_directory: Option<String>,
+}
+
+impl ResolvedShellArgs {
+    /// Join `commands` into a single shell script. Empty / whitespace
+    /// entries are dropped — they'd otherwise produce confusing
+    /// "command not found" lines.
+    pub fn joined_script(&self) -> String {
+        self.commands
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 impl ShellToolArguments {
@@ -586,36 +595,27 @@ impl ShellToolArguments {
         serde_json::from_str(arguments_json).ok()
     }
 
-    /// Resolve the parsed arguments into a flat call shape. The
-    /// `action` form takes precedence; falling back to the legacy
-    /// flat form. Returns `None` when neither produced a command.
+    /// Resolve the parsed arguments into a flat call shape. Returns
+    /// `None` when no non-empty command line was supplied.
     pub fn resolve(self) -> Option<ResolvedShellArgs> {
-        if let Some(action) = self.action {
-            if action.command.trim().is_empty() {
-                return None;
-            }
-            Some(ResolvedShellArgs {
-                command: action.command,
-                stdin: self.stdin,
-                timeout_ms: action.timeout_ms,
-                max_output_length: action.max_output_length,
-                env: action.env,
-                workdir: action.workdir,
-            })
-        } else {
-            let cmd = self.command?;
-            if cmd.trim().is_empty() {
-                return None;
-            }
-            Some(ResolvedShellArgs {
-                command: cmd,
-                stdin: self.stdin,
-                timeout_ms: None,
-                max_output_length: None,
-                env: None,
-                workdir: None,
-            })
+        let action = self.action?;
+        let commands: Vec<String> = action
+            .commands
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if commands.is_empty() {
+            return None;
         }
+        Some(ResolvedShellArgs {
+            commands,
+            stdin: self.stdin,
+            timeout_ms: action.timeout_ms,
+            max_output_length: action.max_output_length,
+            env: action.env,
+            working_directory: action.working_directory,
+        })
     }
 
     pub fn function_parameters_schema() -> Value {
@@ -624,11 +624,13 @@ impl ShellToolArguments {
             "properties": {
                 "action": {
                     "type": "object",
-                    "description": "Spec-compliant action object (matches OpenAI's shell_call.action shape). Prefer this over the flat command form.",
+                    "description": "Spec-compliant action object (matches OpenAI's shell_call.action shape).",
                     "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The shell command to execute"
+                        "commands": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": "Shell command lines, executed in order in the same session. Joined into a script — use explicit `&&` for short-circuit semantics."
                         },
                         "timeout_ms": {
                             "type": "integer",
@@ -645,23 +647,20 @@ impl ShellToolArguments {
                             "additionalProperties": {"type": "string"},
                             "description": "Extra environment variables exported for this call only."
                         },
-                        "workdir": {
+                        "working_directory": {
                             "type": "string",
                             "description": "Override working directory for this call (defaults to /mnt/data)."
                         }
                     },
-                    "required": ["command"],
+                    "required": ["commands"],
                     "additionalProperties": false
-                },
-                "command": {
-                    "type": "string",
-                    "description": "Legacy flat command. Use `action.command` instead."
                 },
                 "stdin": {
                     "type": "string",
-                    "description": "Optional stdin to pipe to the command"
+                    "description": "Optional stdin piped to the joined command script."
                 }
             },
+            "required": ["action"],
             "additionalProperties": false
         })
     }
@@ -784,16 +783,16 @@ fn format_in_progress(item_id: &str, output_index: usize) -> Bytes {
 }
 
 /// **Hadrian Extension:** `response.shell_call.command_started`.
-/// Fires once with the resolved command string before any output
+/// Fires once with the resolved command list before any output
 /// streams. OpenAI's hosted shell tool doesn't ship an equivalent
 /// event today; SDK consumers unfamiliar with the type see a harmless
 /// extra event in the stream and skip it.
-fn format_command_started(item_id: &str, output_index: usize, command: &str) -> Bytes {
+fn format_command_started(item_id: &str, output_index: usize, commands: &[String]) -> Bytes {
     sse_event(serde_json::json!({
         "type": "response.shell_call.command_started",
         "output_index": output_index,
         "item_id": item_id,
-        "command": command,
+        "commands": commands,
     }))
 }
 
@@ -873,7 +872,8 @@ fn format_file_created(item_id: &str, output_index: usize, file: &ContainerFileR
 fn format_shell_call_output_item(
     item_id: &str,
     output_index: usize,
-    command: &str,
+    commands: &[String],
+    working_directory: Option<&str>,
     exit_code: i32,
     stdout: &str,
     stderr: &str,
@@ -881,6 +881,7 @@ fn format_shell_call_output_item(
     duration_ms: u64,
     killed: bool,
     max_output_truncated: bool,
+    max_output_length: Option<usize>,
 ) -> Bytes {
     // status: `completed` when the process exited; `failed` when we
     // never observed an Exit event or had to synthesize `-1`/`124`.
@@ -889,10 +890,10 @@ fn format_shell_call_output_item(
     } else {
         "failed"
     };
-    let item = serde_json::json!({
+    let mut item = serde_json::json!({
         "type": "shell_call_output",
         "id": item_id,
-        "command": command,
+        "commands": commands,
         "exit_code": exit_code,
         "status": status_str,
         "stdout": stdout,
@@ -905,6 +906,12 @@ fn format_shell_call_output_item(
         // Hadrian Extension: captured file manifest.
         "output_files": files,
     });
+    if let Some(wd) = working_directory {
+        item["working_directory"] = serde_json::Value::from(wd);
+    }
+    if let Some(n) = max_output_length {
+        item["max_output_length"] = serde_json::Value::from(n);
+    }
     sse_event(serde_json::json!({
         "type": "response.output_item.done",
         "output_index": output_index,
@@ -1247,12 +1254,12 @@ impl ServerExecutedTool for ShellExecutor {
                 call_id: tc.id.clone(),
                 arguments: serde_json::json!({
                     "id": tc.id,
-                    "command": tc.args.command,
+                    "commands": tc.args.commands,
                     "stdin": tc.args.stdin,
                     "timeout_ms": tc.args.timeout_ms,
                     "max_output_length": tc.args.max_output_length,
                     "env": tc.args.env,
-                    "workdir": tc.args.workdir,
+                    "working_directory": tc.args.working_directory,
                 }),
             })
             .collect()
@@ -1263,12 +1270,22 @@ impl ServerExecutedTool for ShellExecutor {
         call: DetectedToolCall,
         _ctx: &ToolContext,
     ) -> Result<ToolExecutionHandle, ToolError> {
-        let command = call
+        let commands: Vec<String> = call
             .arguments
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+            .get("commands")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Joined script — runtimes only accept a single string today,
+        // so multi-command actions are concatenated and run as a shell
+        // script. Final exit code is the script's.
+        let command = commands.join("\n");
         let stdin = call
             .arguments
             .get("stdin")
@@ -1286,7 +1303,7 @@ impl ServerExecutedTool for ShellExecutor {
             .and_then(|v| serde_json::from_value(v.clone()).ok());
         let model_workdir = call
             .arguments
-            .get("workdir")
+            .get("working_directory")
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let id = call.call_id.clone();
@@ -1312,13 +1329,15 @@ impl ServerExecutedTool for ShellExecutor {
         // Emit initial progress events before doing any I/O.
         let _ = event_tx.send(format_in_progress(&id, 0)).await;
         let _ = event_tx
-            .send(format_command_started(&id, 0, &command))
+            .send(format_command_started(&id, 0, &commands))
             .await;
 
         // Spawn the actual session work so the orchestrator can start
         // consuming events while we boot the container.
         let id_for_task = id.clone();
         let command_for_task = command.clone();
+        let commands_for_task = commands.clone();
+        let working_directory_for_task = model_workdir.clone();
         // Apply the model's per-call timeout when given; clamp to the
         // operator cap. `timeout_ms < 1000` rounds up to one second.
         let op_timeout_ms = self
@@ -1889,7 +1908,8 @@ impl ServerExecutedTool for ShellExecutor {
                 .send(format_shell_call_output_item(
                     &id_for_task,
                     0,
-                    &command_for_task,
+                    &commands_for_task,
+                    working_directory_for_task.as_deref(),
                     exit_for_report,
                     &stdout_render,
                     &stderr_render,
@@ -1897,6 +1917,7 @@ impl ServerExecutedTool for ShellExecutor {
                     duration_ms,
                     killed,
                     max_output_truncated,
+                    model_max_output_length,
                 ))
                 .await;
 
@@ -2164,7 +2185,9 @@ mod tests {
 
     fn net_policy(domains: &[&str], secrets: Vec<ShellDomainSecret>) -> ShellNetworkPolicy {
         ShellNetworkPolicy {
-            type_: ShellNetworkPolicyType::Allowlist,
+            type_: ShellNetworkPolicyType::Known(
+                crate::api_types::responses::KnownShellNetworkPolicyType::Allowlist,
+            ),
             allowed_domains: domains.iter().map(|s| (*s).to_string()).collect(),
             domain_secrets: secrets,
         }
@@ -2370,7 +2393,9 @@ mod tests {
         let env = auto_env(
             None,
             Some(ShellNetworkPolicy {
-                type_: ShellNetworkPolicyType::Allowlist,
+                type_: ShellNetworkPolicyType::Known(
+                    crate::api_types::responses::KnownShellNetworkPolicyType::Allowlist,
+                ),
                 allowed_domains: vec![],
                 domain_secrets: vec![ShellDomainSecret::Inline(ShellDomainSecretInline {
                     domain: "evil.example.com".into(),
@@ -2486,37 +2511,49 @@ mod tests {
     }
 
     #[test]
-    fn parses_legacy_flat_arguments() {
+    fn parses_single_command_action() {
         let v = serde_json::json!({
             "type": "function_call",
             "name": "shell",
             "call_id": "call_abc",
-            "arguments": "{\"command\": \"echo hi\"}"
+            "arguments": "{\"action\": {\"commands\": [\"echo hi\"]}}"
         });
         let tc = parse_shell_tool_call(&v).unwrap();
         assert_eq!(tc.id, "call_abc");
-        assert_eq!(tc.args.command, "echo hi");
+        assert_eq!(tc.args.commands, vec!["echo hi".to_string()]);
         assert!(tc.args.stdin.is_none());
         assert!(tc.args.timeout_ms.is_none());
     }
 
     #[test]
-    fn parses_action_shape_arguments() {
+    fn parses_multi_command_action() {
         let v = serde_json::json!({
             "type": "function_call",
             "name": "shell",
             "call_id": "call_xyz",
-            "arguments": "{\"action\": {\"command\": \"ls /\", \"timeout_ms\": 1500, \"max_output_length\": 2000, \"env\": {\"FOO\": \"bar\"}, \"workdir\": \"/tmp\"}}"
+            "arguments": "{\"action\": {\"commands\": [\"cd /tmp\", \"ls /\"], \"timeout_ms\": 1500, \"max_output_length\": 2000, \"env\": {\"FOO\": \"bar\"}, \"working_directory\": \"/tmp\"}}"
         });
         let tc = parse_shell_tool_call(&v).unwrap();
-        assert_eq!(tc.args.command, "ls /");
+        assert_eq!(
+            tc.args.commands,
+            vec!["cd /tmp".to_string(), "ls /".to_string()]
+        );
         assert_eq!(tc.args.timeout_ms, Some(1500));
         assert_eq!(tc.args.max_output_length, Some(2000));
         assert_eq!(
             tc.args.env.as_ref().unwrap().get("FOO").map(|s| s.as_str()),
             Some("bar")
         );
-        assert_eq!(tc.args.workdir.as_deref(), Some("/tmp"));
+        assert_eq!(tc.args.working_directory.as_deref(), Some("/tmp"));
+        // Script form joins with newlines.
+        assert_eq!(tc.args.joined_script(), "cd /tmp\nls /");
+    }
+
+    #[test]
+    fn empty_commands_resolves_none() {
+        let args =
+            ShellToolArguments::parse("{\"action\": {\"commands\": [\"   \", \"\"]}}").unwrap();
+        assert!(args.resolve().is_none());
     }
 
     #[test]

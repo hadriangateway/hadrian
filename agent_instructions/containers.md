@@ -108,6 +108,36 @@ flag this if a use case warrants it.
 - **Truncation** — `MAX_OUTPUT_CHARS = 8_000` in `shell_tool.rs`. stdout / stderr fed back to
   the model are head + tail trimmed past this. Always surfaced in the tool description.
 
+## Long-running processes inside a session
+
+Each `exec()` returns when its command exits, but the underlying VM (microsandbox) or
+container (opensandbox) keeps running between calls. Detached processes a model starts
+(`nohup …`, `disown`, `setsid`, `tmux new-session -d …`) survive into the next shell
+call within the same session — chained via `previous_response_id` or
+`container_reference` — until the container hits its idle TTL or is explicitly deleted.
+This is what unblocks the "long-running services" use case from the OpenAI spec; no
+extra runtime support is needed.
+
+## Skill mounting (spec-shaped)
+
+`skills` on a Responses-API or `POST /v1/containers` request is a tagged-union list per
+OpenAI's spec:
+
+- `{ "type": "skill_reference", "skill_id": "<uuid>", "version": "latest" }` —
+  resolves to a stored skill via `SkillService::get_by_id_and_org`. `version` accepts
+  `latest` only; anything else rejects with `unsupported_skill_version`.
+- `{ "type": "inline", "name": "...", "description": "...", "source": { "type": "base64",
+  "media_type": "text/markdown", "data": "..." } }` — ephemeral. The decoded payload is
+  mounted as a single-file skill under `/skills/skill_inline_<hash>/SKILL.md`. The hash
+  is derived from `(name, content)` so foreground and background lanes mount the inline
+  skill at the same path.
+
+Skills attached at `POST /v1/containers` time are stored verbatim on the row's
+`skill_ids_json` column (the column name predates the typed enum; it now holds the full
+JSON-encoded `Vec<RequestSkill>`). At request time the merge logic in
+`routes/api/chat.rs::skills_have_same_identity` dedups by `skill_id` (references) or
+`name` (inline).
+
 ## Tests
 
 - Unit tests live alongside the code: `services/shell_tool.rs::tests`,

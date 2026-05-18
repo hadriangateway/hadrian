@@ -159,6 +159,41 @@ impl ContainersRepo for SqliteContainersRepo {
         row.map(|r| row_to_container(&r)).transpose()
     }
 
+    async fn list_by_org(
+        &self,
+        org_id: uuid::Uuid,
+        limit: i64,
+        after: Option<&str>,
+    ) -> DbResult<Vec<ContainerRecord>> {
+        // SQLite stores TEXT timestamps; the `truncate_to_millis` call
+        // on `insert` makes the lexical `<` comparison match the
+        // chronological one. Correlated subquery resolves `after` to a
+        // `(created_at, id)` keyset; cross-org / unknown ids yield NULL
+        // and the comparison shorts to no match.
+        let sql = format!(
+            r#"
+            SELECT {CONTAINER_COLUMNS} FROM containers
+            WHERE org_id = ?
+              AND (
+                ?2 IS NULL
+                OR (created_at, id) < (
+                  SELECT created_at, id FROM containers
+                  WHERE id = ?2 AND org_id = ?1
+                )
+              )
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?3
+            "#
+        );
+        let rows = query(&sql)
+            .bind(org_id.to_string())
+            .bind(after)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_container).collect()
+    }
+
     async fn upsert_file(&self, input: NewContainerFile) -> DbResult<ContainerFileRecord> {
         let created_at = truncate_to_millis(input.created_at);
 

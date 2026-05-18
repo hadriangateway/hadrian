@@ -392,6 +392,7 @@ requests_per_minute = 120
         api::responses_lookup::api_v1_responses_cancel,
         api::responses_lookup::api_v1_responses_delete,
         api::containers::api_v1_containers_create,
+        api::containers::api_v1_containers_list,
         api::containers::api_v1_containers_get,
         api::containers::api_v1_containers_delete,
         api::containers::api_v1_containers_list_files,

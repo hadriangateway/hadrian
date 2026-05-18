@@ -55,10 +55,23 @@ cpus = 1
 memory_mb = 512
 ```
 
-`passthrough_openai` requires an OpenAI / Azure OpenAI upstream — Hadrian rejects shell
-requests routed to other providers with a clear 400. `client_passthrough` works behind
-**any** supported provider; non-OpenAI providers see a `function_call` with `name="shell"`
-instead of OpenAI's native `shell_call`, but the wire-level call data is the same.
+`passthrough_openai` requires an OpenAI / Azure OpenAI upstream. Requests routed to any
+other provider (Anthropic, Bedrock, Vertex, etc.) reject with HTTP 400, error code
+`shell_passthrough_unsupported_provider`, and a message naming the provider that's
+unable to run the hosted shell tool. `client_passthrough` works behind **any** supported
+provider; non-OpenAI providers see a `function_call` with `name="shell"` instead of
+OpenAI's native `shell_call`, but the wire-level call data is the same.
+
+### Long-running services
+
+Each `exec()` returns when its own command exits, but the container's VM (or remote
+sandbox) keeps running between calls. A model that detaches a process — `nohup python
+server.py &`, `disown`, `setsid …`, a launched systemd-style supervisor — leaves that
+process alive in the container, observable from subsequent shell calls in the same
+session (i.e. the same `previous_response_id` chain or `container_reference`). The
+container's idle TTL still applies: a session that goes longer than
+`default_idle_ttl_secs` without a shell call is reaped and any detached processes go
+down with it.
 
 ## Using the shell tool
 
@@ -208,9 +221,38 @@ GET    /v1/containers/{cntr_id}/files/{id}/content     # Raw bytes
     "type": "allowlist",
     "allowed_domains": ["pypi.org"]
   },
-  "skills": ["<skill-uuid-1>"]
+  "skills": [
+    { "type": "skill_reference", "skill_id": "<uuid>", "version": "latest" },
+    {
+      "type": "inline",
+      "name": "extract-csv",
+      "description": "Inline ephemeral skill",
+      "source": {
+        "type": "base64",
+        "media_type": "text/markdown",
+        "data": "IyBleHRyYWN0LWNzdgo="
+      }
+    }
+  ]
 }
 ```
+
+`skill_reference` resolves to a stored skill by UUID. `inline` carries the bundle on
+the request itself — today only `media_type: "text/markdown"` is supported (decoded as
+the synthetic `SKILL.md`); multi-file (`application/zip`) inline skills reject with
+`unsupported_inline_skill_media_type`. `version` accepts `"latest"` only — passing
+anything else rejects with `unsupported_skill_version` so a future versioned-skills
+release doesn't silently downgrade requests that wanted a pin.
+
+Containers can also be enumerated:
+
+```
+GET /v1/containers?limit=20&after=<cntr_id>
+```
+
+Returns the OpenAI-shaped list envelope `{ "object": "list", "data": [...],
+"first_id": "...", "last_id": "...", "has_more": true }`, newest-first, scoped to the
+caller's org.
 
 The row is created with no live VM; the runtime boots on the first shell call that references
 it. Chain across responses by sending `previous_response_id` for implicit reuse, or

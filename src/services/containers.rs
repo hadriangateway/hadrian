@@ -249,6 +249,18 @@ impl ContainersService {
             .ok_or(ContainersServiceError::NotFound)
     }
 
+    /// List containers in an org, newest first. Fetches `limit + 1`
+    /// rows so the handler can derive `has_more` without a second
+    /// query.
+    pub async fn list_containers(
+        &self,
+        org_id: Uuid,
+        limit: i64,
+        after: Option<&str>,
+    ) -> ContainersServiceResult<Vec<ContainerRecord>> {
+        Ok(self.repo().list_by_org(org_id, limit, after).await?)
+    }
+
     /// Get-or-create a container row by id. Used at attach time: the
     /// pipeline pre-picks a `cntr_…` (either from the
     /// `previous_response_id` chain or freshly generated) and asks
