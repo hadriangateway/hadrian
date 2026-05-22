@@ -86,6 +86,28 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/responses", "POST", "request", "version"): "OpenAI-specific version parameter",
     ("/responses", "POST", "request", "variables"): "OpenAI-specific variables parameter",
     ("/responses", "POST", "request", "context_management"): "OpenAI-specific context management",
+    # /responses tools[] - OpenAI-hosted tool variants not relevant to a gateway
+    ("/responses", "POST", "request", "tools[apply_patch]"): "OpenAI hosted apply_patch tool",
+    ("/responses", "POST", "request", "tools[code_interpreter]"): "OpenAI hosted code interpreter",
+    ("/responses", "POST", "request", "tools[computer]"): "OpenAI computer-use tool",
+    ("/responses", "POST", "request", "tools[computer_use_preview]"): "OpenAI computer-use preview tool",
+    ("/responses", "POST", "request", "tools[custom]"): "OpenAI custom tool (non-strict args)",
+    ("/responses", "POST", "request", "tools[image_generation]"): "OpenAI hosted image generation",
+    ("/responses", "POST", "request", "tools[local_shell]"): "OpenAI hosted local shell — Hadrian uses the `shell` variant",
+    ("/responses", "POST", "request", "tools[namespace]"): "OpenAI namespace tool",
+    ("/responses", "POST", "request", "tools[tool_search]"): "OpenAI tool-search feature",
+    # /responses/compact - OpenAI-specific fields
+    ("/responses/compact", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
+    ("/responses/compact", "POST", "request", "service_tier"): "OpenAI service tier selection (auto/default)",
+    # /responses/{response_id} - OpenAI-specific stored-response features
+    ("/responses/{response_id}", "GET", "param", "include"): "OpenAI stored-response include filters",
+    ("/responses/{response_id}", "GET", "param", "include_obfuscation"): "OpenAI internal obfuscation feature",
+    # /containers - OpenAI-specific list filters / pagination knobs
+    ("/containers", "GET", "param", "order"): "OpenAI sort-order param - Hadrian uses cursor pagination",
+    ("/containers", "GET", "param", "name"): "OpenAI name filter - not implemented",
+    ("/containers", "POST", "request", "type"): "Recursed from network_policy (opaque object in Hadrian's spec; discriminator only meaningful inside OpenAI's oneOf)",
+    ("/containers/{container_id}/files", "GET", "param", "order"): "OpenAI sort-order param - Hadrian uses cursor pagination",
+    ("/containers/{container_id}/files", "GET", "param", "after"): "OpenAI offset cursor - Hadrian uses opaque cursor pagination",
     # /vector_stores - OpenAI-specific features
     ("/vector_stores/{vector_store_id}/files", "POST", "request", "attributes"): "File attributes not implemented",
     ("/vector_stores/{vector_store_id}/files", "POST", "response", "static"): "Static file info not implemented",
@@ -164,6 +186,40 @@ class ConformanceReport:
     violations: list[Violation] = field(default_factory=list)
 
 
+def _is_array_type(schema: dict[str, Any]) -> bool:
+    """True if the schema declares `type: array` in either OpenAPI 3.0
+    (`"array"`) or 3.1 (`["array", "null"]`) form."""
+    if not isinstance(schema, dict):
+        return False
+    t = schema.get("type")
+    if t == "array":
+        return True
+    if isinstance(t, list) and "array" in t:
+        return True
+    return False
+
+
+def _extract_type_const(schema: dict[str, Any]) -> str | None:
+    """Pull the literal `type` value out of a tool-variant schema.
+
+    Returns the string when `schema.properties.type` constrains the
+    value to a single literal (via `enum: ["..."]` or `const: "..."`).
+    Returns `None` otherwise — caller treats the union as
+    non-discriminated and falls back to single-variant comparison.
+    """
+    if not isinstance(schema, dict):
+        return None
+    type_prop = schema.get("properties", {}).get("type")
+    if not isinstance(type_prop, dict):
+        return None
+    if isinstance(type_prop.get("const"), str):
+        return type_prop["const"]
+    enum_values = type_prop.get("enum")
+    if isinstance(enum_values, list) and len(enum_values) == 1 and isinstance(enum_values[0], str):
+        return enum_values[0]
+    return None
+
+
 class OpenAPIResolver:
     """Resolves $ref and allOf in OpenAPI schemas."""
 
@@ -189,13 +245,26 @@ class OpenAPIResolver:
             else:
                 return {}
 
-        # Recursively resolve the result
+        # Pre-cache the raw schema so a recursive reference back to this
+        # ref (e.g. discriminated unions whose variants embed the parent
+        # type) short-circuits instead of looping. Once resolution
+        # completes we overwrite with the fully-resolved form.
+        self._cache[ref] = result if isinstance(result, dict) else {}
         resolved = self.resolve_schema(result)
         self._cache[ref] = resolved
         return resolved
 
     def resolve_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-        """Fully resolve a schema, handling $ref, allOf, oneOf, anyOf."""
+        """Fully resolve a schema, handling $ref, allOf, oneOf, anyOf.
+
+        For `oneOf`/`anyOf` with at least one variant whose `type`
+        property pins a literal value (e.g. `type.enum = ["mcp"]`), the
+        result keeps a `_union_variants` map keyed by that literal so
+        downstream code can compare each variant pairwise. Falls back
+        to the old "first option" behavior for unions without
+        discriminators (so generic shapes like `string | null` keep
+        working).
+        """
         if not isinstance(schema, dict):
             return schema
 
@@ -225,21 +294,42 @@ class OpenAPIResolver:
                     merged[key] = value
             return merged
 
-        # Handle oneOf/anyOf - return first option for simplicity (or could track all)
+        # Handle oneOf/anyOf. When every non-null variant pins a
+        # literal `type` value, keep the full union structure so
+        # `_compare_schemas` can match variants by discriminator across
+        # specs. Otherwise fall back to "first option" for primitive
+        # `string | null`-style unions.
         if "oneOf" in schema or "anyOf" in schema:
             options = schema.get("oneOf") or schema.get("anyOf", [])
-            # Filter out null types
             non_null_options = [
                 opt for opt in options
                 if not (isinstance(opt, dict) and opt.get("type") == "null")
             ]
-            if non_null_options:
-                resolved = self.resolve_schema(non_null_options[0])
-                # Mark as optional (since oneOf/anyOf implies it could be something else)
-                result = dict(resolved)
-                result["_nullable"] = True
-                return result
-            return {"type": "null", "_nullable": True}
+            if not non_null_options:
+                return {"type": "null", "_nullable": True}
+
+            resolved_variants = [self.resolve_schema(opt) for opt in non_null_options]
+            variant_map: dict[str, dict] = {}
+            for variant in resolved_variants:
+                type_value = _extract_type_const(variant)
+                if type_value is not None:
+                    variant_map[type_value] = variant
+
+            if variant_map:
+                # Discriminated union — keep all variants for pairwise
+                # comparison. Pick the first variant as the "fallback"
+                # shape for callers that don't understand `_union_variants`
+                # (matches the old behavior).
+                fallback = dict(resolved_variants[0])
+                fallback["_nullable"] = True
+                fallback["_union_variants"] = variant_map
+                return fallback
+
+            # Non-discriminated union — old behavior.
+            resolved = resolved_variants[0]
+            result = dict(resolved)
+            result["_nullable"] = True
+            return result
 
         # Resolve nested properties
         result = dict(schema)
@@ -297,6 +387,14 @@ class ConformanceChecker:
         "/vector_stores/{vector_store_id}/files/{file_id}": "/api/v1/vector_stores/{vector_store_id}/files/{file_id}",
         "/vector_stores/{vector_store_id}/search": "/api/v1/vector_stores/{vector_store_id}/search",
         "/responses": "/api/v1/responses",
+        "/responses/compact": "/api/v1/responses/compact",
+        "/responses/{response_id}": "/api/v1/responses/{response_id}",
+        "/responses/{response_id}/cancel": "/api/v1/responses/{response_id}/cancel",
+        "/containers": "/api/v1/containers",
+        "/containers/{container_id}": "/api/v1/containers/{container_id}",
+        "/containers/{container_id}/files": "/api/v1/containers/{container_id}/files",
+        "/containers/{container_id}/files/{file_id}": "/api/v1/containers/{container_id}/files/{file_id}",
+        "/containers/{container_id}/files/{file_id}/content": "/api/v1/containers/{container_id}/files/{file_id}/content",
     }
 
     # Endpoints out of scope for Hadrian
@@ -313,7 +411,6 @@ class ConformanceChecker:
         "/invites",
         "/users",
         "/projects",  # OpenAI projects, not Hadrian projects
-        "/containers",  # OpenAI container files feature
         "/conversations",  # OpenAI conversation API
         "/videos",  # OpenAI video generation
         "/chatkit",  # OpenAI chatkit feature
@@ -335,10 +432,7 @@ class ConformanceChecker:
         "/vector_stores/{vector_store_id}/file_batches/{batch_id}/files",
         "/vector_stores/{vector_store_id}/files/{file_id}/content",  # OpenAI file content
         "/responses/input_tokens",  # OpenAI-specific token endpoints
-        "/responses/compact",
-        "/responses/{response_id}",  # OpenAI stored responses management
-        "/responses/{response_id}/input_items",
-        "/responses/{response_id}/cancel",  # OpenAI response cancellation
+        "/responses/{response_id}/input_items",  # Not implemented (lookup returns the whole response)
     ]
 
     # Methods to exclude for specific paths
@@ -694,6 +788,114 @@ class ConformanceChecker:
                 )
                 diffs.extend(nested_diffs)
                 violations.extend(nested_violations)
+
+            # Recurse into discriminated array<oneOf> shapes (e.g.
+            # `tools[]`, `input[]`, `output[]`). Each known `type`
+            # value is compared against its counterpart so
+            # variant-level differences (e.g. `tools[mcp].connector_id`)
+            # surface in the report. Handles OpenAPI 3.1's nullable
+            # form `type: ["array", "null"]` on either side.
+            if _is_array_type(openai_field) and _is_array_type(hadrian_field):
+                u_diffs, u_violations = self._compare_union_items(
+                    openai_field.get("items", {}),
+                    hadrian_field.get("items", {}),
+                    f"{context}.{field_name}[]",
+                    endpoint_path,
+                    method,
+                    location,
+                )
+                diffs.extend(u_diffs)
+                violations.extend(u_violations)
+
+        return diffs, violations
+
+    def _compare_union_items(
+        self,
+        openai_items: dict,
+        hadrian_items: dict,
+        context: str,
+        endpoint_path: str,
+        method: str,
+        location: str,
+    ) -> tuple[list[SchemaDiff], list[Violation]]:
+        """Compare two discriminated-union `items` schemas.
+
+        For each `type` literal present on either side, run
+        `_compare_schemas` on the matching variant pair. Variants only
+        on one side produce a single diff entry (missing or extension);
+        we do not recurse into them.
+        """
+        diffs: list[SchemaDiff] = []
+        violations: list[Violation] = []
+
+        openai_variants = openai_items.get("_union_variants") if isinstance(openai_items, dict) else None
+        hadrian_variants = hadrian_items.get("_union_variants") if isinstance(hadrian_items, dict) else None
+        if not openai_variants or not hadrian_variants:
+            return diffs, violations
+
+        # Strip the leading "<path> request"/" response" prefix the
+        # caller threaded through `context`, so the variant key matches
+        # the shape used in `DOCUMENTED_MISSING_FIELDS` (e.g.
+        # `tools[mcp]`, not `/responses request.tools[]<mcp>`).
+        short_context = context
+        for prefix in (f"{endpoint_path} request.", f"{endpoint_path} response."):
+            if short_context.startswith(prefix):
+                short_context = short_context[len(prefix):]
+                break
+        if short_context.endswith("[]"):
+            short_context = short_context[:-2]
+
+        all_type_values = set(openai_variants.keys()) | set(hadrian_variants.keys())
+        for type_value in sorted(all_type_values):
+            openai_variant = openai_variants.get(type_value)
+            hadrian_variant = hadrian_variants.get(type_value)
+            variant_key = f"{short_context}[{type_value}]"
+            variant_context = f"{context}<type={type_value}>"
+
+            if openai_variant is None:
+                diffs.append(SchemaDiff(
+                    path=context,
+                    field=type_value,
+                    diff_type=DiffType.HADRIAN_EXTENSION,
+                    hadrian_value="object",
+                    description=f"Variant '{type_value}' is a Hadrian extension",
+                ))
+                continue
+            if hadrian_variant is None:
+                diffs.append(SchemaDiff(
+                    path=context,
+                    field=type_value,
+                    diff_type=DiffType.MISSING_IN_HADRIAN,
+                    openai_value="object",
+                    description=f"Variant '{type_value}' missing in Hadrian",
+                ))
+                key = (endpoint_path, method, location, variant_key)
+                if key not in DOCUMENTED_MISSING_FIELDS:
+                    violations.append(Violation(
+                        violation_type="undocumented_missing",
+                        path=endpoint_path,
+                        method=method,
+                        field=variant_key,
+                        location=location,
+                        message=f"Union variant '{type_value}' at {short_context} missing in Hadrian",
+                    ))
+                continue
+
+            v_diffs, v_violations = self._compare_schemas(
+                openai_variant,
+                hadrian_variant,
+                variant_context,
+                endpoint_path,
+                method,
+                location,
+            )
+            # Tag each within-variant diff with its discriminator so
+            # `cache_control on file_search` reads as such in the
+            # report instead of an undifferentiated "Field 'cache_control'".
+            for d in v_diffs:
+                d.description = f"[{type_value}] {d.description}"
+            diffs.extend(v_diffs)
+            violations.extend(v_violations)
 
         return diffs, violations
 

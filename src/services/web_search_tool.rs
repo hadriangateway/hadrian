@@ -13,9 +13,9 @@ use tracing::{debug, error, info};
 
 use crate::{
     api_types::responses::{
-        CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType, ResponsesInput,
-        ResponsesInputItem, ResponsesToolDefinition, WebSearchCallOutput, WebSearchCallOutputType,
-        WebSearchStatus,
+        CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType, FunctionTool,
+        ResponsesInput, ResponsesInputItem, ResponsesToolDefinition, WebSearchCallOutput,
+        WebSearchCallOutputType, WebSearchStatus,
     },
     config::WebSearchConfig,
     observability::metrics::record_web_search,
@@ -84,7 +84,10 @@ pub fn preprocess_web_search_tools(payload: &mut CreateResponsesPayload) {
     for tool in tools.iter_mut() {
         if tool.is_web_search() {
             let function_def = WebSearchToolArguments::function_tool_definition();
-            *tool = ResponsesToolDefinition::Function(function_def);
+            *tool = ResponsesToolDefinition::Function(
+                FunctionTool::from_json(function_def)
+                    .expect("web_search function-tool definition is well-formed"),
+            );
             debug!(
                 stage = "tool_preprocessed",
                 "Preprocessed web_search tool to function definition"
@@ -323,11 +326,18 @@ fn format_web_search_call_output_event(item_id: &str) -> Option<Bytes> {
 /// `ServerExecutedTool` implementation for `web_search`.
 pub struct WebSearchExecutor {
     context: WebSearchContext,
+    /// Hides the rewritten `web_search` function-call plumbing from the
+    /// client stream; the executor emits the spec-shaped
+    /// `web_search_call` items itself.
+    suppressor: crate::services::server_tools::FunctionCallSuppressor,
 }
 
 impl WebSearchExecutor {
     pub fn new(context: WebSearchContext) -> Self {
-        Self { context }
+        Self {
+            context,
+            suppressor: crate::services::server_tools::FunctionCallSuppressor::new(),
+        }
     }
 }
 
@@ -335,6 +345,13 @@ impl WebSearchExecutor {
 impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
     fn name(&self) -> &'static str {
         WebSearchToolArguments::FUNCTION_NAME
+    }
+
+    /// Hide the rewritten `web_search` function-call plumbing; the
+    /// executor emits the spec-shaped `web_search_call` items itself.
+    fn transform_event(&self, event: Bytes) -> Bytes {
+        self.suppressor
+            .suppress(event, |name| name == WebSearchToolArguments::FUNCTION_NAME)
     }
 
     fn is_enabled_for(&self, payload: &CreateResponsesPayload) -> bool {
@@ -347,9 +364,8 @@ impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
                         t.is_web_search()
                             || matches!(
                                 t,
-                                ResponsesToolDefinition::Function(v)
-                                    if v.get("name").and_then(|n| n.as_str())
-                                        == Some(WebSearchToolArguments::FUNCTION_NAME)
+                                ResponsesToolDefinition::Function(f)
+                                    if f.name == WebSearchToolArguments::FUNCTION_NAME
                             )
                     })
                 })
@@ -494,9 +510,8 @@ impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
             let before = tools.len();
             tools.retain(|t| !t.is_web_search());
             tools.retain(|t| {
-                if let ResponsesToolDefinition::Function(v) = t {
-                    v.get("name").and_then(|n| n.as_str())
-                        != Some(WebSearchToolArguments::FUNCTION_NAME)
+                if let ResponsesToolDefinition::Function(f) = t {
+                    f.name != WebSearchToolArguments::FUNCTION_NAME
                 } else {
                     true
                 }
@@ -627,8 +642,8 @@ mod tests {
         let tools = payload.tools.unwrap();
         assert_eq!(tools.len(), 1);
         assert!(matches!(tools[0], ResponsesToolDefinition::Function(_)));
-        if let ResponsesToolDefinition::Function(ref v) = tools[0] {
-            assert_eq!(v.get("name").unwrap().as_str().unwrap(), "web_search");
+        if let ResponsesToolDefinition::Function(ref f) = tools[0] {
+            assert_eq!(f.name, "web_search");
         }
     }
 }

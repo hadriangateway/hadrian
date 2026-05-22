@@ -607,6 +607,12 @@ pub(super) fn convert_responses_input_to_bedrock_messages(
                     | ResponsesInputItem::FileSearchCall(_)
                     | ResponsesInputItem::ShellCall(_)
                     | ResponsesInputItem::ShellCallOutput(_)
+                    | ResponsesInputItem::McpListTools(_)
+                    | ResponsesInputItem::McpCall(_)
+                    | ResponsesInputItem::McpApprovalRequest(_)
+                    | ResponsesInputItem::McpApprovalResponse(_)
+                    | ResponsesInputItem::ToolSearchCall(_)
+                    | ResponsesInputItem::ToolSearchOutput(_)
                     | ResponsesInputItem::Compaction(_)
                     | ResponsesInputItem::ImageGeneration(_) => {
                         // These are server-side tool calls that don't need translation
@@ -715,28 +721,21 @@ pub(super) fn convert_responses_tools_to_bedrock(
 
     for tool in tools {
         match tool {
-            ResponsesToolDefinition::Function(value) => {
-                // Extract function tool definition from generic JSON
-                if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
-                    let description = value
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let parameters = value
-                        .get("parameters")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({"type": "object", "properties": {}}));
+            ResponsesToolDefinition::Function(func) => {
+                let parameters = func
+                    .parameters
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
+                let has_cache_control = func.extras.contains_key("cache_control");
 
-                    bedrock_tools.push(BedrockTool::with_spec(BedrockToolSpec {
-                        name: name.to_string(),
-                        description,
-                        input_schema: BedrockInputSchema { json: parameters },
-                    }));
+                bedrock_tools.push(BedrockTool::with_spec(BedrockToolSpec {
+                    name: func.name,
+                    description: func.description,
+                    input_schema: BedrockInputSchema { json: parameters },
+                }));
 
-                    // Insert cache point after tool if cache_control is set
-                    if value.get("cache_control").is_some() {
-                        bedrock_tools.push(BedrockTool::cache_point());
-                    }
+                // Insert cache point after tool if cache_control is set
+                if has_cache_control {
+                    bedrock_tools.push(BedrockTool::cache_point());
                 }
             }
             ResponsesToolDefinition::WebSearchPreview(_)
@@ -750,6 +749,18 @@ pub(super) fn convert_responses_tools_to_bedrock(
                 tracing::warn!(
                     "Shell tool reached Bedrock conversion — only OpenAI passthrough is \
                      supported for shell in the current build; dropping the tool definition"
+                );
+            }
+            ResponsesToolDefinition::Mcp(_) => {
+                tracing::warn!(
+                    "MCP tool reached Bedrock conversion — `mcp` requires `mode = \
+                     passthrough_openai` and an OpenAI/Azure upstream; dropping the tool definition"
+                );
+            }
+            ResponsesToolDefinition::ToolSearch(_) => {
+                tracing::warn!(
+                    "tool_search tool reached Bedrock conversion — should have been consumed \
+                     by the MCP rewrite under hadrian_hosted; dropping the tool definition"
                 );
             }
             ResponsesToolDefinition::FileSearch(file_search) => {
@@ -797,6 +808,13 @@ pub(super) fn convert_responses_tool_choice_to_bedrock(
         ResponsesToolChoice::Shell(_) => Some(BedrockToolChoice::Tool {
             name: "shell".to_string(),
         }),
+        ResponsesToolChoice::Mcp(_) => {
+            // Reaches Bedrock only when the hadrian_hosted rewrite was
+            // skipped (mcp feature off or no matching `mcp` tool entry).
+            // No equivalent on Bedrock — fall back to forcing any tool.
+            tracing::warn!("MCP tool choice without a hosted rewrite; falling back to `any`");
+            Some(BedrockToolChoice::Any {})
+        }
     })
 }
 
@@ -1722,8 +1740,8 @@ mod cache_control_tests {
             ToolDefinitionFunction, ToolType,
         },
         responses::{
-            FileSearchTool, FileSearchToolType, ResponseInputContentItem, ResponseInputImageDetail,
-            ResponsesToolDefinition,
+            FileSearchTool, FileSearchToolType, FunctionTool, ResponseInputContentItem,
+            ResponseInputImageDetail, ResponsesToolDefinition,
         },
     };
 
@@ -2091,13 +2109,16 @@ mod cache_control_tests {
 
     #[test]
     fn test_convert_responses_tools_function_with_cache_control() {
-        let tools = Some(vec![ResponsesToolDefinition::Function(serde_json::json!({
-            "type": "function",
-            "name": "get_weather",
-            "description": "Get weather",
-            "parameters": {"type": "object", "properties": {}},
-            "cache_control": {"type": "ephemeral"}
-        }))]);
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {}},
+                "cache_control": {"type": "ephemeral"}
+            }))
+            .unwrap(),
+        )]);
 
         let result = convert_responses_tools_to_bedrock(tools);
         assert!(result.is_some());
@@ -2145,12 +2166,15 @@ mod cache_control_tests {
 
     #[test]
     fn test_convert_responses_tools_function_without_cache_control() {
-        let tools = Some(vec![ResponsesToolDefinition::Function(serde_json::json!({
-            "type": "function",
-            "name": "get_weather",
-            "description": "Get weather",
-            "parameters": {"type": "object", "properties": {}}
-        }))]);
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {}}
+            }))
+            .unwrap(),
+        )]);
 
         let result = convert_responses_tools_to_bedrock(tools);
         assert!(result.is_some());

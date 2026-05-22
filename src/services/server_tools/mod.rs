@@ -41,6 +41,112 @@ mod runner;
 
 pub use runner::ToolLoopRunner;
 
+/// Suppresses the rewritten `function_call` plumbing for a server tool
+/// that synthesizes its own spec-shaped output items.
+///
+/// Every server-executed tool is driven by function-tool rewriting: the
+/// model emits a `function_call` (`web_search` / `file_search` / `shell`
+/// / `mcp_<label>__<tool>`), which the runner intercepts and replaces
+/// with the hosted-tool item (`web_search_call`, `mcp_call`, …). OpenAI's
+/// Responses output only ever carries those hosted-tool items, never the
+/// `function_call` that drove them — so the underlying
+/// `output_item.added` / `.done` and `function_call_arguments.delta` /
+/// `.done` events must not reach the client. A tool calls
+/// [`Self::suppress`] from its `transform_event`; suppressed events come
+/// back as empty `Bytes`, which the runner drops.
+#[derive(Default)]
+pub struct FunctionCallSuppressor {
+    /// Item ids of the function calls we've decided to hide. The
+    /// argument-streaming events carry only `item_id` (no name), so we
+    /// remember the id from the `output_item.added` / `.done` (which do
+    /// carry the name) to suppress them as well.
+    tracked: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl FunctionCallSuppressor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return empty `Bytes` when `event` is the rewritten function-call
+    /// plumbing for a call whose name satisfies `is_match`; otherwise
+    /// return `event` untouched. Non-`function_call` events (including
+    /// the tool's own synthesized items) always pass through.
+    pub fn suppress(&self, event: Bytes, is_match: impl Fn(&str) -> bool) -> Bytes {
+        let Some(data) = sse_event_data(&event) else {
+            return event;
+        };
+        let trimmed = data.trim();
+        if trimmed == "[DONE]" {
+            return event;
+        }
+        let Ok(json) = serde_json::from_str::<Value>(trimmed) else {
+            return event;
+        };
+        match json.get("type").and_then(|t| t.as_str()) {
+            Some("response.output_item.added" | "response.output_item.done") => {
+                let Some(item) = json.get("item") else {
+                    return event;
+                };
+                if item.get("type").and_then(|t| t.as_str()) != Some("function_call") {
+                    return event;
+                }
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if !is_match(name) {
+                    return event;
+                }
+                if let Some(id) = item.get("id").and_then(|v| v.as_str())
+                    && let Ok(mut set) = self.tracked.lock()
+                {
+                    set.insert(id.to_string());
+                }
+                Bytes::new()
+            }
+            Some(
+                "response.function_call_arguments.delta" | "response.function_call_arguments.done",
+            ) => {
+                // Real OpenAI arg events carry only `item_id`; some
+                // providers (and our own fixtures) also include `name`.
+                // Match on either so the plumbing is hidden regardless.
+                let by_name = json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(&is_match);
+                let item_id = json.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                let by_id = self
+                    .tracked
+                    .lock()
+                    .map(|s| s.contains(item_id))
+                    .unwrap_or(false);
+                if by_name || by_id {
+                    Bytes::new()
+                } else {
+                    event
+                }
+            }
+            _ => event,
+        }
+    }
+}
+
+/// Join the `data:` field(s) of a single SSE event into one string,
+/// honoring CRLF framing and the spec's single-leading-space rule.
+/// Returns `None` when the event carries no `data:` payload.
+fn sse_event_data(event: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(event).ok()?;
+    let mut parts: Vec<&str> = Vec::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            parts.push(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
 /// Callback that re-invokes the upstream provider with a new payload.
 ///
 /// Used to continue the conversation after a server-executed tool produces
@@ -186,5 +292,71 @@ pub trait ServerExecutedTool: Send + Sync {
     /// depends on prior `execute()` calls) should use interior mutability.
     fn transform_event(&self, event: Bytes) -> Bytes {
         event
+    }
+
+    /// Events to emit once, before the upstream stream starts.
+    ///
+    /// Used by `mcp` to surface the `mcp_list_tools` catalog snapshot
+    /// at the start of the response, mirroring OpenAI's hosted MCP
+    /// behavior so the persisted output records what tool surface the
+    /// model saw. Default: empty.
+    fn prefix_events(&self) -> Vec<Bytes> {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod suppressor_tests {
+    use super::*;
+
+    fn ev(s: &str) -> Bytes {
+        Bytes::from(format!("data: {s}\n\n"))
+    }
+
+    #[test]
+    fn suppresses_matching_function_call_lifecycle() {
+        let s = FunctionCallSuppressor::new();
+        let is_ws = |n: &str| n == "web_search";
+
+        // output_item.added for the matching function call → dropped,
+        // and its item id is remembered.
+        let added = ev(
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"web_search","arguments":""}}"#,
+        );
+        assert!(s.suppress(added, is_ws).is_empty());
+
+        // The arg-streaming events carry only item_id → dropped via the
+        // remembered id.
+        let delta =
+            ev(r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{"}"#);
+        assert!(s.suppress(delta, is_ws).is_empty());
+        let done = ev(
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","name":"web_search","arguments":"{}"}}"#,
+        );
+        assert!(s.suppress(done, is_ws).is_empty());
+    }
+
+    #[test]
+    fn passes_through_other_calls_and_synthesized_items() {
+        let s = FunctionCallSuppressor::new();
+        let is_ws = |n: &str| n == "web_search";
+
+        // A different function call is untouched.
+        let other = ev(
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"get_weather","arguments":""}}"#,
+        );
+        assert_eq!(s.suppress(other.clone(), is_ws), other);
+        // Arg events for an untracked id pass through.
+        let delta =
+            ev(r#"{"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{"}"#);
+        assert_eq!(s.suppress(delta.clone(), is_ws), delta);
+        // The tool's own synthesized item passes through.
+        let synth = ev(
+            r#"{"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_1","status":"completed"}}"#,
+        );
+        assert_eq!(s.suppress(synth.clone(), is_ws), synth);
+        // [DONE] and non-JSON pass through.
+        let done = Bytes::from("data: [DONE]\n\n");
+        assert_eq!(s.suppress(done.clone(), is_ws), done);
     }
 }

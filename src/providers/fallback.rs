@@ -64,6 +64,18 @@ pub fn classify_provider_error(error: &ProviderError) -> FallbackDecision {
         // Unsupported operations won't succeed on another provider of
         // the same type — bail out instead of cycling fallbacks.
         ProviderError::Unsupported(_) => FallbackDecision::NoRetry,
+
+        // BadGateway covers gateway-side dependency failures (e.g. an
+        // MCP server returning 503 during tools/list rewrite). Treat
+        // like a transient upstream error and let the fallback chain
+        // try the next provider — the next attempt re-runs the rewrite,
+        // and if the dependency comes back the request can succeed.
+        ProviderError::BadGateway(_, _) => FallbackDecision::Retry,
+
+        // BadRequest is a caller-side problem detected in a pipeline
+        // step (e.g. ambiguous MCP `tool_choice`). Retrying a different
+        // provider won't help — the request itself is malformed.
+        ProviderError::BadRequest(_, _) => FallbackDecision::NoRetry,
     }
 }
 

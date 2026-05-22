@@ -6,6 +6,11 @@
 //!    worker that died mid-execution would otherwise leave the row
 //!    stuck forever (`claim_queued` only picks `queued`).
 //! 2. **Prune**: delete rows whose `retention_expires_at` is past.
+//! 3. **MCP approvals sweep** (when the `mcp` feature is enabled):
+//!    delete `mcp_pending_approvals` rows past their `expires_at`. The
+//!    claim path already gates on `expires_at > now`, so stale rows are
+//!    never executable — this sweep just stops them accumulating
+//!    forever when a gated call is never resumed.
 //!
 //! The reap stamps a fresh `retention_expires_at` so the prune
 //! picks reaped rows up on a future cycle, not the current one
@@ -66,6 +71,16 @@ pub async fn start_responses_retention_worker(
             Ok(0) => {}
             Ok(n) => tracing::debug!(deleted = n, "Pruned expired response rows"),
             Err(e) => tracing::warn!(error = %e, "Responses retention pass failed"),
+        }
+
+        // Sweep parked MCP approvals past their TTL. Runs under the same
+        // leader lock so only one replica writes; the claim path already
+        // refuses expired rows, so this only bounds storage growth.
+        #[cfg(feature = "mcp")]
+        match db.mcp_pending_approvals().delete_expired(Utc::now()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(deleted = n, "Swept expired MCP pending-approval rows"),
+            Err(e) => tracing::warn!(error = %e, "MCP pending-approvals sweep failed"),
         }
     }
 }

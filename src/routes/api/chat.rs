@@ -164,13 +164,10 @@ pub(super) async fn apply_output_guardrails(
     }
 }
 
-/// Returns true if the resolved provider can handle a shell-tool spec
-/// forwarded verbatim (i.e. it implements OpenAI's hosted shell-tool
-/// runtime). Used to gate `ShellRuntimeConfig::PassthroughOpenAI`.
-/// Two skill entries refer to the same logical skill iff their type
-/// + identity match. Used by the container-bound merge to avoid
-/// mounting the same skill twice when a request both names it
-/// explicitly and inherits it from a `container_reference`.
+/// Two skill entries refer to the same logical skill iff their type and
+/// identity match. Used by the container-bound merge to avoid mounting
+/// the same skill twice when a request both names it explicitly and
+/// inherits it from a `container_reference`.
 fn skills_have_same_identity(
     a: &crate::api_types::RequestSkill,
     b: &crate::api_types::RequestSkill,
@@ -183,6 +180,55 @@ fn skills_have_same_identity(
         (RequestSkill::Inline(x), RequestSkill::Inline(y)) => x.name == y.name,
         _ => false,
     }
+}
+
+/// Whether a non-streaming `/v1/responses` request needs the
+/// forced-streaming bridge on account of a `hadrian_hosted` MCP tool.
+///
+/// The server-tool loop that intercepts and runs MCP `tools/call`s only
+/// operates on SSE bodies, so a non-streaming caller must have
+/// `payload.stream` flipped on internally (the result is folded back to
+/// JSON before responding). `passthrough_openai` is deliberately
+/// excluded: there OpenAI/Azure run the MCP loop upstream and already
+/// return a complete non-streaming response.
+#[cfg(feature = "mcp")]
+fn request_needs_mcp_loop(
+    payload: &api_types::CreateResponsesPayload,
+    mcp_cfg: Option<&crate::config::McpConfig>,
+    mcp_service_present: bool,
+) -> bool {
+    payload
+        .tools
+        .as_ref()
+        .is_some_and(|t| t.iter().any(|tt| tt.is_mcp()))
+        && mcp_service_present
+        && mcp_cfg.is_some_and(crate::config::McpConfig::is_hadrian_hosted)
+}
+
+/// True iff the request carries a `tool_search` tool entry whose
+/// Hadrian-extension `ranker` is explicitly `semantic`.
+#[cfg(feature = "mcp")]
+fn payload_requests_semantic_tool_search(payload: &api_types::CreateResponsesPayload) -> bool {
+    use crate::api_types::responses::ToolSearchRankerKind;
+    payload.tools.as_ref().is_some_and(|tools| {
+        tools.iter().any(|t| {
+            t.as_tool_search()
+                .and_then(|ts| ts.ranker)
+                .is_some_and(|r| r == ToolSearchRankerKind::Semantic)
+        })
+    })
+}
+
+/// True iff the request has an `mcp` tool that would be deferred via
+/// Hadrian-side tool search (`defer_loading` without native passthrough).
+#[cfg(feature = "mcp")]
+fn payload_has_deferred_mcp_tool(payload: &api_types::CreateResponsesPayload) -> bool {
+    payload.tools.as_ref().is_some_and(|tools| {
+        tools
+            .iter()
+            .filter_map(|t| t.as_mcp())
+            .any(|m| m.defer_loading == Some(true) && m.defer_loading_passthrough != Some(true))
+    })
 }
 
 fn provider_supports_passthrough_shell(provider: &crate::config::ProviderConfig) -> bool {
@@ -217,8 +263,8 @@ async fn stage_input_files_if_shell(
                 t.is_shell()
                     || matches!(
                         t,
-                        crate::api_types::responses::ResponsesToolDefinition::Function(v)
-                            if v.get("name").and_then(|n| n.as_str()) == Some("shell")
+                        crate::api_types::responses::ResponsesToolDefinition::Function(f)
+                            if f.name == "shell"
                     )
             })
         })
@@ -261,6 +307,7 @@ fn serialize_payload_for_storage(
 ) -> serde_json::Value {
     let mut value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
     strip_input_file_data(&mut value);
+    strip_mcp_credentials(&mut value);
     value
 }
 
@@ -289,6 +336,54 @@ fn strip_input_file_data(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// Walk a serialized payload, scrubbing caller-supplied credentials on
+/// every `mcp` tool entry before persistence. Matches OpenAI's
+/// documented behaviour: `authorization` and `headers` are discarded
+/// after each request, and `server_url` is trimmed to scheme + host so
+/// no path / query info is retained.
+fn strip_mcp_credentials(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(|v| v.as_str()) == Some("mcp") {
+                map.remove("authorization");
+                map.remove("headers");
+                if let Some(Value::String(url)) = map.get("server_url") {
+                    let trimmed = trim_url_to_origin(url);
+                    map.insert("server_url".into(), Value::String(trimmed));
+                }
+            }
+            for (_, v) in map.iter_mut() {
+                strip_mcp_credentials(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_mcp_credentials(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return `url` reduced to `scheme://host[:port]` — drops path, query,
+/// and fragment. Falls back to the original string when parsing fails
+/// so we never silently lose the value.
+pub(crate) fn trim_url_to_origin(url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    let host = match parsed.host_str() {
+        Some(h) => h,
+        None => return url.to_string(),
+    };
+    let scheme = parsed.scheme();
+    match parsed.port() {
+        Some(p) => format!("{scheme}://{host}:{p}"),
+        None => format!("{scheme}://{host}"),
     }
 }
 
@@ -1337,6 +1432,74 @@ pub async fn api_v1_responses(
         ));
     }
 
+    // MCP-tool admission. Validates every `{"type": "mcp", ...}` entry
+    // against operator config + the resolved provider. Failure here is
+    // a clean 400 with the variant's stable error code — for background
+    // requests this is the only chance to reject; for foreground it
+    // spares us the upstream round-trip on doomed calls.
+    {
+        let mcp_provider =
+            crate::services::mcp_tool::McpProviderKind::from_provider(&provider_config);
+        if let Err(e) = crate::services::mcp_tool::preprocess_mcp_tools(
+            &payload,
+            state.config.features.mcp.as_ref(),
+            mcp_provider,
+        ) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                e.code(),
+                e.to_string(),
+            ));
+        }
+    }
+
+    // Tool-search ranker admission. A request that explicitly asks for
+    // `semantic` ranking on a deployment with no embedding provider can't
+    // be honored — fail loud with a 400 rather than silently downgrading.
+    // (A `hybrid`/config default degrades to lexical instead; only an
+    // explicit per-request `semantic` is a hard error.)
+    #[cfg(feature = "mcp")]
+    if let Some(mcp_cfg) = state.config.features.mcp.as_ref()
+        && mcp_cfg.is_hadrian_hosted()
+        && state.tool_search_embeddings.is_none()
+        && payload_requests_semantic_tool_search(&payload)
+        && payload_has_deferred_mcp_tool(&payload)
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "tool_search_ranker_unavailable",
+            "tool_search requested `semantic` ranking but this deployment has no embedding \
+             provider configured for MCP tool search",
+        ));
+    }
+
+    // MCP approval resumption. Convert any `mcp_approval_response`
+    // input items into `function_call_output` items by looking up the
+    // parked call, running it (on approve) or refusing it (on deny),
+    // and folding the result back. Only runs under `hadrian_hosted`
+    // mode with a resolved org scope.
+    #[cfg(feature = "mcp")]
+    if let (Some(mcp_cfg), Some(mcp_service), Some(org_id)) = (
+        state.config.features.mcp.as_ref(),
+        state.mcp_service.as_ref(),
+        auth.as_ref().and_then(|a| a.0.principal().org_id()),
+    ) && mcp_cfg.is_hadrian_hosted()
+        && let Err(e) = crate::services::mcp::resume_mcp_approvals(
+            &mut payload,
+            mcp_service,
+            org_id,
+            mcp_cfg.call_timeout_secs,
+        )
+        .await
+    {
+        let status = if e.is_client_error() {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        return Err(ApiError::new(status, e.code(), e.to_string()));
+    }
+
     // Non-streaming callers that include a server-executed tool need
     // the runner's loop to mediate the conversation server-side, the
     // same way OpenAI's hosted Responses API does: the server runs the
@@ -1390,8 +1553,23 @@ pub async fn api_v1_responses(
             .file_search
             .as_ref()
             .is_some_and(|c| c.enabled);
-    let needs_non_streaming_bridge =
-        !caller_wants_streaming && (shell_loops || web_search_loops || file_search_loops);
+    // `hadrian_hosted` MCP tools run the same server-side loop as the
+    // shell/web/file_search tools, so a non-streaming caller needs the
+    // same forced-streaming bridge — otherwise the rewritten
+    // `mcp_<label>__<tool>` function call leaks back to the client
+    // unexecuted instead of being run and folded into an `mcp_call`.
+    // `passthrough_openai` is excluded: OpenAI/Azure run the loop
+    // upstream and return a complete non-streaming response themselves.
+    #[cfg(feature = "mcp")]
+    let mcp_loops = request_needs_mcp_loop(
+        &payload,
+        state.config.features.mcp.as_ref(),
+        state.mcp_service.is_some(),
+    );
+    #[cfg(not(feature = "mcp"))]
+    let mcp_loops = false;
+    let needs_non_streaming_bridge = !caller_wants_streaming
+        && (shell_loops || web_search_loops || file_search_loops || mcp_loops);
     if needs_non_streaming_bridge {
         payload.stream = true;
     }
@@ -3198,4 +3376,95 @@ fn modify_completion_content(body: &[u8], new_content: &str) -> Option<Vec<u8>> 
     }
 
     serde_json::to_vec(&json).ok()
+}
+
+#[cfg(all(test, feature = "mcp"))]
+mod mcp_loop_tests {
+    use super::request_needs_mcp_loop;
+    use crate::{
+        api_types::CreateResponsesPayload,
+        config::{McpConfig, McpMode},
+    };
+
+    fn payload_with_mcp_tool() -> CreateResponsesPayload {
+        serde_json::from_value(serde_json::json!({
+            "tools": [{
+                "type": "mcp",
+                "server_label": "platter",
+                "server_url": "http://127.0.0.1:3100/mcp"
+            }]
+        }))
+        .expect("payload parses")
+    }
+
+    fn payload_without_mcp_tool() -> CreateResponsesPayload {
+        serde_json::from_value(serde_json::json!({
+            "tools": [{ "type": "web_search" }]
+        }))
+        .expect("payload parses")
+    }
+
+    fn cfg(mode: McpMode, enabled: bool) -> McpConfig {
+        McpConfig {
+            enabled,
+            mode,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hadrian_hosted_mcp_tool_needs_bridge() {
+        assert!(request_needs_mcp_loop(
+            &payload_with_mcp_tool(),
+            Some(&cfg(McpMode::HadrianHosted, true)),
+            true,
+        ));
+    }
+
+    #[test]
+    fn passthrough_openai_does_not_need_bridge() {
+        // OpenAI/Azure run the loop upstream and return a complete
+        // non-streaming response, so no forced-streaming bridge.
+        assert!(!request_needs_mcp_loop(
+            &payload_with_mcp_tool(),
+            Some(&cfg(McpMode::PassthroughOpenai, true)),
+            true,
+        ));
+    }
+
+    #[test]
+    fn no_mcp_tool_does_not_need_bridge() {
+        assert!(!request_needs_mcp_loop(
+            &payload_without_mcp_tool(),
+            Some(&cfg(McpMode::HadrianHosted, true)),
+            true,
+        ));
+    }
+
+    #[test]
+    fn disabled_config_does_not_need_bridge() {
+        assert!(!request_needs_mcp_loop(
+            &payload_with_mcp_tool(),
+            Some(&cfg(McpMode::HadrianHosted, false)),
+            true,
+        ));
+    }
+
+    #[test]
+    fn missing_service_does_not_need_bridge() {
+        assert!(!request_needs_mcp_loop(
+            &payload_with_mcp_tool(),
+            Some(&cfg(McpMode::HadrianHosted, true)),
+            false,
+        ));
+    }
+
+    #[test]
+    fn missing_config_does_not_need_bridge() {
+        assert!(!request_needs_mcp_loop(
+            &payload_with_mcp_tool(),
+            None,
+            true
+        ));
+    }
 }

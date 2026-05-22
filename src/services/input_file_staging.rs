@@ -43,9 +43,9 @@ pub struct StagedFile {
     /// `file_id`, the data URL prefix for `file_data`, or the HTTP
     /// `Content-Type` header for `file_url`.
     pub content_type: Option<String>,
-    /// Original Files-API id when the source was `file_id`. Phase 3
-    /// uses this to cross-link the container file row back to the
-    /// source upload; Phase 2 just records it for traceability.
+    /// Original Files-API id when the source was `file_id`. Used to
+    /// cross-link the container file row back to the source upload
+    /// and recorded for traceability.
     pub source_file_id: Option<String>,
 }
 

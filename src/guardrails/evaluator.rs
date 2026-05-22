@@ -1594,6 +1594,12 @@ fn extract_text_from_input_item(item: &ResponsesInputItem) -> Option<String> {
         | ResponsesInputItem::FileSearchCall(_)
         | ResponsesInputItem::ShellCall(_)
         | ResponsesInputItem::ShellCallOutput(_)
+        | ResponsesInputItem::McpListTools(_)
+        | ResponsesInputItem::McpCall(_)
+        | ResponsesInputItem::McpApprovalRequest(_)
+        | ResponsesInputItem::McpApprovalResponse(_)
+        | ResponsesInputItem::ToolSearchCall(_)
+        | ResponsesInputItem::ToolSearchOutput(_)
         | ResponsesInputItem::Compaction(_)
         | ResponsesInputItem::ImageGeneration(_) => None,
     }

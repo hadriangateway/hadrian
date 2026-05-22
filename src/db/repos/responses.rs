@@ -3,7 +3,7 @@
 //! Stores rows the gateway emits per request when `store=true` (the
 //! default per OpenAI's spec). Powers `GET /v1/responses/{id}`,
 //! `POST /v1/responses/{id}/cancel`, `DELETE /v1/responses/{id}`, and
-//! the background-mode poll/replay flows that arrive in Phase 3.
+//! the background-mode poll/replay flows.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

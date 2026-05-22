@@ -527,6 +527,49 @@ pub fn apply_streaming_pipeline(
         }
     }
 
+    // MCP tool executor — engages when `[features.mcp].mode =
+    // hadrian_hosted` is configured and the request carries any
+    // `mcp` tool entries. Under `passthrough_openai` the upstream
+    // (OpenAI/Azure) runs the MCP loop and we don't register here.
+    #[cfg(feature = "mcp")]
+    {
+        if let (Some(mcp_cfg), Some(mcp_service)) = (
+            state.config.features.mcp.as_ref(),
+            state.mcp_service.as_ref(),
+        ) && mcp_cfg.is_hadrian_hosted()
+        {
+            // Thread persistence context through so the approval gate
+            // can park calls. Both response_id and org_id must be
+            // present for parking to work; the executor degrades to
+            // warn-and-run otherwise.
+            let response_id = persistence.as_ref().map(|h| h.response_id.clone());
+            let org_id = principal.org_id;
+            let executor = crate::services::mcp::McpExecutor::with_persistence(
+                mcp_service.clone(),
+                payload,
+                response_id,
+                org_id,
+                mcp_cfg.call_timeout_secs,
+            );
+            if executor.has_bindings() {
+                tools.push(Arc::new(executor));
+            }
+
+            // Hadrian-side tool search for any `defer_loading` servers.
+            // Registered after the MCP executor so its continuation pass
+            // (which appends function-call outputs) runs first.
+            let tool_search = crate::services::mcp::ToolSearchExecutor::new(
+                mcp_service.clone(),
+                payload,
+                &mcp_cfg.tool_search,
+                state.tool_search_embeddings.clone(),
+            );
+            if tool_search.has_deferred() {
+                tools.push(Arc::new(tool_search));
+            }
+        }
+    }
+
     let after_tools = if tools.is_empty() {
         response
     } else {
@@ -546,8 +589,36 @@ pub fn apply_streaming_pipeline(
             })
         });
         let max_iterations = state.config.features.server_tools.max_iterations;
+        // Every server tool synthesizes its own spec-shaped output items
+        // (web_search_call / file_search_call / shell_call / mcp_call …)
+        // and suppresses the rewritten function-call plumbing via
+        // `transform_event`. Turning on the stream rewriter makes the
+        // runner own a single monotonic sequence_number / output_index
+        // space and reconstruct the terminal `response.output` from the
+        // items it actually forwards — so the persisted/retrieved
+        // response carries the hosted-tool items the client saw, not the
+        // provider's last-turn view or the internal function calls.
         let mut runner = ToolLoopRunner::new(payload.clone(), max_iterations)
-            .with_provider_callback(provider_callback);
+            .with_provider_callback(provider_callback)
+            .rewrite_output(true);
+        // Restore the caller's original `mcp` tool entries on the echoed
+        // `response.tools`. The `hadrian_hosted` rewrite expanded each `mcp`
+        // entry into N `mcp_<label>__<tool>` function tools before the
+        // provider call; without this the provider echoes those internal
+        // functions instead of the `mcp` tool the caller sent.
+        #[cfg(feature = "mcp")]
+        {
+            let echo = build_mcp_tool_echo(payload);
+            if !echo.is_empty() {
+                runner = runner.with_mcp_tool_echo(echo);
+            }
+        }
+        // Stamp the persisted response id onto lifecycle events so the
+        // streamed id is stable across turns and matches what's
+        // retrievable via GET /v1/responses/{id}.
+        if let Some(handle) = persistence.as_ref() {
+            runner = runner.with_response_id(handle.response_id.clone());
+        }
         for tool in tools {
             runner = runner.register(tool);
         }
@@ -568,6 +639,34 @@ pub fn apply_streaming_pipeline(
     } else {
         after_tools
     }
+}
+
+/// Build the `(function-name prefix, original tool JSON)` pairs the runner
+/// uses to collapse rewritten MCP function tools back into the caller's
+/// original `mcp` entry on the echoed `response.tools`. The `authorization`
+/// bearer is stripped — it must never be echoed back (and thereby persisted)
+/// on the stored response. Returns empty when the payload carries no `mcp`
+/// tools.
+#[cfg(feature = "mcp")]
+fn build_mcp_tool_echo(payload: &CreateResponsesPayload) -> Vec<(String, serde_json::Value)> {
+    use crate::services::mcp::synthesize_function_name;
+    let Some(tools) = payload.tools.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for tool in tools {
+        let Some(mcp) = tool.as_mcp() else {
+            continue;
+        };
+        let Ok(mut value) = serde_json::to_value(mcp) else {
+            continue;
+        };
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("authorization");
+        }
+        out.push((synthesize_function_name(&mcp.server_label, ""), value));
+    }
+    out
 }
 
 /// Plumbing handle for the persister wrap. Bundles the row's id and
@@ -731,41 +830,7 @@ fn add_usage(
     acc: &mut crate::api_types::responses::ResponsesUsage,
     add: &crate::api_types::responses::ResponsesUsage,
 ) {
-    acc.input_tokens += add.input_tokens;
-    acc.output_tokens += add.output_tokens;
-    acc.total_tokens += add.total_tokens;
-    acc.input_tokens_details.cached_tokens += add.input_tokens_details.cached_tokens;
-    acc.output_tokens_details.reasoning_tokens += add.output_tokens_details.reasoning_tokens;
-    match (acc.cost.as_mut(), add.cost) {
-        (Some(a), Some(b)) => *a += b,
-        (None, Some(b)) => acc.cost = Some(b),
-        _ => {}
-    }
-    // is_byok is sticky-true: once any turn was BYOK the response is
-    // marked BYOK (the alternative — a per-turn breakdown — would
-    // change the wire shape).
-    if add.is_byok == Some(true) {
-        acc.is_byok = Some(true);
-    }
-    if let Some(add_details) = &add.cost_details {
-        let target = acc.cost_details.get_or_insert(
-            crate::api_types::responses::ResponsesUsageCostDetails {
-                upstream_inference_cost: None,
-                upstream_inference_input_cost: 0.0,
-                upstream_inference_output_cost: 0.0,
-            },
-        );
-        target.upstream_inference_input_cost += add_details.upstream_inference_input_cost;
-        target.upstream_inference_output_cost += add_details.upstream_inference_output_cost;
-        match (
-            target.upstream_inference_cost.as_mut(),
-            add_details.upstream_inference_cost,
-        ) {
-            (Some(a), Some(b)) => *a += b,
-            (None, Some(b)) => target.upstream_inference_cost = Some(b),
-            _ => {}
-        }
-    }
+    acc.accumulate(add);
 }
 
 #[cfg(test)]

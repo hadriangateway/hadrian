@@ -1194,3 +1194,27 @@ CREATE INDEX IF NOT EXISTS idx_container_files_container_created
     ON container_files(container_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_container_files_org
     ON container_files(org_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- mcp_pending_approvals
+-- ─────────────────────────────────────────────────────────────────────────────
+-- See the Postgres mirror for full doc. Timestamps as TEXT (ISO 8601
+-- with millisecond precision — call `truncate_to_millis(Utc::now())`
+-- when writing, per `agent_instructions/database_changes.md`).
+CREATE TABLE IF NOT EXISTS mcp_pending_approvals (
+    id TEXT PRIMARY KEY NOT NULL,
+    response_id TEXT NOT NULL,
+    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    server_label TEXT NOT NULL,
+    server_url TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_pending_approvals_response
+    ON mcp_pending_approvals(response_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_pending_approvals_expires
+    ON mcp_pending_approvals(expires_at);

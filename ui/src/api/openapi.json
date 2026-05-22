@@ -17555,6 +17555,143 @@
         ]
       }
     },
+    "/api/v1/containers": {
+      "get": {
+        "tags": [
+          "containers"
+        ],
+        "summary": "`GET /v1/containers` — list containers in the caller's org,\nnewest-first. Matches OpenAI's cursor pagination shape.",
+        "operationId": "api_v1_containers_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to 1..=100 (default 20)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Cursor: cntr_<hex> id of the last item from a prior page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Containers in the org"
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authorization denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "containers"
+        ],
+        "summary": "`POST /v1/containers` — create an unattached container.",
+        "operationId": "api_v1_containers_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateContainerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The created container metadata"
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authorization denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/containers/{container_id}": {
       "get": {
         "tags": [
@@ -17771,6 +17908,104 @@
             "api_key": []
           }
         ]
+      },
+      "post": {
+        "tags": [
+          "containers"
+        ],
+        "summary": "`POST /v1/containers/{container_id}/files` — upload a file into a\ncontainer's `/mnt/data`. Accepts either:",
+        "description": "- `multipart/form-data` with a `file` part (required) and optional\n  `path` / `content_type` parts — streams bytes directly.\n- `application/json` with `{file_id: \"file_...\"}` — copies an\n  existing Files-API upload into the container (same resolver as\n  the `file_ids` array on `POST /v1/containers`).\n\nMatches OpenAI's upload contract.",
+        "operationId": "api_v1_containers_file_upload",
+        "parameters": [
+          {
+            "name": "container_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Uploaded file metadata"
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authorization denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Container not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Content-Type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/api/v1/containers/{container_id}/files/{file_id}": {
@@ -17801,6 +18036,81 @@
         "responses": {
           "200": {
             "description": "The container file metadata"
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authorization denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "containers"
+        ],
+        "summary": "`DELETE /v1/containers/{container_id}/files/{file_id}` — remove\na file from a container.",
+        "operationId": "api_v1_containers_file_delete",
+        "parameters": [
+          {
+            "name": "container_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "File deleted"
           },
           "401": {
             "description": "Authentication required",
@@ -18578,7 +18888,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateResponsesPayload"
+                "$ref": "#/components/schemas/CompactRequest"
               }
             }
           },
@@ -18622,6 +18932,7 @@
           "responses"
         ],
         "summary": "`GET /v1/responses/{response_id}` — retrieve a stored response.",
+        "description": "When `?stream=true` is set, returns the persisted event log as an\nSSE stream (matching OpenAI's retrieve-with-stream behavior). The\n`starting_after` query parameter resumes replay from a specific\nsequence number so a client reconnecting after a disconnect picks\nup exactly where it stopped.",
         "operationId": "api_v1_responses_get",
         "parameters": [
           {
@@ -18632,11 +18943,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "description": "Stream the event log as SSE",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "starting_after",
+            "in": "query",
+            "description": "Resume cursor (stream mode)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The stored response object"
+            "description": "Stored response (JSON) or SSE replay when stream=true"
           },
           "401": {
             "description": "Authentication required",
@@ -18765,87 +19095,6 @@
                 }
               }
             }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Authorization denied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Response not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "api_key": []
-          }
-        ]
-      }
-    },
-    "/api/v1/responses/{response_id}/events": {
-      "get": {
-        "tags": [
-          "responses"
-        ],
-        "summary": "`GET /v1/responses/{response_id}/events?starting_after=N` —\npoll-replay reconnect.",
-        "description": "Streams the persisted event log as Server-Sent Events. While the\nresponse is still in-progress the handler polls the DB every\n250ms for new rows; once the row reaches a terminal status and the\ncaller has caught up to `last_sequence_number`, the stream\nterminates with a `data: [DONE]` sentinel.\n\nEach event is emitted with the OpenAI-style named SSE form\n(`event: <type>\\ndata: <payload>\\n\\n`) so JS SDK callers see the\ntyped events they expect.",
-        "operationId": "api_v1_responses_events",
-        "parameters": [
-          {
-            "name": "response_id",
-            "in": "path",
-            "description": "ID of the response",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "starting_after",
-            "in": "query",
-            "description": "Resume cursor",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Cap on events per page",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "SSE stream of response events"
           },
           "401": {
             "description": "Authentication required",
@@ -21351,6 +21600,69 @@
           }
         }
       },
+      "CompactRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/responses/compact`.\n\nMirrors OpenAI's `CompactResponseMethodPublicBody`: `model` is\nrequired; everything else is optional. Hadrian-specific extensions\n(`models`, `stream`, `sovereignty_requirements`) ride alongside\nbecause the gateway still routes, streams, and enforces sovereignty\nfor compaction requests just like the main `/responses` handler.",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "input": {
+            "type": "object",
+            "description": "Conversation history to compact. Accepts a plain string or the\ntyped item array used by `POST /responses`."
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "System instructions threaded into the compaction prompt."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model to compact with. Required by OpenAI; Hadrian also accepts\nit as the routing key when the gateway picks an upstream\nprovider."
+          },
+          "models": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "**Hadrian Extension:** alternate model list for multi-model\nrouting. The first entry the gateway resolves successfully wins."
+          },
+          "previous_response_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Continue compacting from a previously persisted response. Spec:\n`CompactResponseMethodPublicBody.previous_response_id`."
+          },
+          "prompt_cache_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OpenAI prompt-cache key passthrough."
+          },
+          "sovereignty_requirements": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SovereigntyRequirements",
+                "description": "**Hadrian Extension:** per-request data-sovereignty requirements.\nMerged with API-key-level requirements; the most restrictive\nwins."
+              }
+            ]
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "**Hadrian Extension:** stream the compacted response as SSE.\nForwarded verbatim to the upstream provider when supported."
+          }
+        }
+      },
       "ComparisonFilter": {
         "type": "object",
         "description": "A comparison filter for attribute-based filtering.\n\nCompares a specific attribute key to a given value using a comparison operator.\n\n# Example\n\n```json\n{\n  \"type\": \"eq\",\n  \"key\": \"author\",\n  \"value\": \"John Doe\"\n}\n```\n\n# Supported Comparisons\n\n| Operator | Description |\n|----------|-------------|\n| `eq` | Equal to |\n| `ne` | Not equal to |\n| `gt` | Greater than |\n| `gte` | Greater than or equal to |\n| `lt` | Less than |\n| `lte` | Less than or equal to |",
@@ -21465,6 +21777,32 @@
             "description": "Whether the test was successful"
           }
         }
+      },
+      "ContainerExpiresAfter": {
+        "type": "object",
+        "description": "Container TTL hint. Mirrors OpenAI's `expires_after` shape — only\n`last_active_at` is honored today (the same anchor the operator's\nidle reaper uses), with `minutes` setting the per-container idle\nTTL.",
+        "required": [
+          "minutes"
+        ],
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/ContainerExpiresAfterAnchor",
+            "description": "Anchor for the TTL countdown. Today only `\"last_active_at\"` is\nsupported; unknown anchors reject with 400."
+          },
+          "minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minutes after `anchor` when the container expires. Validated\nagainst `[features.containers].max_idle_ttl_secs / 60`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContainerExpiresAfterAnchor": {
+        "type": "string",
+        "enum": [
+          "last_active_at"
+        ]
       },
       "ContentPart": {
         "oneOf": [
@@ -22423,6 +22761,56 @@
             "description": "User identifier for abuse detection"
           }
         }
+      },
+      "CreateContainerRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/containers`.",
+        "properties": {
+          "expires_after": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContainerExpiresAfter",
+                "description": "Optional idle-TTL hint. Per OpenAI's spec: `{anchor:\n\"last_active_at\", minutes: N}`. Capped by\n`[features.containers].max_idle_ttl_secs / 60`."
+              }
+            ]
+          },
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files-API ids to copy into `/mnt/data` at container creation.\nSpec: `CreateContainerBody.file_ids`. Each id is resolved via\nthe Files API (same path as `input_file` parts on a response\nrequest) and the bytes are persisted into `container_files`\nso the model can read them on first attach."
+          },
+          "memory_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional memory ceiling. Accepts OpenAI's `\"1g\"` / `\"512m\"`\nstrings; parsed case-insensitively. Capped by the operator's\n`[features.server_tools.shell_limits].max_mem_limit_mb`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional display name (max 255 chars)."
+          },
+          "network_policy": {
+            "type": "object",
+            "description": "Optional network policy (same shape as\n`tools.shell.environment.network_policy`). OpenAI types this as\na `oneOf { Disabled, Allowlist }` discriminated by `type`;\nHadrian represents it as a single flat object that validates\nthe same constraints at request resolution, so the schema is\nrendered as an opaque `object` to avoid spurious diffs."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Skills to mount whenever a session is booted against this\ncontainer. Matches OpenAI's typed shape — see\n[`crate::api_types::RequestSkill`]."
+          }
+        },
+        "additionalProperties": false
       },
       "CreateConversation": {
         "type": "object",
@@ -23515,14 +23903,11 @@
             "description": "Service tier"
           },
           "skills": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
-              "type": "string"
+              "type": "object"
             },
-            "description": "**Hadrian Extension:** Skill bundle IDs to mount into the\nsession for tools that support skill mounting (e.g. the shell\nruntime). Each entry is a skill UUID owned by the caller's\norganization; unknown IDs fail the request with 400.\n\nEach skill's `SKILL.md` is prepended to `instructions` so the\nmodel knows the skill is available; all skill files are\nmaterialized under `/skills/<skill_id>/` inside the sandbox."
+            "description": "**Hadrian Extension:** Skills to mount into the shell-tool\nsession. Hadrian treats skills as a top-level request field\nrather than threading them through the OpenAI shell-tool\n`environment` block, so they're accepted on every responses\nrequest regardless of whether the upstream provider has its own\nskills surface.\n\nMirrors OpenAI's typed shape — each entry is either a reference\nto a stored skill or an inline bundle:\n\n```json\n[\n  {\"type\": \"skill_reference\", \"skill_id\": \"<uuid>\", \"version\": \"latest\"},\n  {\"type\": \"inline\", \"name\": \"extract-csv\", \"description\": \"...\",\n   \"source\": {\"type\": \"base64\", \"media_type\": \"text/markdown\", \"data\": \"...\"}}\n]\n```\n\nFor `skill_reference`, `skill_id` is a Hadrian skill UUID\nowned by the caller's org. `version` is optional; only\n`\"latest\"` (the default) is supported today — pinned versions\nreject with 400 until version-pinning lands.\n\nFor `inline`, the decoded `source.data` is mounted as an\nephemeral skill bundle: `text/markdown` is treated as the\n`SKILL.md` content; other media types are rejected today.\n\nEach resolved skill's `SKILL.md` is prepended to `instructions`\nso the model knows the skill is available; all skill files are\nmaterialized under `/skills/<skill_id>/` inside the sandbox."
           },
           "sovereignty_requirements": {
             "oneOf": [
@@ -23563,9 +23948,12 @@
             "description": "Tool choice configuration"
           },
           "tools": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/ResponsesToolDefinition"
             },
             "description": "Available tools"
           },
@@ -26385,6 +26773,61 @@
           }
         }
       },
+      "FileSearchTool": {
+        "type": "object",
+        "description": "File search tool for RAG in the Responses API.\nEnables semantic search across vector stores.",
+        "required": [
+          "type",
+          "vector_store_ids"
+        ],
+        "properties": {
+          "cache_control": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Cache control for prompt caching (Anthropic/Bedrock)"
+          },
+          "filters": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Metadata filters to apply to the search."
+          },
+          "max_num_results": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Maximum number of results to return.",
+            "minimum": 0
+          },
+          "ranking_options": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Ranking options for controlling result relevance."
+          },
+          "type": {
+            "$ref": "#/components/schemas/FileSearchToolType"
+          },
+          "vector_store_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vector store IDs to search across."
+          }
+        }
+      },
+      "FileSearchToolType": {
+        "type": "string",
+        "enum": [
+          "file_search"
+        ]
+      },
       "FileStatus": {
         "type": "string",
         "description": "File upload status (OpenAI Files API compatible)\n\nTracks the state of a file uploaded via the Files API.\nNote: This status is **deprecated** in OpenAI's API but still returned for compatibility.\n\n## State Transitions\n\n```text\n┌──────────┐     validation      ┌───────────┐\n│ uploaded │ ──────────────────▶ │ processed │\n└──────────┘     success         └───────────┘\n      │\n      │ validation failed\n      ▼\n┌──────────┐\n│  error   │\n└──────────┘\n```\n\n- `uploaded`: File received and stored, initial validation pending\n- `processed`: File validated and ready for use (e.g., adding to vector stores)\n- `error`: File validation failed (see `status_details` for reason)\n\n## Important\n\nThis is the **file upload** status, not the vector store processing status.\nWhen a file is added to a vector store, its processing status is tracked\nseparately via `VectorStoreFileStatus`.",
@@ -26454,6 +26897,64 @@
             "description": "Number of days of historical data to use (default: 30)"
           }
         }
+      },
+      "FunctionTool": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "Extra fields the gateway forwards verbatim (e.g. MCP `annotations`\non rewritten function tools). Not part of OpenAI's documented\nshape; preserved here so internal rewrite pipelines can attach\nprovider-specific metadata without losing it through round-trips."
+          },
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "defer_loading": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Delay loading the function definition until the model discovers it\nvia tool search. On a caller-supplied function tool this is\nforwarded to the provider and treated as opaque. On the per-tool\nfunction tools the MCP rewrite synthesizes it is only set on the\nnative-passthrough path (`McpTool::defer_loading_passthrough` on an\nOpenAI/Azure upstream); the default `hadrian_hosted` path defers via\nHadrian-side tool search instead and does not set this flag."
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Human-readable description surfaced to the model."
+              },
+              "name": {
+                "type": "string",
+                "description": "Function name. Must be `[A-Za-z0-9_-]{1,64}`."
+              },
+              "parameters": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "JSON Schema describing the function's parameters. Forwarded\nverbatim to the provider; the gateway treats it as opaque."
+              },
+              "strict": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "When true, the model is constrained to emit arguments that\nstrictly conform to `parameters`."
+              },
+              "type": {
+                "$ref": "#/components/schemas/FunctionToolType"
+              }
+            }
+          }
+        ],
+        "description": "Custom function tool. **Schema-only**: at the wire level the gateway\nkeeps `Function` as an opaque `serde_json::Value` so existing\nrewrite pipelines (web_search → function, shell → function, MCP →\nper-tool function) can construct/inspect it via JSON without\ntouching a typed struct. This struct exists purely to give the\nOpenAPI spec a typed shape for the function-tool variant."
+      },
+      "FunctionToolType": {
+        "type": "string",
+        "enum": [
+          "function"
+        ]
       },
       "HealthStatus": {
         "type": "string",
@@ -27201,6 +27702,191 @@
         "enum": [
           "and",
           "or"
+        ]
+      },
+      "McpAllowedTools": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/McpToolFilter"
+          }
+        ],
+        "description": "Tool whitelist for an `McpTool`. Untagged so OpenAI's accepted\nshorthand `[\"tool_a\", \"tool_b\"]` round-trips as the `List` variant\nand the `{tool_names: [...], read_only?: bool}` object form picks\nup extra knobs."
+      },
+      "McpApprovalFilter": {
+        "type": "object",
+        "description": "Object form of `require_approval`. `always` lists tools that must\nbe gated; `never` lists tools that bypass the gate. Tools not named\nin either fall back to the default (gate). Mirrors OpenAI's\n`MCPToolApprovalFilter`.",
+        "properties": {
+          "always": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpToolFilter",
+                "description": "Tools that require approval."
+              }
+            ]
+          },
+          "never": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpToolFilter",
+                "description": "Tools exempt from approval."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpApprovalMode": {
+        "type": "string",
+        "enum": [
+          "always",
+          "never"
+        ]
+      },
+      "McpRequireApproval": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/McpApprovalMode"
+          },
+          {
+            "$ref": "#/components/schemas/McpApprovalFilter"
+          }
+        ],
+        "description": "Approval gating shape for the MCP tool. Accepts the spec's string\nshorthand (`\"always\"` / `\"never\"`) or an object with `always` / `never`\nfilters that opt subsets in or out of the approval gate."
+      },
+      "McpTool": {
+        "type": "object",
+        "description": "MCP tool — lets the model invoke tools exposed by a remote Model\nContext Protocol server (Atlassian, Notion, GitHub, HuggingFace, …).\n\nMirrors OpenAI's `mcp` tool. Two mutually-exclusive shapes: pointing\nat a remote server via `server_url`, or pointing at an OpenAI\nfirst-party connector via `connector_id`. The caller supplies any\n`authorization` bearer token directly on the tool entry; Hadrian\ndoes not persist or rewrite it.\n\nUnder `mode = passthrough_openai` the tool entry is forwarded\nverbatim to OpenAI / Azure OpenAI, and non-OpenAI providers reject\nwith `mcp_passthrough_unsupported_provider`. Under\n`mode = hadrian_hosted` the gateway runs the MCP client loop itself\nvia `rmcp` and rewrites the tool into per-tool function tools, so\nany provider can drive it.",
+        "required": [
+          "type",
+          "server_label"
+        ],
+        "properties": {
+          "allowed_tools": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpAllowedTools",
+                "description": "Restrict which tools from the server are exposed to the model.\nAccepts either a flat list of tool names or an object form for\nforward-compat with extra knobs."
+              }
+            ]
+          },
+          "authorization": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bearer / OAuth access token. The caller obtains this\nout-of-band (OpenAI's API does not run the OAuth dance for the\nremote server, and neither does Hadrian). Sent verbatim to the\nMCP server's `Authorization` header. Hadrian does not persist\nthe value — clients must include it on every request."
+          },
+          "connector_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Identifier for an OpenAI-maintained connector\n(e.g. `connector_googlecalendar`). Mutually exclusive with\n`server_url`. Only usable under `mode = passthrough_openai`;\n`hadrian_hosted` cannot reach OpenAI's connector registry."
+          },
+          "defer_loading": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Delay loading the tool definitions until the model discovers them\nvia tool search, rather than dumping the whole catalog into the\nprompt. Forwarded verbatim under `passthrough_openai` (OpenAI runs\nits native tool search). Under `hadrian_hosted` deferral is\nrealized by **Hadrian-side tool search**: the gateway exposes a\nsingle `tool_search` function tool, keeps the catalog server-side,\nand lazily injects matched per-tool function definitions as the\nmodel discovers them — so deferral works behind every provider,\nnot just OpenAI. The upstream `tools/list` catalog fetch always\nruns eagerly at rewrite time (it's needed to know what's\nsearchable); only the per-tool definitions are deferred."
+          },
+          "defer_loading_passthrough": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** opt out of Hadrian-side tool search and let\nthe upstream handle `defer_loading` natively. Only honored when\n`defer_loading` is set, the gateway is in `hadrian_hosted` mode,\nand the resolved provider is OpenAI / Azure OpenAI (which\nimplement native tool search); rejected with HTTP 400 otherwise.\nDefault/`None` keeps the provider-agnostic Hadrian-side path."
+          },
+          "headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Additional HTTP headers sent with every JSON-RPC call to the\nMCP server. Useful for region or workspace selectors.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "require_approval": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpRequireApproval",
+                "description": "Approval gate. Spec default is `\"always\"` when omitted — under\n`hadrian_hosted` the executor enforces that default; under\n`passthrough_openai` the field is forwarded verbatim and OpenAI\napplies its own default."
+              }
+            ]
+          },
+          "server_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable description surfaced to the model."
+          },
+          "server_label": {
+            "type": "string",
+            "description": "Stable identifier surfaced in `mcp_list_tools` and `mcp_call`\nitems. Required even when using `connector_id` so output items\nhave a consistent label."
+          },
+          "server_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL of the remote MCP server (Streamable HTTP). Mutually\nexclusive with `connector_id`."
+          },
+          "type": {
+            "$ref": "#/components/schemas/McpToolType"
+          }
+        }
+      },
+      "McpToolFilter": {
+        "type": "object",
+        "description": "Spec `MCPToolFilter`: a set of tool names plus an optional\n`read_only` predicate that matches tools whose MCP `readOnlyHint`\nannotation is true. Either field is optional; both are AND-combined\n(tool name must be in `tool_names` *and* `read_only` must match if set).",
+        "properties": {
+          "read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Restrict to tools whose annotation `readOnlyHint == true`.\n`None` means don't filter on this property."
+          },
+          "tool_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Tool names to include. Omit to match any name."
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpToolType": {
+        "type": "string",
+        "enum": [
+          "mcp"
         ]
       },
       "MeResponse": {
@@ -29819,6 +30505,38 @@
         ],
         "description": "Response format for chat completion"
       },
+      "ResponsesToolDefinition": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/FileSearchTool"
+          },
+          {
+            "$ref": "#/components/schemas/WebSearchPreviewTool"
+          },
+          {
+            "$ref": "#/components/schemas/WebSearchPreview20250311Tool"
+          },
+          {
+            "$ref": "#/components/schemas/WebSearchTool"
+          },
+          {
+            "$ref": "#/components/schemas/WebSearch20250826Tool"
+          },
+          {
+            "$ref": "#/components/schemas/ShellTool"
+          },
+          {
+            "$ref": "#/components/schemas/McpTool"
+          },
+          {
+            "$ref": "#/components/schemas/ToolSearchTool"
+          },
+          {
+            "$ref": "#/components/schemas/FunctionTool"
+          }
+        ],
+        "description": "Tool definition - one of the supported tool variants. The schema\nemits a `oneOf` over the variants; each variant constrains its\n`type` field to a single literal, so consumers (and the OpenAPI\nconformance script) can match variants by `type`. The `Function`\nvariant stays as an opaque `serde_json::Value` at the data level\nso existing rewrite pipelines (web_search → function, shell →\nfunction, MCP → per-tool function) keep constructing it via JSON;\nthe schema reports it as a [`FunctionTool`] for documentation."
+      },
       "RollbackOrgRbacPolicy": {
         "type": "object",
         "description": "Request to rollback an RBAC policy to a previous version.",
@@ -30186,6 +30904,56 @@
             "description": "The pin order (0 = first, higher = lower in list). Set to null to unpin."
           }
         }
+      },
+      "ShellNetworkPolicy": {
+        "type": "object",
+        "description": "Per-domain egress policy. Matches OpenAI's `network_policy` shape:\n`{ \"type\": \"allowlist\", \"allowed_domains\": [...], \"domain_secrets\": [...] }`.",
+        "properties": {
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hostnames or hostname patterns (`*.example.com`) the container\nmay make outbound requests to. Must be a subset of the\noperator's `allowed_egress_hosts`."
+          },
+          "domain_secrets": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Secrets injected for outbound traffic. Accepts either OpenAI's\ninline `{domain, name, value}` form or Hadrian's safer\n`{placeholder, allowed_domains}` reference form — see\n[`ShellDomainSecret`]."
+          },
+          "type": {
+            "type": "string",
+            "description": "Policy kind. Only `allowlist` is supported today; the field is\nhere for forward compatibility with future OpenAI additions."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ShellTool": {
+        "type": "object",
+        "description": "Shell tool — instructs the model that it may call `shell` and the\ngateway will execute the resulting commands in a sandboxed runtime\n(or forward them to the upstream provider's hosted runtime if\nconfigured for passthrough).\n\nMirrors OpenAI's `shell` tool definition for GPT-5.2+. The\n`environment` block lets a caller request narrower constraints than\nthe operator's defaults — anything outside those defaults is\nrejected with `400` at request validation.",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "environment": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Runtime environment overrides. Every field is a **subset** of\nwhat `[features.server_tools.shell_limits]` permits; requests\nasking for more than the operator allows are rejected."
+          },
+          "type": {
+            "$ref": "#/components/schemas/ShellToolType"
+          }
+        }
+      },
+      "ShellToolType": {
+        "type": "string",
+        "enum": [
+          "shell"
+        ]
       },
       "SimulateContext": {
         "type": "object",
@@ -32355,6 +33123,69 @@
             ]
           }
         }
+      },
+      "ToolSearchExecution": {
+        "type": "string",
+        "description": "Whether a tool search ran on the server (Hadrian / OpenAI) or was\ndelegated to the client (BYOT). Hadrian only emits `Server`. Mirrors\nOpenAI's `ToolSearchExecutionType`.",
+        "enum": [
+          "server",
+          "client"
+        ]
+      },
+      "ToolSearchRankerKind": {
+        "type": "string",
+        "description": "Ranking strategy for Hadrian-side tool search over a deferred MCP\ncatalog. `Hybrid` fuses semantic + lexical relevance (RRF); `Semantic`\nis embedding cosine only; `Lexical` is token/substring scoring with no\nembedding dependency.",
+        "enum": [
+          "hybrid",
+          "semantic",
+          "lexical"
+        ]
+      },
+      "ToolSearchTool": {
+        "type": "object",
+        "description": "`tool_search` tool — OpenAI's `ToolSearchToolParam`. Configures\ndiscovery of deferred tools (`defer_loading: true`). Under\n`hadrian_hosted` a caller need not supply this: Hadrian synthesizes\nits own search tool whenever a deferred MCP server is present. A\ncaller may still include the entry to set the Hadrian-extension\n`ranker`; Hadrian reads that override and does not forward the entry\nto the model.",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description shown to the model for a client-executed search tool."
+          },
+          "execution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Whether the search executes server-side (hosted) or client-side\n(BYOT). Hadrian only supports server-side execution."
+          },
+          "parameters": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Parameter schema for a client-executed search tool. Opaque."
+          },
+          "ranker": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** per-request override of the ranking\nstrategy for Hadrian-side tool search. Takes precedence over the\n`[features.mcp.tool_search].ranker` deployment default. Requesting\n`semantic` on a deployment without an embedding provider returns\nHTTP 400 (`tool_search_ranker_unavailable`)."
+          },
+          "type": {
+            "$ref": "#/components/schemas/ToolSearchToolType"
+          }
+        }
+      },
+      "ToolSearchToolType": {
+        "type": "string",
+        "enum": [
+          "tool_search"
+        ]
       },
       "ToolType": {
         "type": "string",
@@ -35356,6 +36187,120 @@
           }
         }
       },
+      "WebSearch20250826Tool": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "cache_control": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Cache control for prompt caching (Anthropic/Bedrock)"
+          },
+          "filters": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "search_context_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/WebSearch20250826ToolType"
+          },
+          "user_location": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "WebSearch20250826ToolType": {
+        "type": "string",
+        "enum": [
+          "web_search_2025_08_26"
+        ]
+      },
+      "WebSearchPreview20250311Tool": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "cache_control": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Cache control for prompt caching (Anthropic/Bedrock)"
+          },
+          "search_context_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/WebSearchPreview20250311ToolType"
+          },
+          "user_location": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "WebSearchPreview20250311ToolType": {
+        "type": "string",
+        "enum": [
+          "web_search_preview_2025_03_11"
+        ]
+      },
+      "WebSearchPreviewTool": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "cache_control": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Cache control for prompt caching (Anthropic/Bedrock)"
+          },
+          "search_context_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/WebSearchPreviewToolType"
+          },
+          "user_location": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "WebSearchPreviewToolType": {
+        "type": "string",
+        "enum": [
+          "web_search_preview"
+        ]
+      },
       "WebSearchRequest": {
         "type": "object",
         "required": [
@@ -35413,6 +36358,48 @@
             "type": "string"
           }
         }
+      },
+      "WebSearchTool": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "cache_control": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Cache control for prompt caching (Anthropic/Bedrock)"
+          },
+          "filters": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "search_context_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/WebSearchToolType"
+          },
+          "user_location": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "WebSearchToolType": {
+        "type": "string",
+        "enum": [
+          "web_search"
+        ]
       }
     },
     "securitySchemes": {

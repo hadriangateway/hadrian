@@ -80,6 +80,10 @@ struct CachedRepos {
     response_events: Arc<dyn ResponseEventsRepo>,
     // Containers + container_files (shell-tool /mnt/data artifacts)
     containers: Arc<dyn ContainersRepo>,
+    // Parked MCP tool calls waiting on `mcp_approval_response`. Only
+    // present when the `mcp` cargo feature is enabled.
+    #[cfg(feature = "mcp")]
+    mcp_pending_approvals: Arc<dyn McpPendingApprovalsRepo>,
 }
 
 enum PoolStorage {
@@ -162,6 +166,10 @@ impl DbPool {
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
             containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
+            #[cfg(feature = "mcp")]
+            mcp_pending_approvals: Arc::new(sqlite::SqliteMcpPendingApprovalsRepo::new(
+                pool.clone(),
+            )),
         };
         DbPool {
             inner: PoolStorage::Sqlite(pool),
@@ -207,6 +215,10 @@ impl DbPool {
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
             containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
+            #[cfg(feature = "mcp")]
+            mcp_pending_approvals: Arc::new(sqlite::SqliteMcpPendingApprovalsRepo::new(
+                pool.clone(),
+            )),
         };
         DbPool {
             inner: PoolStorage::WasmSqlite(pool),
@@ -329,6 +341,10 @@ impl DbPool {
                 write_pool.clone(),
                 read_pool.clone(),
             )),
+            #[cfg(feature = "mcp")]
+            mcp_pending_approvals: Arc::new(postgres::PostgresMcpPendingApprovalsRepo::new(
+                write_pool.clone(),
+            )),
         };
         DbPool {
             inner: PoolStorage::Postgres(PgPoolPair {
@@ -411,6 +427,10 @@ impl DbPool {
                     responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
                     response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
                     containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
+                    #[cfg(feature = "mcp")]
+                    mcp_pending_approvals: Arc::new(sqlite::SqliteMcpPendingApprovalsRepo::new(
+                        pool.clone(),
+                    )),
                 };
 
                 Ok(DbPool {
@@ -565,6 +585,10 @@ impl DbPool {
                         write_pool.clone(),
                         read_pool.clone(),
                     )),
+                    #[cfg(feature = "mcp")]
+                    mcp_pending_approvals: Arc::new(
+                        postgres::PostgresMcpPendingApprovalsRepo::new(write_pool.clone()),
+                    ),
                 };
 
                 Ok(DbPool {
@@ -748,6 +772,14 @@ impl DbPool {
     /// Get the containers + container_files repository.
     pub fn containers(&self) -> Arc<dyn ContainersRepo> {
         Arc::clone(&self.repos.containers)
+    }
+
+    /// Get the MCP pending-approvals repository. Used by the
+    /// `McpExecutor` to park gated calls and by the routes layer to
+    /// resume them.
+    #[cfg(feature = "mcp")]
+    pub fn mcp_pending_approvals(&self) -> Arc<dyn McpPendingApprovalsRepo> {
+        Arc::clone(&self.repos.mcp_pending_approvals)
     }
 
     /// Get a reference to the underlying database pool.

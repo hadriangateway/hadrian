@@ -1,0 +1,291 @@
+---
+title: MCP Tool (Responses API)
+description: Call remote Model Context Protocol servers from `/v1/responses` — either passthrough to OpenAI/Azure or run the client loop in the gateway via `rmcp`.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Hadrian's `/v1/responses` accepts OpenAI's [`mcp` tool](https://developers.openai.com/api/docs/guides/tools-connectors-mcp) — `{"type": "mcp", server_url, server_label, authorization, ...}` — so a model can call tools exposed by any remote Model Context Protocol server (Atlassian, Notion, GitHub, HuggingFace, Vercel, …).
+
+<Callout type="info">
+  This page describes the **server-side** `mcp` tool on `/v1/responses`. For the browser-based MCP client in the chat UI, see [MCP Integration](/docs/features/mcp). For coding agents bridged via MCP, see [Agents via MCP](/docs/features/mcp-agents).
+</Callout>
+
+## Modes
+
+| Mode                 | Where the MCP loop runs                | Provider support          |
+| -------------------- | -------------------------------------- | ------------------------- |
+| `passthrough_openai` | OpenAI / Azure OpenAI servers          | OpenAI, Azure OpenAI only |
+| `hadrian_hosted`     | Hadrian gateway (via the `rmcp` crate) | All providers             |
+
+Both modes ship; pick one by setting `[features.mcp].mode`. `passthrough_openai` is zero-cost forwarding and gives you OpenAI's first-party MCP optimizations. `hadrian_hosted` makes MCP work behind any provider Hadrian supports (Anthropic, Bedrock, Vertex, Test) and gives the gateway visibility into every call — the tradeoff is one extra network hop per `tools/call`.
+
+## Enabling the feature
+
+Add an `[features.mcp]` section to `hadrian.toml`:
+
+```toml
+[features.mcp]
+enabled = true
+mode = "passthrough_openai"
+
+# Optional: restrict which remote MCP servers callers may target.
+# Omit to accept any URL the caller supplies (the caller already
+# controls Authorization, so this is defense-in-depth).
+# allowed_server_urls = ["https://mcp.atlassian.com/v1/mcp"]
+
+# Default false. Flip to true only when the upstream is OpenAI/Azure
+# AND the connector_id is known to work. Self-hosted gateways can't
+# reach OpenAI's first-party connector registry.
+allow_connector_ids = false
+
+# Default upper bound (seconds) on a single tools/call under
+# hadrian_hosted. rmcp/reqwest apply no timeout of their own, so without
+# this an unresponsive MCP server would hang the response. Override per
+# tool with the `call_timeout_secs` field on the mcp tool entry.
+call_timeout_secs = 300
+```
+
+## Wire format
+
+A `/v1/responses` request declares an `mcp` tool entry alongside any other tools:
+
+```json
+{
+  "model": "gpt-5.2",
+  "input": "What's the status of issue ENG-1234?",
+  "tools": [
+    {
+      "type": "mcp",
+      "server_label": "atlassian",
+      "server_url": "https://mcp.atlassian.com/v1/mcp",
+      "authorization": "Bearer ya29...",
+      "require_approval": "never",
+      "allowed_tools": ["jira_issue_get", "jira_search"]
+    }
+  ]
+}
+```
+
+The caller obtains the bearer token out-of-band (their own OAuth flow against Atlassian / GitHub / etc.). Hadrian forwards the `authorization` field verbatim and **never persists it** — clients must include it on every request.
+
+### Field reference
+
+| Field                | Type                          | Required | Notes                                                                                                              |
+| -------------------- | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `type`               | `"mcp"`                       | yes      |                                                                                                                    |
+| `server_label`       | string                        | yes      | Stable identifier surfaced in `mcp_list_tools` / `mcp_call` items.                                                 |
+| `server_url`         | string                        | one of   | URL of the remote MCP server (Streamable HTTP). Mutually exclusive with `connector_id`.                            |
+| `connector_id`       | string                        | one of   | OpenAI first-party connector id (e.g. `connector_googlecalendar`). Requires `allow_connector_ids = true`.          |
+| `server_description` | string                        |          | Human-readable description surfaced to the model.                                                                  |
+| `authorization`      | string                        |          | Bearer or OAuth access token. Caller-supplied, never persisted.                                                    |
+| `headers`            | `Record<string, string>`      |          | Extra HTTP headers sent with every JSON-RPC call (region / workspace selectors).                                   |
+| `require_approval`   | `"always"` \| `"never"` \| object |      | Object form mirrors OpenAI's `MCPToolApprovalFilter`: `{ "always": { "tool_names": ["x"] }, "never": { "tool_names": ["y"] } }` — gate the tools under `always`, exempt those under `never`. |
+| `allowed_tools`      | `string[]` or object          |          | Whitelist of tool names. Object form: `{ tool_names: ["..."] }`.                                                   |
+| `defer_loading`      | boolean                       |          | Discover this server's tools via [tool search](#tool-search-deferred-tools) rather than loading them all into the prompt. Under `hadrian_hosted`, Hadrian runs the search locally (works behind any provider). |
+| `defer_loading_passthrough` | boolean                |          | **Hadrian extension.** With `defer_loading`, forward the flag to the upstream's native tool search instead of running Hadrian-side search. OpenAI/Azure only; rejected (400 `mcp_defer_loading_passthrough_unsupported`) on other providers. |
+| `call_timeout_secs`  | integer                       |          | **Hadrian extension.** Upper bound, in seconds, on a single `tools/call` round-trip under `hadrian_hosted`. Overrides the `[features.mcp].call_timeout_secs` deployment default (300s). On expiry the `mcp_call` terminates with `status="incomplete"` and a timeout `error`. Ignored under `passthrough_openai`. |
+
+### Item types
+
+Under `passthrough_openai`, OpenAI emits the canonical item lifecycle on the response stream:
+
+- `mcp_list_tools` — snapshot of tools the model could call against the server. Surfaces `error` inline when `tools/list` fails.
+- `mcp_call` — model-initiated invocation. Carries `name`, `arguments` JSON string, `status`, `output` / `error` (inlined per the OpenAI spec), and `approval_request_id` when the call was gated.
+- `mcp_approval_request` — emitted when `require_approval` gates a call.
+- `mcp_approval_response` — caller-supplied **input** item that resumes a parked call: `{ "type": "mcp_approval_response", "approval_request_id": "mcpr_...", "approve": true, "reason": "optional rationale" }`.
+- `tool_search_call` / `tool_search_output` — emitted when [tool search](#tool-search-deferred-tools) runs for a `defer_loading` server. The `tool_search_output` carries the `tools[]` the search surfaced.
+
+Hadrian recognizes all of these and round-trips them through the Responses-API pipeline.
+
+## hadrian_hosted mode
+
+When `mode = "hadrian_hosted"`, Hadrian itself runs the MCP client loop using the official [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) crate. On request entry, the gateway:
+
+1. Connects to each MCP server declared on the request (Streamable HTTP, caller-supplied bearer token).
+2. Calls `tools/list` and caches the catalog for 60 seconds.
+3. **Rewrites** every `{"type": "mcp", server_label, ...}` entry into N function tools named `mcp_<server_label>__<tool_name>`. The model sees a flat list of function tools.
+4. When the model calls one of those function tools, Hadrian's `McpExecutor` intercepts it, looks up the right pooled MCP client, and forwards the `tools/call`.
+5. The result is inlined onto the `mcp_call` item's `output` (or `error`) field on the response stream and folded back as a `function_call_output` item the model reads on the next turn.
+
+The same code path runs for every provider — Anthropic, Bedrock, Vertex, OpenAI, Azure, Test — so any tool-using model can drive it. Connections are pooled per `(server_url, auth_hash)` so chained calls in one response don't pay the `initialize` round-trip more than once.
+
+**Tool name handling.** The server label is sanitized to fit OpenAI's `[A-Za-z0-9_-]{1,64}` function-name regex (`My Co/Linear` becomes `My_Co_Linear`); the tool name is taken verbatim from `tools/list` so the round-trip back to the MCP server is exact. Tools whose names don't match the regex (`my.tool`, non-ASCII) are skipped at rewrite time with a warning.
+
+**Bad-gateway errors.** If `tools/list` fails (server unreachable, 5xx, TLS error) the request returns HTTP 502 with `error_code = "mcp_list_tools_failed"` and the underlying message — clients should retry with backoff. 401 errors from the MCP server are surfaced verbatim; the caller is expected to refresh their token and retry.
+
+## Tool search (deferred tools)
+
+OpenAI's `defer_loading` flag means "discover this tool via tool search rather than loading its definition into the prompt" — useful when a server exposes dozens of tools and dumping every schema into context would be wasteful. Under `passthrough_openai` the flag is forwarded verbatim and OpenAI runs its native tool search.
+
+Under `hadrian_hosted`, **Hadrian runs the tool search itself**, so deferral works behind every provider — including OpenAI-spec-compatible providers that don't implement the native `tool_search` tool. When a request marks an `mcp` entry with `defer_loading: true`:
+
+1. Hadrian fetches the catalog (as always) but keeps the per-tool definitions **out of the prompt**.
+2. It injects a single `tool_search` function tool listing the searchable servers.
+3. When the model calls `tool_search` with a `query`, Hadrian ranks the catalog locally, emits `tool_search_call` / `tool_search_output` items, and **injects the matched tool definitions** into the next turn so the model can call them.
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "input": "Find and read issue ENG-1234",
+  "tools": [
+    {
+      "type": "mcp",
+      "server_label": "atlassian",
+      "server_url": "https://mcp.atlassian.com/v1/mcp",
+      "authorization": "Bearer ya29...",
+      "defer_loading": true
+    }
+  ]
+}
+```
+
+### Ranking
+
+The ranking strategy is set by `[features.mcp.tool_search]` and can be overridden per request via a `tool_search` tool entry's Hadrian-extension `ranker` field (request value wins):
+
+| Strategy   | Behavior                                                                                  |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `hybrid`   | **Default.** Fuses semantic + lexical relevance (Reciprocal Rank Fusion).                 |
+| `semantic` | Embedding cosine similarity only.                                                         |
+| `lexical`  | Token/substring overlap. No embedding provider required.                                  |
+
+```toml
+[features.mcp.tool_search]
+ranker = "hybrid"        # hybrid | semantic | lexical
+max_results = 20         # tools returned per search
+score_threshold = 0.0    # minimum relevance score
+rrf_k = 60               # RRF smoothing constant (hybrid)
+
+# Embedding config for semantic/hybrid. Falls back to
+# [features.file_search.embedding] then the semantic-cache embedding config.
+[features.mcp.tool_search.embedding]
+provider = "openai"
+model = "text-embedding-3-small"
+dimensions = 1536
+```
+
+Semantic and hybrid ranking need a resolvable embedding provider. If none resolves, a `hybrid` default **automatically falls back to lexical** (logged), so the feature keeps working. An explicit per-request `ranker: "semantic"` on a deployment with no embedding provider is a hard error — HTTP 400 with `error_code = "tool_search_ranker_unavailable"`.
+
+To opt out of Hadrian-side search and use the upstream's native tool search instead, set `defer_loading_passthrough: true` (OpenAI/Azure only).
+
+## Validation errors
+
+The gateway validates the `mcp` tool entry before dispatching the request. Failures return HTTP 400 with a stable `error_code`:
+
+| Error code                             | Cause                                                                                                                                                          |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp_disabled`                         | A request includes an `mcp` tool but `[features.mcp].enabled = false` (or the section is missing).                                                             |
+| `mcp_invalid_target`                   | Neither `server_url` nor `connector_id` is set, or both are.                                                                                                   |
+| `mcp_connector_id_not_allowed`         | `connector_id` is used but `[features.mcp].allow_connector_ids = false`, or `mode = hadrian_hosted` (which can't reach OpenAI's first-party connector registry). |
+| `mcp_server_url_not_allowed`           | `server_url` is not in `[features.mcp].allowed_server_urls`.                                                                                                   |
+| `mcp_passthrough_unsupported_provider` | `mode = passthrough_openai` but the resolved provider is not OpenAI/Azure (Anthropic, Bedrock, …).                                                             |
+| `mcp_hadrian_hosted_not_implemented`   | `mode = hadrian_hosted` but the gateway was built without the `mcp` cargo feature (e.g. `tiny` / `minimal` profiles).                                          |
+
+And the approval-resume errors (HTTP 400 for caller-shape problems, 502 for upstream failures):
+
+| Error code                          | Status | Cause                                                                                                                       |
+| ----------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `mcp_resume_missing_tool_binding`   | 400    | An `mcp_approval_response` with `approve: true` arrived but the request omits the `mcp` tool entry for the parked server.   |
+| `mcp_resume_call_failed`            | 502    | Resumed call to the upstream MCP server failed (network, 5xx, 401).                                                         |
+| `mcp_resume_repo_error`             | 502    | Approvals-table lookup or delete failed.                                                                                    |
+
+And HTTP 502 from the upstream MCP dependency during the rewrite:
+
+| Error code                  | Cause                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------- |
+| `mcp_list_tools_failed`     | `hadrian_hosted` rewrite couldn't reach the remote MCP server's `tools/list` endpoint.             |
+| `mcp_duplicate_server_label` | Two `mcp` tool entries on one request share a `server_label`; exactly one per label is allowed.    |
+| `mcp_missing_server_url`    | `hadrian_hosted` requires `server_url` on every `mcp` tool entry (`connector_id` is rejected).     |
+
+## OpenAI connectors (`connector_id`)
+
+OpenAI's API exposes a curated set of first-party connectors (Dropbox, Gmail, Google Calendar, Google Drive, Microsoft Teams, Outlook Email, Outlook Calendar, SharePoint). These resolve through OpenAI's internal connector registry — there is no public endpoint a self-hosted gateway can call to enumerate, validate, or invoke them. As a result, Hadrian deliberately does **not** ship a per-connector allowlist: under `passthrough_openai` the `connector_id` is forwarded verbatim to OpenAI/Azure, and under `hadrian_hosted` it's rejected outright (`mcp_connector_id_not_allowed`) because the gateway can't reach the registry. Operators get a single coarse switch — `allow_connector_ids` — to admit or refuse the entire feature.
+
+If you need fine-grained gating, host the relevant service's MCP endpoint yourself (most providers, including the eight above, expose public MCP servers) and use `server_url` with `[features.mcp].allowed_server_urls` instead.
+
+## Rate limiting
+
+Hadrian's standard request- and token-rate limits apply to `/v1/responses` and therefore bound MCP traffic transitively. Beyond that, there is currently **no per-MCP-server call cap** — once a request is admitted, the model can chain `tools/call` invocations up to the global `[features.server_tools].max_iterations` ceiling (default 30 iterations). The agent loop is the hard backstop; runaway calls terminate when the iteration budget is exhausted.
+
+This matches OpenAI's documented behavior — the spec does not define a per-tool or per-server call cap on the Responses API side. If you need tighter bounds (e.g. "no more than 5 `tools/call` per response against `atlassian`"), the recommended approach today is:
+
+1. Lower `[features.server_tools].max_iterations` for the deployment.
+2. Use `require_approval = "always"` on sensitive servers so each call goes through the approval gate.
+3. Track call volume out-of-band via the persisted `mcp_call` items on the response store.
+
+A dedicated per-server cap is a candidate enhancement; until OpenAI publishes a matching field on the `mcp` tool, it would be a Hadrian-only extension.
+
+## Authentication
+
+Hadrian does not run the OAuth dance for the remote MCP server. The caller is responsible for:
+
+1. Registering an OAuth client with the MCP provider (Atlassian developer console, etc.).
+2. Completing the authorization-code flow to obtain an access token.
+3. Refreshing the token before expiry and re-sending it on each request.
+
+This mirrors OpenAI's own contract — the `authorization` field is opaque from the API's perspective. The gateway adds no value-add on top (no operator-pinned tokens, no gateway-side refresh).
+
+## Approval flow
+
+<Callout type="warn">
+  **`require_approval` defaults to `"always"`.** Matching OpenAI's spec, an `mcp` tool entry with no
+  `require_approval` field gates **every** call. Under `hadrian_hosted` the approval gate **fails
+  closed**: if the gateway can't park the call it refuses to run it and returns a failed `mcp_call`
+  instead. Parking requires all of:
+
+  - a configured database (`mcp_pending_approvals` lives in Postgres/SQLite — the `tiny` profile has no DB),
+  - `store: true` on the request (a parked call must be persisted so it can be resumed), and
+  - an authenticated request with an organization scope (anonymous requests have nowhere to park).
+
+  So a "just add an `mcp` tool" request with none of the above will see every call fail with an
+  explanatory error. For unattended / non-sensitive servers, set `require_approval: "never"` (or list
+  the safe tools under the object form's `never`). Only opt into gating when you have a DB, send
+  `store: true`, and have a UI ready to collect the `mcp_approval_response`.
+</Callout>
+
+When `require_approval` matches a call, the upstream emits an `mcp_approval_request` item. The next `/v1/responses` request must carry an `mcp_approval_response` **input** item with the matching `approval_request_id`:
+
+```json
+{
+  "input": [
+    {
+      "type": "mcp_approval_response",
+      "approval_request_id": "mcpr_abc123",
+      "approve": true
+    }
+  ],
+  "previous_response_id": "resp_xyz",
+  "tools": [{ "type": "mcp", "server_label": "atlassian", "server_url": "..." }]
+}
+```
+
+## Approval persistence
+
+`require_approval` is honored under both modes:
+
+- **`passthrough_openai`** — OpenAI / Azure runs the approval loop itself.
+- **`hadrian_hosted`** — Hadrian parks gated calls in the `mcp_pending_approvals` table (Postgres or SQLite, mirrored). Persistence survives replica restarts and lets a user click "approve" minutes after the gateway emitted the request. The caller resumes by sending `{"type": "mcp_approval_response", "approval_request_id": "mcpr_...", "approve": true|false}` as an input item on a follow-up request (typically with `previous_response_id` chained back); Hadrian runs the call (on approve) or surfaces a refusal (on deny) and folds the result back as a `function_call_output` the model sees on its next turn.
+
+### Resuming an approved call
+
+The resume request **must include the matching `mcp` tool entry** with the `authorization` header set. The gateway never persists OAuth tokens, so it pulls the bearer back off the live request's `tools[]` block at resume time. Concretely:
+
+```json
+{
+  "previous_response_id": "resp_xyz",
+  "tools": [{
+    "type": "mcp",
+    "server_label": "atlassian",
+    "server_url": "https://mcp.atlassian.com/v1/mcp",
+    "authorization": "Bearer ya29..."
+  }],
+  "input": [
+    { "type": "mcp_approval_response", "approval_request_id": "mcpr_a1b2c3", "approve": true }
+  ]
+}
+```
+
+If the `mcp` tool entry for the parked call's `server_label` is missing on the resume request, the gateway returns HTTP 400 with `error_code = "mcp_resume_missing_tool_binding"` and a message naming the server. **Refusals (`approve: false`) don't require the tool entry** — they short-circuit without hitting the upstream.
+
+When the gateway runs without a database, `require_approval` under `hadrian_hosted` degrades to **warn-and-run** — the operator log shows a clear "persistence unavailable" message and every call executes. Enable a database to gate approvals.

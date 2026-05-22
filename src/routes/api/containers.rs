@@ -149,7 +149,7 @@ pub struct WireList<T: Serialize> {
 #[derive(Debug, Deserialize)]
 pub struct ListFilesQuery {
     /// Maximum number of files to return. Server clamps to `[1, 1000]`.
-    /// Phase 3 has no cursor pagination yet — Phase 4 will add `after`.
+    /// Cursor pagination (`after`) is a future enhancement.
     #[serde(default)]
     limit: Option<i64>,
 }

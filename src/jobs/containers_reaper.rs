@@ -76,6 +76,8 @@ pub async fn start_containers_reaper_worker(
             }
         }
 
-        drop(leader_guard);
+        // `leader_guard` is held across the leader work above and
+        // released here as it drops at end of scope, relinquishing
+        // leadership before the next interval.
     }
 }

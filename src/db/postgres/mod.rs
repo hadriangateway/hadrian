@@ -5,6 +5,8 @@ mod conversations;
 #[cfg(feature = "sso")]
 mod domain_verifications;
 mod files;
+#[cfg(feature = "mcp")]
+mod mcp_pending_approvals;
 mod model_pricing;
 mod oauth_authorization_codes;
 mod org_rbac_policies;
@@ -38,6 +40,8 @@ pub use conversations::PostgresConversationRepo;
 #[cfg(feature = "sso")]
 pub use domain_verifications::PostgresDomainVerificationRepo;
 pub use files::PostgresFilesRepo;
+#[cfg(feature = "mcp")]
+pub use mcp_pending_approvals::PostgresMcpPendingApprovalsRepo;
 pub use model_pricing::PostgresModelPricingRepo;
 pub use oauth_authorization_codes::PostgresOAuthAuthorizationCodeRepo;
 pub use org_rbac_policies::PostgresOrgRbacPolicyRepo;

@@ -821,6 +821,36 @@ requests_per_minute = 120
         api_types::responses::ContainerExpiresAfter,
         api_types::responses::ContainerExpiresAfterAnchor,
         api_types::responses::ShellNetworkPolicy,
+        // API types - Responses tool definitions (`tools[]` variants).
+        // Registered so the OpenAPI spec emits a `oneOf` of named tool
+        // schemas under the `Tool` slot; the conformance script matches
+        // variants against OpenAI's `Tool` union by literal `type` value.
+        api_types::responses::ResponsesToolDefinition,
+        api_types::responses::FunctionTool,
+        api_types::responses::FunctionToolType,
+        api_types::responses::McpTool,
+        api_types::responses::McpToolType,
+        api_types::responses::McpRequireApproval,
+        api_types::responses::McpApprovalMode,
+        api_types::responses::McpApprovalFilter,
+        api_types::responses::McpAllowedTools,
+        api_types::responses::McpToolFilter,
+        api_types::responses::ToolSearchTool,
+        api_types::responses::ToolSearchToolType,
+        api_types::responses::ToolSearchExecution,
+        api_types::responses::ToolSearchRankerKind,
+        api_types::responses::ShellTool,
+        api_types::responses::ShellToolType,
+        api_types::responses::FileSearchTool,
+        api_types::responses::FileSearchToolType,
+        api_types::responses::WebSearchPreviewTool,
+        api_types::responses::WebSearchPreviewToolType,
+        api_types::responses::WebSearchPreview20250311Tool,
+        api_types::responses::WebSearchPreview20250311ToolType,
+        api_types::responses::WebSearchTool,
+        api_types::responses::WebSearchToolType,
+        api_types::responses::WebSearch20250826Tool,
+        api_types::responses::WebSearch20250826ToolType,
         // Models response
         api::CombinedModelsResponse,
         // Admin models - Organization

@@ -595,6 +595,12 @@ pub fn convert_responses_input_to_messages(
                     | ResponsesInputItem::FileSearchCall(_)
                     | ResponsesInputItem::ShellCall(_)
                     | ResponsesInputItem::ShellCallOutput(_)
+                    | ResponsesInputItem::McpListTools(_)
+                    | ResponsesInputItem::McpCall(_)
+                    | ResponsesInputItem::McpApprovalRequest(_)
+                    | ResponsesInputItem::McpApprovalResponse(_)
+                    | ResponsesInputItem::ToolSearchCall(_)
+                    | ResponsesInputItem::ToolSearchOutput(_)
                     | ResponsesInputItem::Compaction(_)
                     | ResponsesInputItem::ImageGeneration(_) => {
                         // These are server-side tool calls that don't need translation
@@ -702,33 +708,26 @@ pub fn convert_responses_tools(
 
     for tool in tools {
         match tool {
-            ResponsesToolDefinition::Function(value) => {
-                // Extract function tool definition from generic JSON
-                // Expected format: { "type": "function", "name": "...", "description": "...", "parameters": {...}, "cache_control": {...} }
-                if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
-                    let description = value
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let parameters = value
-                        .get("parameters")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({"type": "object", "properties": {}}));
+            ResponsesToolDefinition::Function(func) => {
+                // Expected shape mirrors OpenAI's FunctionTool. `extras`
+                // carries pipeline-specific extras like `cache_control`
+                // (Hadrian extension) and the MCP rewrite's `annotations`.
+                let parameters = func
+                    .parameters
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
+                let cache_control = func
+                    .extras
+                    .get("cache_control")
+                    .and_then(|v| serde_json::from_value::<CacheControl>(v.clone()).ok())
+                    .as_ref()
+                    .and_then(|cc| convert_cache_control(Some(cc)));
 
-                    // Extract cache_control from JSON if present
-                    let cache_control = value
-                        .get("cache_control")
-                        .and_then(|v| serde_json::from_value::<CacheControl>(v.clone()).ok())
-                        .as_ref()
-                        .and_then(|cc| convert_cache_control(Some(cc)));
-
-                    anthropic_tools.push(AnthropicTool {
-                        name: name.to_string(),
-                        description,
-                        input_schema: parameters,
-                        cache_control,
-                    });
-                }
+                anthropic_tools.push(AnthropicTool {
+                    name: func.name,
+                    description: func.description,
+                    input_schema: parameters,
+                    cache_control,
+                });
             }
             ResponsesToolDefinition::WebSearchPreview(_)
             | ResponsesToolDefinition::WebSearchPreview20250311(_)
@@ -745,6 +744,26 @@ pub fn convert_responses_tools(
                 tracing::warn!(
                     "Shell tool reached Anthropic conversion — only OpenAI passthrough is \
                      supported for shell in the current build; dropping the tool definition"
+                );
+            }
+            ResponsesToolDefinition::Mcp(_) => {
+                // Under `passthrough_openai` mode this branch is unreachable
+                // (preprocess rejects non-OpenAI providers). Under `hadrian_hosted`
+                // the rewrite replaces every MCP entry with function tools before
+                // we reach here. Anything slipping through is a defensive drop.
+                tracing::warn!(
+                    "MCP tool reached Anthropic conversion — should have been rewritten \
+                     under hadrian_hosted or rejected under passthrough_openai; dropping"
+                );
+            }
+            ResponsesToolDefinition::ToolSearch(_) => {
+                // Hadrian-internal: under `hadrian_hosted` the MCP rewrite consumes
+                // any caller-supplied `tool_search` entry (reading its `ranker`
+                // override) and synthesizes its own function tool. Anything reaching
+                // here is a defensive drop.
+                tracing::warn!(
+                    "tool_search tool reached Anthropic conversion — should have been \
+                     consumed by the MCP rewrite; dropping"
                 );
             }
             ResponsesToolDefinition::FileSearch(file_search) => {
@@ -788,6 +807,12 @@ pub fn convert_responses_tool_choice(
         ResponsesToolChoice::Shell(_) => Some(AnthropicToolChoice::Tool {
             name: "shell".to_string(),
         }),
+        ResponsesToolChoice::Mcp(_) => {
+            // Reaches Anthropic only when the hadrian_hosted rewrite was
+            // skipped. Fall back to forcing any tool.
+            tracing::warn!("MCP tool choice without a hosted rewrite; falling back to `any`");
+            Some(AnthropicToolChoice::Any)
+        }
     })
 }
 
@@ -1102,7 +1127,7 @@ mod tests {
         },
         responses::{
             EasyInputMessage, EasyInputMessageContent, EasyInputMessageRole, FunctionCallOutput,
-            FunctionCallOutputType, FunctionToolCall, FunctionToolCallType,
+            FunctionCallOutputType, FunctionTool, FunctionToolCall, FunctionToolCallType,
             ResponseInputImageDetail, ResponsesNamedToolChoice, ResponsesNamedToolChoiceType,
         },
     };
@@ -1910,17 +1935,20 @@ mod tests {
 
     #[test]
     fn test_convert_responses_tools() {
-        let tools = Some(vec![ResponsesToolDefinition::Function(serde_json::json!({
-            "type": "function",
-            "name": "get_weather",
-            "description": "Get weather for a city",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {"type": "string"}
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string"}
+                    }
                 }
-            }
-        }))]);
+            }))
+            .unwrap(),
+        )]);
 
         let result = convert_responses_tools(tools);
 
@@ -2250,12 +2278,15 @@ mod tests {
         use crate::api_types::responses::{FileSearchTool, FileSearchToolType};
 
         let tools = Some(vec![
-            ResponsesToolDefinition::Function(serde_json::json!({
-                "type": "function",
-                "name": "get_weather",
-                "description": "Get weather",
-                "parameters": {"type": "object", "properties": {}}
-            })),
+            ResponsesToolDefinition::Function(
+                FunctionTool::from_json(serde_json::json!({
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }))
+                .unwrap(),
+            ),
             ResponsesToolDefinition::FileSearch(FileSearchTool {
                 type_: FileSearchToolType::FileSearch,
                 vector_store_ids: vec!["vs_456".to_string()],

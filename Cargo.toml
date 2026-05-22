@@ -96,6 +96,7 @@ standard = [
     "embed-docs",
     "forecasting",
     "json-schema",
+    "mcp",
     "otlp",
     "prometheus",
     "redis",
@@ -135,6 +136,7 @@ headless = [
     "document-extraction-full",
     "forecasting",
     "json-schema",
+    "mcp",
     "otlp",
     "prometheus",
     "provider-anthropic",
@@ -211,6 +213,14 @@ vault = ["dep:vaultrs"]
 # - opensandbox: Alibaba's Sandbox Protocol over HTTP
 runtime-microsandbox = ["dep:microsandbox"]
 runtime-opensandbox = []
+
+# MCP (Model Context Protocol) tool support — `{"type": "mcp", ...}`
+# on `/v1/responses`. Pulls in the official `rmcp` crate for the
+# client + Streamable HTTP transport when `hadrian_hosted` mode runs
+# the loop. The `passthrough_openai` mode is pure forwarding and does
+# not need this dep, so the feature gate keeps it out of `tiny` and
+# `minimal` builds.
+mcp = ["dep:rmcp"]
 
 # Auth
 sso = ["dep:hickory-resolver"]
@@ -400,6 +410,21 @@ vaultrs = { version = "0.7.4", features = ["rustls"], optional = true }
 # We skip `keyring` (it pulls dbus) but keep `net` for container
 # networking.
 microsandbox = { version = "=0.4.5", default-features = false, features = ["net", "prebuilt"], optional = true }
+
+# Official Rust MCP SDK — client + Streamable HTTP transport + OAuth
+# challenge detection. Used only when the `mcp` feature is enabled.
+# Server-side features (transport-streamable-http-server, schemars,
+# macros) are excluded to keep the runtime build lean; tests enable
+# them via dev-dependencies when an in-process MCP server stub is
+# needed.
+rmcp = { version = "1.7", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+    "client-side-sse",
+    "auth",
+    "reqwest",
+], optional = true }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Target-specific: WASM needs JS-backed getrandom for uuid/rand

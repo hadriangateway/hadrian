@@ -343,7 +343,7 @@ impl ProviderExecutor for ResponsesExecutor {
         state: &AppState,
         provider_name: &str,
         provider_config: &ProviderConfig,
-        payload: Self::Payload,
+        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))] mut payload: Self::Payload,
     ) -> Result<Response, ProviderError> {
         // Shell tool preprocessing rules:
         // - OpenAI / Azure OpenAI: leave native `shell` tool intact when
@@ -359,6 +359,44 @@ impl ProviderExecutor for ResponsesExecutor {
         // Build the hint once per provider attempt; rewrites are idempotent
         // and the hint depends only on request payload + operator config.
         let shell_hint = build_shell_tool_hint(state, &payload);
+
+        // MCP `hadrian_hosted` rewrite — uniformly across providers. The
+        // executor in `services::mcp` will intercept the resulting
+        // function calls; under `passthrough_openai` this is a no-op
+        // and we forward `mcp` verbatim to OpenAI/Azure. Approval
+        // resumption (turning `mcp_approval_response` items into
+        // `function_call_output`s) runs in `routes/api/chat.rs`
+        // BEFORE this point, since that's where the resolved
+        // principal (and thus `org_id`) is in scope.
+        #[cfg(feature = "mcp")]
+        {
+            use crate::config::McpMode;
+            if let (Some(mcp_cfg), Some(mcp_service)) = (
+                state.config.features.mcp.as_ref(),
+                state.mcp_service.as_ref(),
+            ) && mcp_cfg.enabled
+                && mcp_cfg.mode == McpMode::HadrianHosted
+            {
+                let mcp_provider_kind =
+                    crate::services::mcp_tool::McpProviderKind::from_provider(provider_config);
+                crate::services::mcp::rewrite_mcp_tools(
+                    &mut payload,
+                    mcp_service,
+                    mcp_provider_kind,
+                )
+                .await
+                .map_err(|e| {
+                    let code = e.code();
+                    let msg = e.to_string();
+                    if e.is_client_error() {
+                        ProviderError::BadRequest(code, msg)
+                    } else {
+                        ProviderError::BadGateway(code, msg)
+                    }
+                })?;
+            }
+        }
+
         match provider_config {
             ProviderConfig::OpenAi(config) => {
                 let mut payload = payload;
@@ -1023,6 +1061,12 @@ pub fn provider_error_to_api_error(e: ProviderError) -> ApiError {
         ProviderError::Unsupported(msg) => {
             (StatusCode::NOT_IMPLEMENTED, "not_supported", msg.clone())
         }
+        ProviderError::BadGateway(error_code, msg) => {
+            (StatusCode::BAD_GATEWAY, *error_code, msg.clone())
+        }
+        ProviderError::BadRequest(error_code, msg) => {
+            (StatusCode::BAD_REQUEST, *error_code, msg.clone())
+        }
         ProviderError::CircuitBreakerOpen(cb) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "circuit_breaker_open",
@@ -1085,6 +1129,10 @@ mod tests {
             event_bus: Arc::new(EventBus::new()),
             file_search_service: None,
             shell_runtime: None,
+            #[cfg(feature = "mcp")]
+            mcp_service: None,
+            #[cfg(feature = "mcp")]
+            tool_search_embeddings: None,
             responses_store: None,
             containers_service: None,
             container_session_registry: std::sync::Arc::new(

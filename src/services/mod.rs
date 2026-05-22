@@ -25,6 +25,10 @@ mod files;
 pub mod forecasting;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod input_file_staging;
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+pub mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mcp_tool;
 mod model_pricing;
 pub mod oauth_pkce;
 mod org_rbac_policies;

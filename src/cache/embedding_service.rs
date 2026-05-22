@@ -273,6 +273,138 @@ impl EmbeddingService {
         }
     }
 
+    /// Generate embeddings for a batch of texts in a single request.
+    ///
+    /// Returns one vector per input, in the same order as `texts` (the
+    /// provider's `index` field is honored when present). Used by
+    /// Hadrian-side tool search to embed a deferred MCP catalog in one
+    /// round-trip. Returns an empty `Vec` for empty input without
+    /// contacting the provider.
+    pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f64>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let embedding_payload = CreateEmbeddingPayload {
+            input: EmbeddingInput::TextArray(texts.to_vec()),
+            model: self.model.clone(),
+            encoding_format: None,
+            dimensions: Some(self.dimensions as i64),
+            user: None,
+            provider: None,
+            input_type: None,
+            sovereignty_requirements: None,
+        };
+
+        let start = Instant::now();
+        let response = self
+            .provider
+            .create_embedding(&self.http_client, embedding_payload)
+            .await;
+        let duration_secs = start.elapsed().as_secs_f64();
+
+        let status_label = |ok: bool| if ok { "success" } else { "error" };
+        let resp = match response {
+            Ok(resp) => resp,
+            Err(e) => {
+                record_embedding_generation(
+                    &self.provider_name,
+                    &self.model,
+                    status_label(false),
+                    duration_secs,
+                    None,
+                    texts.len() as u32,
+                );
+                return Err(e.into());
+            }
+        };
+
+        match self
+            .parse_embedding_batch_with_usage(resp, texts.len())
+            .await
+        {
+            Ok((embeddings, token_count)) => {
+                record_embedding_generation(
+                    &self.provider_name,
+                    &self.model,
+                    status_label(true),
+                    duration_secs,
+                    token_count,
+                    texts.len() as u32,
+                );
+                Ok(embeddings)
+            }
+            Err(e) => {
+                record_embedding_generation(
+                    &self.provider_name,
+                    &self.model,
+                    status_label(false),
+                    duration_secs,
+                    None,
+                    texts.len() as u32,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Parse a batch embedding response, returning vectors ordered by the
+    /// provider's `index` field (falling back to response order).
+    async fn parse_embedding_batch_with_usage(
+        &self,
+        response: axum::response::Response,
+        expected: usize,
+    ) -> Result<(Vec<Vec<f64>>, Option<u32>), EmbeddingError> {
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap_or_default();
+            let body_str = String::from_utf8_lossy(&body);
+            return Err(EmbeddingError::ParseError(format!(
+                "Provider returned error status {status}: {body_str}"
+            )));
+        }
+
+        let body = axum::body::to_bytes(response.into_body(), 50 * 1024 * 1024)
+            .await
+            .map_err(|e| {
+                EmbeddingError::ParseError(format!("Failed to read response body: {e}"))
+            })?;
+        let parsed: CreateEmbeddingResponse = serde_json::from_slice(&body)
+            .map_err(|e| EmbeddingError::ParseError(format!("Failed to parse response: {e}")))?;
+
+        let token_count = parsed.usage.as_ref().map(|u| u.total_tokens as u32);
+
+        if parsed.data.is_empty() {
+            return Err(EmbeddingError::EmptyResponse);
+        }
+
+        // Sort by `index` so the output order matches the input order even
+        // if the provider returns them out of order.
+        let mut data = parsed.data;
+        data.sort_by(|a, b| {
+            a.index
+                .unwrap_or(0.0)
+                .partial_cmp(&b.index.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let embeddings: Vec<Vec<f64>> = data
+            .into_iter()
+            .map(|d| decode_embedding_vector(d.embedding))
+            .collect::<Result<_, _>>()?;
+
+        if embeddings.len() != expected {
+            return Err(EmbeddingError::ParseError(format!(
+                "expected {expected} embeddings, provider returned {}",
+                embeddings.len()
+            )));
+        }
+
+        Ok((embeddings, token_count))
+    }
+
     /// Convert a chat completion request to a normalized text representation.
     ///
     /// This creates a consistent text format for embedding that captures
@@ -354,32 +486,7 @@ impl EmbeddingService {
             .next()
             .ok_or(EmbeddingError::EmptyResponse)?;
 
-        let embedding = match embedding_data.embedding {
-            EmbeddingVector::Float(vec) => vec,
-            EmbeddingVector::Base64(b64) => {
-                // Decode base64 to f32 array, then convert to f64
-                let bytes =
-                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
-                        .map_err(|e| {
-                            EmbeddingError::ParseError(format!("Invalid base64: {}", e))
-                        })?;
-
-                // Base64 encodes little-endian f32 values
-                if bytes.len() % 4 != 0 {
-                    return Err(EmbeddingError::ParseError(
-                        "Invalid base64 embedding length".to_string(),
-                    ));
-                }
-
-                bytes
-                    .chunks(4)
-                    .map(|chunk| {
-                        let arr: [u8; 4] = chunk.try_into().unwrap();
-                        f32::from_le_bytes(arr) as f64
-                    })
-                    .collect()
-            }
-        };
+        let embedding = decode_embedding_vector(embedding_data.embedding)?;
 
         Ok((embedding, token_count))
     }
@@ -397,6 +504,30 @@ impl EmbeddingService {
     /// Get the provider name.
     pub fn provider_name(&self) -> &str {
         &self.provider_name
+    }
+}
+
+/// Decode a provider embedding vector (float array or base64-packed
+/// little-endian f32) into `Vec<f64>`.
+fn decode_embedding_vector(vector: EmbeddingVector) -> Result<Vec<f64>, EmbeddingError> {
+    match vector {
+        EmbeddingVector::Float(vec) => Ok(vec),
+        EmbeddingVector::Base64(b64) => {
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
+                .map_err(|e| EmbeddingError::ParseError(format!("Invalid base64: {e}")))?;
+            if bytes.len() % 4 != 0 {
+                return Err(EmbeddingError::ParseError(
+                    "Invalid base64 embedding length".to_string(),
+                ));
+            }
+            Ok(bytes
+                .chunks(4)
+                .map(|chunk| {
+                    let arr: [u8; 4] = chunk.try_into().unwrap();
+                    f32::from_le_bytes(arr) as f64
+                })
+                .collect())
+        }
     }
 }
 
@@ -461,6 +592,56 @@ mod tests {
             user: None,
             sovereignty_requirements: None,
         }
+    }
+
+    fn test_embedding_service() -> EmbeddingService {
+        let cfg = EmbeddingConfig {
+            provider: "test".to_string(),
+            model: "test-embed".to_string(),
+            dimensions: 64,
+        };
+        let test_cfg: crate::config::TestProviderConfig =
+            toml::from_str("").expect("default test provider config");
+        let provider_cfg = ProviderConfig::Test(test_cfg);
+        EmbeddingService::new(
+            &cfg,
+            &provider_cfg,
+            &CircuitBreakerRegistry::new(),
+            Client::new(),
+        )
+        .expect("test embedding service")
+    }
+
+    #[tokio::test]
+    async fn embed_batch_returns_one_vector_per_input_in_order() {
+        let svc = test_embedding_service();
+        let texts = vec![
+            "search jira issues".to_string(),
+            "create confluence page".to_string(),
+            "list github pull requests".to_string(),
+        ];
+        let vecs = svc.embed_batch(&texts).await.expect("embeds");
+        assert_eq!(vecs.len(), 3);
+        for v in &vecs {
+            assert_eq!(v.len(), 64);
+        }
+        // Distinct inputs with distinct words should not all be identical.
+        assert_ne!(vecs[0], vecs[1]);
+        // embed_batch of one input matches embed_text for the same text.
+        let single = svc
+            .embed_batch(&["search jira issues".to_string()])
+            .await
+            .unwrap();
+        let direct = svc.embed_text("search jira issues").await.unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0], direct);
+    }
+
+    #[tokio::test]
+    async fn embed_batch_empty_input_is_noop() {
+        let svc = test_embedding_service();
+        let vecs = svc.embed_batch(&[]).await.expect("ok");
+        assert!(vecs.is_empty());
     }
 
     #[test]

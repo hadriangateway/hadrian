@@ -28,7 +28,7 @@ use crate::{
 };
 
 mod audio;
-mod chat;
+pub(crate) mod chat;
 #[cfg(feature = "server")]
 pub mod containers;
 mod embeddings;

@@ -227,11 +227,6 @@ pub fn cursor_from_row(created_at: DateTime<Utc>, id: Uuid) -> Cursor {
 /// // When creating entities that will use cursor pagination:
 /// let created_at = truncate_to_millis(Utc::now());
 /// ```
-#[cfg(any(
-    feature = "database-sqlite",
-    feature = "database-postgres",
-    feature = "database-wasm-sqlite"
-))]
 pub fn truncate_to_millis(dt: DateTime<Utc>) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(dt.timestamp_millis()).unwrap_or(dt)
 }

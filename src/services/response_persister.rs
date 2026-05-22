@@ -387,64 +387,6 @@ fn inspect_terminal_event(event: &[u8]) -> Option<(Value, ResponseStatus)> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_terminal_event_with_event_header_prefix() {
-        // Named-SSE form: `event: response.completed\ndata: {...}\n\n`.
-        // A previous bug short-circuited on the first non-`data:` line
-        // (the `event:` header) and missed the terminal data entirely.
-        let raw = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\"}}\n\n";
-        let result = inspect_terminal_event(raw);
-        assert!(
-            result.is_some(),
-            "should detect terminal event past header line"
-        );
-        let (resp, status) = result.unwrap();
-        assert_eq!(status, ResponseStatus::Completed);
-        assert_eq!(resp.get("id").and_then(|v| v.as_str()), Some("resp_abc"));
-    }
-
-    #[test]
-    fn detects_terminal_event_data_only_form() {
-        // Plain Responses-API form without an `event:` line.
-        let raw = b"data: {\"type\":\"response.failed\",\"response\":{\"error\":\"boom\"}}\n\n";
-        let result = inspect_terminal_event(raw);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().1, ResponseStatus::Failed);
-    }
-
-    #[test]
-    fn ignores_non_terminal_events() {
-        let raw = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
-        assert!(inspect_terminal_event(raw).is_none());
-    }
-
-    #[test]
-    fn ignores_done_sentinel() {
-        let raw = b"data: [DONE]\n\n";
-        assert!(inspect_terminal_event(raw).is_none());
-    }
-
-    #[test]
-    fn injects_container_id_into_terminal_event() {
-        let raw = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\"}}\n\n";
-        let out = inject_container_id_into_event(raw, "cntr_xyz").expect("should mutate");
-        let s = std::str::from_utf8(&out).unwrap();
-        assert!(s.contains("\"container_id\":\"cntr_xyz\""), "got: {s}");
-        // Header line preserved verbatim.
-        assert!(s.starts_with("event: response.completed\n"));
-    }
-
-    #[test]
-    fn injection_skipped_when_already_present() {
-        let raw = b"data: {\"type\":\"response.completed\",\"response\":{\"container_id\":\"cntr_xyz\"}}\n\n";
-        assert!(inject_container_id_into_event(raw, "cntr_xyz").is_none());
-    }
-}
-
 /// Parse one SSE event into (`event_type`, `payload`) for the event
 /// log. Best-effort: malformed events get `event_type = "unknown"`
 /// and the raw bytes as a JSON string so replay never loses data.
@@ -522,5 +464,63 @@ pub async fn persist_non_streaming(
         .await
     {
         error!(error = %e, response_id, "Failed to persist non-streaming response");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_terminal_event_with_event_header_prefix() {
+        // Named-SSE form: `event: response.completed\ndata: {...}\n\n`.
+        // A previous bug short-circuited on the first non-`data:` line
+        // (the `event:` header) and missed the terminal data entirely.
+        let raw = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\"}}\n\n";
+        let result = inspect_terminal_event(raw);
+        assert!(
+            result.is_some(),
+            "should detect terminal event past header line"
+        );
+        let (resp, status) = result.unwrap();
+        assert_eq!(status, ResponseStatus::Completed);
+        assert_eq!(resp.get("id").and_then(|v| v.as_str()), Some("resp_abc"));
+    }
+
+    #[test]
+    fn detects_terminal_event_data_only_form() {
+        // Plain Responses-API form without an `event:` line.
+        let raw = b"data: {\"type\":\"response.failed\",\"response\":{\"error\":\"boom\"}}\n\n";
+        let result = inspect_terminal_event(raw);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, ResponseStatus::Failed);
+    }
+
+    #[test]
+    fn ignores_non_terminal_events() {
+        let raw = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
+        assert!(inspect_terminal_event(raw).is_none());
+    }
+
+    #[test]
+    fn ignores_done_sentinel() {
+        let raw = b"data: [DONE]\n\n";
+        assert!(inspect_terminal_event(raw).is_none());
+    }
+
+    #[test]
+    fn injects_container_id_into_terminal_event() {
+        let raw = b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\"}}\n\n";
+        let out = inject_container_id_into_event(raw, "cntr_xyz").expect("should mutate");
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains("\"container_id\":\"cntr_xyz\""), "got: {s}");
+        // Header line preserved verbatim.
+        assert!(s.starts_with("event: response.completed\n"));
+    }
+
+    #[test]
+    fn injection_skipped_when_already_present() {
+        let raw = b"data: {\"type\":\"response.completed\",\"response\":{\"container_id\":\"cntr_xyz\"}}\n\n";
+        assert!(inject_container_id_into_event(raw, "cntr_xyz").is_none());
     }
 }

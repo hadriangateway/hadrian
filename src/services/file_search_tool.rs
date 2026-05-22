@@ -47,7 +47,7 @@ use crate::{
         FileSearchComparisonFilter, FileSearchCompoundFilter, FileSearchFilter,
         FileSearchFilterComparison, FileSearchFilterLogicalType, FileSearchResultContent,
         FileSearchResultItem, FileSearchTool, FunctionCallOutput, FunctionCallOutputType,
-        ResponsesAnnotation, ResponsesIncludable, ResponsesInput, ResponsesInputItem,
+        FunctionTool, ResponsesAnnotation, ResponsesIncludable, ResponsesInput, ResponsesInputItem,
         ResponsesToolDefinition, WebSearchStatus,
     },
     auth::AuthenticatedRequest,
@@ -244,7 +244,10 @@ pub fn preprocess_file_search_tools(payload: &mut CreateResponsesPayload) {
         if matches!(tool, ResponsesToolDefinition::FileSearch(_)) {
             // Convert file_search to a function tool
             let function_def = FileSearchToolArguments::function_tool_definition();
-            *tool = ResponsesToolDefinition::Function(function_def);
+            *tool = ResponsesToolDefinition::Function(
+                FunctionTool::from_json(function_def)
+                    .expect("file_search function-tool definition is well-formed"),
+            );
             debug!(
                 stage = "tool_preprocessed",
                 "Preprocessed file_search tool to function definition for OpenAI-compatible provider"
@@ -1364,6 +1367,10 @@ pub struct FileSearchExecutor {
     citation_tracker: std::sync::Mutex<CitationTracker>,
     /// Query cache deduplicates identical searches within one request.
     query_cache: tokio::sync::Mutex<HashMap<String, FileSearchToolResult>>,
+    /// Hides the rewritten `file_search` function-call plumbing from the
+    /// client stream; the executor emits the spec-shaped
+    /// `file_search_call` items itself.
+    suppressor: crate::services::server_tools::FunctionCallSuppressor,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1373,6 +1380,7 @@ impl FileSearchExecutor {
             context,
             citation_tracker: std::sync::Mutex::new(CitationTracker::new()),
             query_cache: tokio::sync::Mutex::new(HashMap::new()),
+            suppressor: crate::services::server_tools::FunctionCallSuppressor::new(),
         }
     }
 }
@@ -1624,6 +1632,14 @@ impl crate::services::server_tools::ServerExecutedTool for FileSearchExecutor {
     }
 
     fn transform_event(&self, event: Bytes) -> Bytes {
+        // Hide the rewritten `file_search` function-call plumbing first;
+        // the executor emits the spec-shaped `file_search_call` items.
+        let event = self
+            .suppressor
+            .suppress(event, |name| name == "file_search");
+        if event.is_empty() {
+            return event;
+        }
         let Ok(tracker) = self.citation_tracker.lock() else {
             return event;
         };
@@ -2704,10 +2720,9 @@ mod tests {
         assert_eq!(tools.len(), 1);
 
         match &tools[0] {
-            ResponsesToolDefinition::Function(json) => {
-                assert_eq!(json["type"], "function");
-                assert_eq!(json["name"], "file_search");
-                assert!(json.get("parameters").is_some());
+            ResponsesToolDefinition::Function(f) => {
+                assert_eq!(f.name, "file_search");
+                assert!(f.parameters.is_some());
             }
             _ => panic!("Expected Function tool, got {:?}", tools[0]),
         }
@@ -2716,10 +2731,11 @@ mod tests {
     #[test]
     fn test_preprocess_file_search_tools_preserves_other_tools() {
         use crate::api_types::responses::{
-            CreateResponsesPayload, FileSearchTool, FileSearchToolType, ResponsesToolDefinition,
+            CreateResponsesPayload, FileSearchTool, FileSearchToolType, FunctionTool,
+            ResponsesToolDefinition,
         };
 
-        let function_tool = serde_json::json!({
+        let function_tool = FunctionTool::from_json(serde_json::json!({
             "type": "function",
             "name": "get_weather",
             "description": "Get weather for a location",
@@ -2729,7 +2745,8 @@ mod tests {
                     "location": {"type": "string"}
                 }
             }
-        });
+        }))
+        .unwrap();
 
         let mut payload = CreateResponsesPayload {
             input: None,
@@ -2783,16 +2800,16 @@ mod tests {
 
         // First tool should be unchanged
         match &tools[0] {
-            ResponsesToolDefinition::Function(json) => {
-                assert_eq!(json["name"], "get_weather");
+            ResponsesToolDefinition::Function(f) => {
+                assert_eq!(f.name, "get_weather");
             }
             _ => panic!("Expected Function tool"),
         }
 
         // Second tool should be converted from file_search
         match &tools[1] {
-            ResponsesToolDefinition::Function(json) => {
-                assert_eq!(json["name"], "file_search");
+            ResponsesToolDefinition::Function(f) => {
+                assert_eq!(f.name, "file_search");
             }
             _ => panic!("Expected converted file_search tool"),
         }

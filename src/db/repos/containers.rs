@@ -1,8 +1,9 @@
 //! Repo for `containers` and `container_files` — the shell-tool
 //! `/mnt/data` artifact store.
 //!
-//! A *container* tracks one persistent shell-tool session (Phase 1
-//! scopes it to a response; Phase 4 will reuse it across responses).
+//! A *container* tracks one persistent shell-tool session. Today the
+//! session is response-scoped; `previous_response_id` chains let the
+//! same container be reused across responses.
 //! A *container_file* tracks one file under `/mnt/data` in that
 //! container, with content stored via the same `FileStorage` backend
 //! abstraction the OpenAI Files API uses.
@@ -271,8 +272,8 @@ pub trait ContainersRepo: Send + Sync {
 
     /// List files inside a container, newest first. The container's
     /// org gate is applied so a cross-tenant `container_id` returns an
-    /// empty list. Phase 3 returns a simple slice (caller-supplied
-    /// `limit`, default 100); Phase 4 will swap in cursor pagination.
+    /// empty list. Returns a simple slice (caller-supplied `limit`,
+    /// default 100); cursor pagination is a future enhancement.
     async fn list_files_by_container(
         &self,
         container_id: &str,

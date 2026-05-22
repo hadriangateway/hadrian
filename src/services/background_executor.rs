@@ -107,8 +107,8 @@ fn shell_tool_requested(payload: &crate::api_types::CreateResponsesPayload) -> b
         t.is_shell()
             || matches!(
                 t,
-                crate::api_types::responses::ResponsesToolDefinition::Function(v)
-                    if v.get("name").and_then(|n| n.as_str()) == Some("shell")
+                crate::api_types::responses::ResponsesToolDefinition::Function(f)
+                    if f.name == "shell"
             )
     })
 }

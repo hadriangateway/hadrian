@@ -653,26 +653,35 @@ impl Provider for TestProvider {
         // Use requested dimensions or default to 1536 (OpenAI's ada-002 default)
         let dims = payload.dimensions.unwrap_or(1536) as usize;
 
-        // Extract text from input
-        let text = match &payload.input {
-            crate::api_types::embeddings::EmbeddingInput::Text(t) => t.clone(),
-            crate::api_types::embeddings::EmbeddingInput::TextArray(arr) => arr.join(" "),
-            crate::api_types::embeddings::EmbeddingInput::Tokens(_) => String::new(),
-            crate::api_types::embeddings::EmbeddingInput::TokenArrays(_) => String::new(),
-            crate::api_types::embeddings::EmbeddingInput::Multimodal(_) => String::new(),
+        // Collect input texts. Batch (`TextArray`) inputs produce one
+        // embedding per element — mirroring real embedding APIs — so
+        // callers like Hadrian-side tool search can embed a catalog in
+        // one request.
+        let texts: Vec<String> = match &payload.input {
+            crate::api_types::embeddings::EmbeddingInput::Text(t) => vec![t.clone()],
+            crate::api_types::embeddings::EmbeddingInput::TextArray(arr) => arr.clone(),
+            crate::api_types::embeddings::EmbeddingInput::Tokens(_) => vec![String::new()],
+            crate::api_types::embeddings::EmbeddingInput::TokenArrays(_) => vec![String::new()],
+            crate::api_types::embeddings::EmbeddingInput::Multimodal(_) => vec![String::new()],
         };
 
         // Generate word-based embeddings so texts sharing words have positive cosine similarity.
         // This enables semantic search testing without a real embedding provider.
-        let embedding = generate_word_based_embedding(&text, dims);
+        let data: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                json!({
+                    "object": "embedding",
+                    "embedding": generate_word_based_embedding(text, dims),
+                    "index": i
+                })
+            })
+            .collect();
 
         build_json_response(json!({
             "object": "list",
-            "data": [{
-                "object": "embedding",
-                "embedding": embedding,
-                "index": 0
-            }],
+            "data": data,
             "model": payload.model,
             "usage": {
                 "prompt_tokens": 8,

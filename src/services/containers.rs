@@ -2,11 +2,11 @@
 //! layer. Sits between the in-memory `ContainerSession` and the
 //! database repos.
 //!
-//! Phase 3 scope: write-through every captured file into the
-//! database, expose read paths for the `/v1/containers/*` GET
-//! endpoints. Storage backend is always `Database` for now — Phase 4
-//! will wire in a separate `[storage.container_files]` config so
-//! large artifacts can land on filesystem/S3.
+//! Write-through every captured file into the database and expose
+//! read paths for the `/v1/containers/*` GET endpoints. Storage
+//! backend is always `Database` for now — a separate
+//! `[storage.container_files]` config for routing large artifacts to
+//! filesystem/S3 is a future enhancement.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -91,8 +91,8 @@ pub struct PersistFileInput {
     pub filename: String,
     pub content_type: Option<String>,
     pub source: ContainerFileSource,
-    /// File bytes. Phase 3 stores them inline in the row (Database
-    /// backend); Phase 4 may route through a `FileStorage` adapter.
+    /// File bytes. Stored inline in the row today (Database backend);
+    /// future work may route through a `FileStorage` adapter.
     pub content: Bytes,
     pub content_hash_hex: String,
     pub source_response_id: Option<String>,
@@ -310,10 +310,10 @@ impl ContainersService {
             .ok_or(ContainersServiceError::NotFound)
     }
 
-    /// Org-scoped file content read. Phase 3 only serves files stored
-    /// inline in the row (`storage_backend = database`); the schema
+    /// Org-scoped file content read. Today only files stored inline in
+    /// the row (`storage_backend = database`) are served; the schema
     /// supports filesystem/S3 backends but those paths are reserved
-    /// for Phase 4.
+    /// for future work.
     pub async fn read_content(
         &self,
         file_id: &str,

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::{CircuitBreakerConfig, RetryConfig};
+use crate::api_types::responses::ToolSearchRankerKind;
 
 /// Feature flags for optional capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -88,6 +89,186 @@ pub struct FeaturesConfig {
     /// Persistence settings for the Responses API.
     #[serde(default)]
     pub responses: ResponsesPersistenceConfig,
+
+    /// MCP (Model Context Protocol) tool configuration. When set,
+    /// `/v1/responses` accepts `{"type": "mcp", ...}` tool entries and
+    /// either forwards them to OpenAI/Azure (`mode = passthrough_openai`)
+    /// or runs the MCP client loop locally (`mode = hadrian_hosted`).
+    /// Defaults to `None` — MCP tool disabled.
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
+}
+
+/// MCP tool configuration.
+///
+/// Two execution modes:
+///
+/// - `passthrough_openai` — `mcp` tools are forwarded verbatim to
+///   OpenAI / Azure OpenAI, which runs the MCP client loop and emits
+///   the canonical `mcp_*` items. Other providers reject with
+///   `mcp_passthrough_unsupported_provider`.
+/// - `hadrian_hosted` — Hadrian runs the MCP client loop itself
+///   using `rmcp` and rewrites `mcp` into per-tool function tools,
+///   so any provider can drive the loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    /// Master enable. `false` makes the gateway behave as if MCP isn't
+    /// configured at all (no preprocess, no executor) even when other
+    /// fields are set.
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+    /// Execution mode.
+    #[serde(default)]
+    pub mode: McpMode,
+    /// Operator allowlist of remote MCP server URLs. `None` = any URL
+    /// the caller supplies is accepted (the caller already controls
+    /// `Authorization`, so this is a defense-in-depth knob, not an
+    /// auth check). When `Some`, the caller's `server_url` must match
+    /// at least one entry exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_server_urls: Option<Vec<String>>,
+    /// When `false` (the default), requests using `connector_id` —
+    /// OpenAI's first-party connector handles — are rejected. Self-
+    /// hosted gateways usually can't reach OpenAI's connector registry,
+    /// so the safe default is "off"; flip to `true` only when the
+    /// upstream is OpenAI/Azure and the connector is known to work.
+    #[serde(default = "default_mcp_allow_connector_ids")]
+    pub allow_connector_ids: bool,
+    /// Hadrian-side tool search for deferred tools (`defer_loading`).
+    /// Only relevant under `hadrian_hosted`.
+    #[serde(default)]
+    pub tool_search: ToolSearchConfig,
+    /// Deployment default upper bound, in seconds, on a single MCP
+    /// `tools/call` round-trip under `hadrian_hosted`. `rmcp` applies no
+    /// request timeout of its own and the underlying reqwest client sets
+    /// none either, so without this a server that accepts the connection
+    /// and then never responds would hang the response indefinitely.
+    /// Overridable per tool via the `mcp` tool's `call_timeout_secs`
+    /// Hadrian extension. Default 300s (5 min).
+    #[serde(default = "default_mcp_call_timeout_secs")]
+    pub call_timeout_secs: u64,
+}
+
+/// Settings for Hadrian-side tool search over a deferred MCP catalog.
+///
+/// Engages under `hadrian_hosted` when a request marks an `mcp` tool
+/// entry with `defer_loading: true` (and does not opt into native
+/// passthrough). Hadrian exposes a single `tool_search` function tool,
+/// keeps the catalog server-side, and injects matched per-tool function
+/// definitions as the model discovers them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ToolSearchConfig {
+    /// Deployment default ranking strategy. Overridable per-request via
+    /// the `tool_search` tool's `ranker` extension field. `hybrid` (the
+    /// default) fuses semantic + lexical relevance; `semantic` requires a
+    /// resolvable embedding provider (validated at startup); `lexical`
+    /// needs no embeddings.
+    #[serde(default = "default_tool_search_ranker")]
+    pub ranker: ToolSearchRankerKind,
+    /// Maximum number of tools a single search returns.
+    #[serde(default = "default_tool_search_max_results")]
+    pub max_results: usize,
+    /// Minimum relevance score (0.0–1.0) a tool must reach to be
+    /// returned. Applies only to the `lexical` and `semantic` rankers,
+    /// whose scores are normalized to this range. The default `hybrid`
+    /// ranker fuses ranks via RRF and produces a small ranking-only score
+    /// (not a 0–1 relevance), so the threshold is *ignored* for it —
+    /// otherwise any non-zero value would drop every result. Use
+    /// `max_results` to bound hybrid output.
+    #[serde(default = "default_tool_search_score_threshold")]
+    pub score_threshold: f64,
+    /// Embedding configuration for semantic/hybrid ranking. When omitted,
+    /// resolution falls back to the `file_search` then semantic-cache
+    /// embedding config; if none resolve, `hybrid` degrades to `lexical`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<EmbeddingConfig>,
+    /// RRF smoothing constant `k` for `hybrid` fusion (default 60, per the
+    /// original RRF paper).
+    #[serde(default = "default_tool_search_rrf_k")]
+    pub rrf_k: u32,
+}
+
+impl Default for ToolSearchConfig {
+    fn default() -> Self {
+        Self {
+            ranker: default_tool_search_ranker(),
+            max_results: default_tool_search_max_results(),
+            score_threshold: default_tool_search_score_threshold(),
+            embedding: None,
+            rrf_k: default_tool_search_rrf_k(),
+        }
+    }
+}
+
+fn default_tool_search_ranker() -> ToolSearchRankerKind {
+    ToolSearchRankerKind::Hybrid
+}
+
+fn default_tool_search_max_results() -> usize {
+    20
+}
+
+fn default_tool_search_score_threshold() -> f64 {
+    0.0
+}
+
+fn default_tool_search_rrf_k() -> u32 {
+    60
+}
+
+impl McpConfig {
+    /// True when MCP is enabled *and* the gateway runs the client loop
+    /// itself (`hadrian_hosted`). This is the single predicate the
+    /// route handler (non-streaming bridge), the approval-resume gate,
+    /// and the pipeline executor registration all key off — keep it in
+    /// one place so the three sites can't drift apart.
+    pub fn is_hadrian_hosted(&self) -> bool {
+        self.enabled && matches!(self.mode, McpMode::HadrianHosted)
+    }
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_mcp_enabled(),
+            mode: McpMode::default(),
+            allowed_server_urls: None,
+            allow_connector_ids: default_mcp_allow_connector_ids(),
+            tool_search: ToolSearchConfig::default(),
+            call_timeout_secs: default_mcp_call_timeout_secs(),
+        }
+    }
+}
+
+fn default_mcp_enabled() -> bool {
+    true
+}
+
+fn default_mcp_call_timeout_secs() -> u64 {
+    300
+}
+
+fn default_mcp_allow_connector_ids() -> bool {
+    false
+}
+
+/// Where the MCP client loop runs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum McpMode {
+    /// Forward `mcp` tool entries to OpenAI / Azure OpenAI. Other
+    /// providers reject. The default — zero gateway overhead.
+    #[default]
+    PassthroughOpenai,
+    /// Hadrian runs the MCP client loop itself via `rmcp` and rewrites
+    /// `mcp` tools into per-tool function tools. Requires the `mcp`
+    /// cargo feature.
+    HadrianHosted,
 }
 
 /// Persistence and retention settings for the Responses API.
@@ -607,8 +788,8 @@ fn default_shell_command_timeout_secs() -> u64 {
 /// snapshots the container's `/mnt/data` directory before and after
 /// every shell command. New or changed files are surfaced as
 /// `container_file_citation` annotations on the assistant's reply, with
-/// a stable `cfile_<uuid>` identifier that Phase 3's container files
-/// API will resolve to downloadable bytes.
+/// a stable `cfile_<uuid>` identifier that the container files API
+/// resolves to downloadable bytes.
 ///
 /// Setting `enabled = false` reverts to the legacy "tear down VM after
 /// every command" behaviour with no artifact capture.
@@ -617,14 +798,13 @@ fn default_shell_command_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ContainersConfig {
     /// Master switch. When false, the shell tool boots and tears down a
-    /// fresh microVM for every command and never captures artifacts —
-    /// matches Hadrian behaviour prior to Phase 1.
+    /// fresh microVM for every command and never captures artifacts.
     #[serde(default = "default_containers_enabled")]
     pub enabled: bool,
 
     /// Idle time after which an in-memory container session is torn
-    /// down. Phase 1 sessions are response-scoped, so this only kicks
-    /// in if a response stalls without terminating. Default 1200 (20m,
+    /// down. Sessions are response-scoped, so this only kicks in if a
+    /// response stalls without terminating. Default 1200 (20m,
     /// matching OpenAI's hosted-container idle TTL).
     #[serde(default = "default_containers_idle_ttl_secs")]
     pub default_idle_ttl_secs: u64,
@@ -3306,6 +3486,35 @@ mod tests {
     fn test_distance_metric_default() {
         let metric: DistanceMetric = Default::default();
         assert_eq!(metric, DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn mcp_config_default_includes_hybrid_tool_search() {
+        let cfg = McpConfig::default();
+        assert_eq!(cfg.tool_search.ranker, ToolSearchRankerKind::Hybrid);
+        assert_eq!(cfg.tool_search.max_results, 20);
+        assert_eq!(cfg.tool_search.rrf_k, 60);
+        assert!(cfg.tool_search.embedding.is_none());
+    }
+
+    #[test]
+    fn tool_search_config_parses_overrides() {
+        let cfg: McpConfig = toml::from_str(
+            r#"
+            enabled = true
+            mode = "hadrian_hosted"
+            [tool_search]
+            ranker = "lexical"
+            max_results = 5
+            score_threshold = 0.4
+            rrf_k = 30
+            "#,
+        )
+        .expect("parses");
+        assert_eq!(cfg.tool_search.ranker, ToolSearchRankerKind::Lexical);
+        assert_eq!(cfg.tool_search.max_results, 5);
+        assert_eq!(cfg.tool_search.score_threshold, 0.4);
+        assert_eq!(cfg.tool_search.rrf_k, 30);
     }
 
     #[test]

@@ -370,6 +370,18 @@ pub struct AppState {
     /// skips registering a ShellExecutor and the shell tool flows
     /// through to the upstream provider unchanged.
     pub shell_runtime: Option<Arc<dyn runtimes::ShellRuntime>>,
+    /// MCP-tool service. Holds the pooled MCP clients and tools-list
+    /// cache used by the `hadrian_hosted` mode. `None` when the `mcp`
+    /// cargo feature is off or `[features.mcp]` is not configured.
+    #[cfg(feature = "mcp")]
+    pub mcp_service: Option<services::mcp::McpService>,
+    /// Embedding service for Hadrian-side MCP tool search (semantic /
+    /// hybrid ranking). Resolved from `[features.mcp.tool_search.embedding]`
+    /// with a fallback to the file_search / semantic-cache embedding
+    /// config. `None` when no embedding provider resolves — tool search
+    /// then falls back to lexical ranking.
+    #[cfg(feature = "mcp")]
+    pub tool_search_embeddings: Option<Arc<cache::EmbeddingService>>,
     /// Persisted Responses API store. Always present when a database
     /// is configured; powers `GET/POST cancel/DELETE /v1/responses/{id}`
     /// and the cancellation signal pipeline.
@@ -1097,16 +1109,16 @@ impl AppState {
         // Containers service powers shell-tool `/mnt/data` artifact
         // persistence and `/v1/containers/*`. Available whenever a DB
         // is configured. Without it the live shell tool still works
-        // (Phase 1/2 in-memory capture remains), but the GET endpoints
-        // return 404 because no rows exist.
+        // (the in-memory session capture path stays available), but
+        // the GET endpoints return 404 because no rows exist.
         let containers_service: Option<Arc<services::containers::ContainersService>> = db
             .as_ref()
             .map(|db| Arc::new(services::containers::ContainersService::new(db.clone())));
 
         // Always construct a registry. In DB-less deployments it
-        // stays empty (Phase 1/2 sessions never get inserted), but
-        // wiring it in unconditionally keeps the rest of the
-        // pipeline's plumbing simple.
+        // stays empty (sessions never get inserted), but wiring it in
+        // unconditionally keeps the rest of the pipeline's plumbing
+        // simple.
         let container_session_registry: Arc<services::container_session::ContainerSessionRegistry> =
             Arc::new(services::container_session::ContainerSessionRegistry::new());
 
@@ -1149,6 +1161,39 @@ impl AppState {
                 )))
             }
         };
+
+        // MCP tool service. Built when `[features.mcp]` is configured;
+        // the executor + preprocess pick it up off AppState. The
+        // `hadrian_hosted` mode is the consumer; under
+        // `passthrough_openai` the service is constructed but unused.
+        #[cfg(feature = "mcp")]
+        let mcp_service: Option<services::mcp::McpService> = match &config.features.mcp {
+            Some(cfg) if cfg.enabled => {
+                tracing::info!(
+                    mode = ?cfg.mode,
+                    "MCP tool: enabled"
+                );
+                let approvals_repo = db.as_ref().map(|db| db.mcp_pending_approvals());
+                let url_validation_opts = crate::validation::UrlValidationOptions {
+                    allow_loopback: config.server.allow_loopback_urls,
+                    allow_private: config.server.allow_private_urls,
+                };
+                Some(services::mcp::McpService::with_approvals_repo(
+                    approvals_repo,
+                    url_validation_opts,
+                ))
+            }
+            _ => None,
+        };
+
+        // Resolve the embedding service for Hadrian-side MCP tool search.
+        #[cfg(feature = "mcp")]
+        let tool_search_embeddings = Self::init_tool_search_embeddings(
+            &config,
+            &circuit_breakers,
+            http_client.clone(),
+            file_search_service.as_ref(),
+        );
 
         // Initialize document processor for RAG file processing
         // This reuses the embedding service and vector store from file_search_service
@@ -1270,6 +1315,10 @@ impl AppState {
             event_bus,
             file_search_service,
             shell_runtime,
+            #[cfg(feature = "mcp")]
+            mcp_service,
+            #[cfg(feature = "mcp")]
+            tool_search_embeddings,
             responses_store,
             containers_service,
             container_session_registry,
@@ -1562,6 +1611,88 @@ impl AppState {
     ///
     /// The embedding configuration is taken from the semantic caching config if available,
     /// since file search typically uses the same embedding model.
+    /// Resolve an embedding service for Hadrian-side MCP tool search.
+    ///
+    /// Only relevant under `hadrian_hosted`. Resolves the embedding config
+    /// with priority: `[features.mcp.tool_search.embedding]` →
+    /// `[features.file_search.embedding]` →
+    /// `[features.response_caching.semantic.embedding]`; failing that,
+    /// reuses the file_search embedding service if one was built. Returns
+    /// `None` when nothing resolves (tool search falls back to lexical
+    /// ranking). Logs loudly when the configured ranker is `semantic` but
+    /// no embeddings resolve.
+    #[cfg(feature = "mcp")]
+    fn init_tool_search_embeddings(
+        config: &config::GatewayConfig,
+        circuit_breakers: &providers::CircuitBreakerRegistry,
+        http_client: Client,
+        file_search_service: Option<&Arc<services::FileSearchService>>,
+    ) -> Option<Arc<cache::EmbeddingService>> {
+        let mcp_cfg = match &config.features.mcp {
+            Some(cfg) if cfg.enabled && cfg.is_hadrian_hosted() => cfg,
+            _ => return None,
+        };
+        let ts_cfg = &mcp_cfg.tool_search;
+
+        // Lexical ranking needs no embeddings.
+        if ts_cfg.ranker == crate::api_types::responses::ToolSearchRankerKind::Lexical {
+            return None;
+        }
+
+        let embedding_config = ts_cfg.embedding.as_ref().or_else(|| {
+            config
+                .features
+                .file_search
+                .as_ref()
+                .and_then(|fs| fs.embedding.as_ref())
+                .or_else(|| {
+                    config
+                        .features
+                        .response_caching
+                        .as_ref()
+                        .and_then(|rc| rc.semantic.as_ref())
+                        .map(|sc| &sc.embedding)
+                })
+        });
+
+        let resolved = embedding_config.and_then(|cfg| {
+            let provider_config = config.providers.get(&cfg.provider)?;
+            match cache::EmbeddingService::new(
+                cfg,
+                provider_config,
+                circuit_breakers,
+                http_client.clone(),
+            ) {
+                Ok(service) => Some(Arc::new(service)),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to build embedding service for MCP tool search");
+                    None
+                }
+            }
+        });
+
+        // Last resort: reuse the file_search embedding service if present.
+        let resolved = resolved.or_else(|| file_search_service.map(|fs| fs.embedding_service()));
+
+        if resolved.is_none() {
+            // `hybrid` degrades to lexical; `semantic` was explicitly asked
+            // for and can't be honored — surface it loudly.
+            if ts_cfg.ranker == crate::api_types::responses::ToolSearchRankerKind::Semantic {
+                tracing::error!(
+                    "MCP tool search ranker is `semantic` but no embedding provider resolved; \
+                     configure [features.mcp.tool_search.embedding] (or file_search / semantic \
+                     cache embeddings). Falling back to lexical ranking."
+                );
+            } else {
+                tracing::info!(
+                    "MCP tool search: no embedding provider resolved; using lexical ranking"
+                );
+            }
+        }
+
+        resolved
+    }
+
     async fn init_file_search_service(
         config: &config::GatewayConfig,
         db: Option<&Arc<db::DbPool>>,

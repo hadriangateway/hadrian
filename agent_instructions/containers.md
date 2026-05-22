@@ -8,6 +8,13 @@ For the public-facing overview see `docs/content/docs/features/agents.mdx`. For 
 pipeline drives this, see `responses_pipeline.md`. For adding a new runtime backend, see
 `adding_runtime.md`.
 
+## External references
+
+OpenAI's docs for the shell tool and hosted computer environment we mirror:
+
+- https://developers.openai.com/api/docs/guides/tools-shell.md
+- https://r.jina.ai/https://openai.com/index/equip-responses-api-computer-environment/
+
 ## Resources
 
 | Resource         | Lifecycle                | Storage                                                              |

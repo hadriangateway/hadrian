@@ -7,7 +7,34 @@ background requests re-enter the same pipeline.
 
 For the broader Responses API + Containers feature, start with `containers.md`. For adding a
 new tool, mirror `services/web_search_tool.rs` or `services/shell_tool.rs`. For the runtime
-side, see `adding_runtime.md`.
+side, see `adding_runtime.md`. Server-side MCP support lives under `src/services/mcp/` and the
+MCP wire shape we expose tracks OpenAI's Responses-API MCP tool (see references below).
+
+Two server-executed tools come from the MCP subsystem, both registered in
+`apply_streaming_pipeline` only under `[features.mcp].mode = "hadrian_hosted"`:
+
+- `McpExecutor` (`src/services/mcp/executor.rs`) — intercepts the rewritten
+  `mcp_<label>__<tool>` function calls and runs `tools/call`.
+- `ToolSearchExecutor` (`src/services/mcp/tool_search/`) — for `mcp` entries with
+  `defer_loading: true`, the rewrite injects a single `tool_search` function tool instead of
+  the per-tool functions; this executor ranks the deferred catalog locally
+  (`tool_search/ranker.rs`: lexical / semantic / hybrid-RRF, reusing `cache::EmbeddingService`),
+  emits `tool_search_call` / `tool_search_output` items, and injects the matched function
+  definitions into the continuation so they become callable. Ranking is configured by
+  `[features.mcp.tool_search]` and overridable per request via the `tool_search` tool's
+  `ranker` extension. See `docs/content/docs/features/mcp-tool.mdx` ("Tool search").
+
+## External references
+
+OpenAI's MCP-tool docs we conform to, plus the cookbook walkthrough:
+
+- https://developers.openai.com/api/docs/mcp.md
+- https://developers.openai.com/api/docs/guides/tools-connectors-mcp.md — guide to using
+  remote MCP servers in the Responses API (listing tools, calling tools, approvals, auth).
+- https://r.jina.ai/openai.com/index/new-tools-and-features-in-the-responses-api/
+- https://raw.githubusercontent.com/openai/openai-cookbook/refs/heads/main/examples/mcp/mcp_tool_guide.ipynb
+- https://developers.openai.com/api/docs/guides/tools-tool-search.md
+- https://developers.openai.com/api/docs/guides/tools.md
 
 ## Where it lives
 

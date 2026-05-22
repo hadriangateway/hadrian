@@ -1340,9 +1340,9 @@ CREATE TABLE IF NOT EXISTS responses (
     last_sequence_number BIGINT NOT NULL DEFAULT 0,
     -- Container the shell-tool session for this response wrote files
     -- into. Set when a `[features.shell]` runtime captures artifacts
-    -- under `/mnt/data`. Drives `previous_response_id`-based reuse
-    -- (Phase 4): a chained response looks here to find the container
-    -- it should reattach to.
+    -- under `/mnt/data`. Drives `previous_response_id`-based reuse:
+    -- a chained response looks here to find the container it should
+    -- reattach to.
     container_id VARCHAR(48)
 );
 
@@ -1367,9 +1367,9 @@ CREATE TABLE IF NOT EXISTS response_events (
 -- ======================================================================
 
 -- A "container" is the persistent shell-tool session and the files it
--- produced under `/mnt/data`. One row per session; Phase 1 makes one
--- per response, Phase 4 will reuse rows across responses via
--- `previous_response_id` / `container_reference`.
+-- produced under `/mnt/data`. One row per session; today the session
+-- is response-scoped, and `previous_response_id` / `container_reference`
+-- chains can reuse a row across responses.
 --
 -- IDs are stored as TEXT (`cntr_<32hex>`) so the wire format and the
 -- DB key match — clients pass the same string they received in a
@@ -1452,3 +1452,47 @@ CREATE INDEX IF NOT EXISTS idx_container_files_container_created
     ON container_files(container_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_container_files_org
     ON container_files(org_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- mcp_pending_approvals
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Parked MCP tool calls waiting on a `mcp_approval_response` from the
+-- caller. Written when the executor's gating check (require_approval
+-- on the corresponding McpTool) blocks a model-initiated call; read
+-- by the preprocess in `routes/execution.rs` when a subsequent
+-- request includes a matching `mcp_approval_response` input item.
+--
+-- Scoped to a `response_id` so two concurrent responses can both park
+-- approvals without colliding; cleanup is best-effort via `expires_at`
+-- and the existing retention worker.
+CREATE TABLE IF NOT EXISTS mcp_pending_approvals (
+    -- `approval_request_id` surfaced on the `mcp_approval_request`
+    -- item the gateway emitted. The caller echoes it back on the
+    -- matching `mcp_approval_response` so the gateway can look up the
+    -- parked call by primary key.
+    id VARCHAR(64) PRIMARY KEY,
+    -- The response (turn) that emitted the approval request. The
+    -- approval response must arrive on a request whose
+    -- `previous_response_id` chains back here.
+    response_id VARCHAR(64) NOT NULL,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    -- `call_id` from the original `function_call` (rewritten MCP tool)
+    -- so we can synthesize a matching `function_call_output` on resume.
+    call_id VARCHAR(128) NOT NULL,
+    -- MCP server identity captured at park time. Persisted (not
+    -- re-derived from the request) so an in-flight credentials rotation
+    -- between park and resume can't lose the call.
+    server_label VARCHAR(128) NOT NULL,
+    server_url TEXT NOT NULL,
+    tool_name VARCHAR(128) NOT NULL,
+    -- Arguments the model originally proposed, as a JSON string
+    -- (matches the wire shape of `function_call.arguments`).
+    arguments_json TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_pending_approvals_response
+    ON mcp_pending_approvals(response_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_pending_approvals_expires
+    ON mcp_pending_approvals(expires_at);

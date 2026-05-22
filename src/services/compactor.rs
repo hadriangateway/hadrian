@@ -220,6 +220,12 @@ fn item_chars(item: &ResponsesInputItem) -> usize {
         | ResponsesInputItem::FileSearchCall(_)
         | ResponsesInputItem::ShellCall(_)
         | ResponsesInputItem::ShellCallOutput(_)
+        | ResponsesInputItem::McpListTools(_)
+        | ResponsesInputItem::McpCall(_)
+        | ResponsesInputItem::McpApprovalRequest(_)
+        | ResponsesInputItem::McpApprovalResponse(_)
+        | ResponsesInputItem::ToolSearchCall(_)
+        | ResponsesInputItem::ToolSearchOutput(_)
         | ResponsesInputItem::Compaction(_)
         | ResponsesInputItem::ImageGeneration(_) => 64, // structural marker
     }

@@ -2475,6 +2475,10 @@ mod tests {
             event_bus: Arc::new(crate::events::EventBus::new()),
             file_search_service: None,
             shell_runtime: None,
+            #[cfg(feature = "mcp")]
+            mcp_service: None,
+            #[cfg(feature = "mcp")]
+            tool_search_embeddings: None,
             responses_store: None,
             containers_service: None,
             container_session_registry: std::sync::Arc::new(
@@ -2791,6 +2795,10 @@ mod tests {
             event_bus: Arc::new(crate::events::EventBus::new()),
             file_search_service: None,
             shell_runtime: None,
+            #[cfg(feature = "mcp")]
+            mcp_service: None,
+            #[cfg(feature = "mcp")]
+            tool_search_embeddings: None,
             responses_store: None,
             containers_service: None,
             container_session_registry: std::sync::Arc::new(

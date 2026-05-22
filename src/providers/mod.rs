@@ -156,6 +156,24 @@ pub enum ProviderError {
     #[error("{0}")]
     Unsupported(String),
 
+    /// An upstream the gateway depends on (e.g. a remote MCP server
+    /// during the `tools/list` rewrite, or a downstream sandbox API)
+    /// failed in a caller-visible way. Maps to HTTP 502 with the
+    /// supplied `(error_code, message)` so clients can distinguish
+    /// "the gateway tried but the dependency was unreachable" from
+    /// generic 500s. Use only for errors where exposing the message
+    /// won't leak internal infrastructure detail.
+    #[error("{1}")]
+    BadGateway(&'static str, String),
+
+    /// The caller's request is malformed in a way that pipeline steps
+    /// only detect once they have context the route layer doesn't
+    /// (e.g. which MCP tools survive the `allowed_tools` filter at
+    /// rewrite time). Maps to HTTP 400 with the supplied
+    /// `(error_code, message)`.
+    #[error("{1}")]
+    BadRequest(&'static str, String),
+
     #[error("{0}")]
     CircuitBreakerOpen(#[from] circuit_breaker::CircuitBreakerError),
 }
@@ -163,11 +181,12 @@ pub enum ProviderError {
 impl From<ProviderError> for StatusCode {
     fn from(err: ProviderError) -> Self {
         match err {
-            ProviderError::Request(_) => StatusCode::BAD_GATEWAY,
+            ProviderError::Request(_) | ProviderError::BadGateway(_, _) => StatusCode::BAD_GATEWAY,
             ProviderError::ResponseBuilder(_) | ProviderError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             ProviderError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
+            ProviderError::BadRequest(_, _) => StatusCode::BAD_REQUEST,
             ProviderError::CircuitBreakerOpen(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -198,6 +217,8 @@ impl IntoResponse for ProviderError {
             ProviderError::Unsupported(msg) => {
                 (StatusCode::NOT_IMPLEMENTED, "not_supported", msg.clone())
             }
+            ProviderError::BadGateway(code, msg) => (StatusCode::BAD_GATEWAY, *code, msg.clone()),
+            ProviderError::BadRequest(code, msg) => (StatusCode::BAD_REQUEST, *code, msg.clone()),
             ProviderError::CircuitBreakerOpen(e) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "circuit_breaker_open",

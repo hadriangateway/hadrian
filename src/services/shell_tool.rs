@@ -31,8 +31,9 @@ use uuid::Uuid;
 use crate::{
     api_types::responses::{
         ContainerFileRef, CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType,
-        KnownShellNetworkPolicyType, ResponsesAnnotation, ResponsesInput, ResponsesInputItem,
-        ResponsesToolDefinition, ShellDomainSecret, ShellEnvironment, ShellNetworkPolicyType,
+        FunctionTool, KnownShellNetworkPolicyType, ResponsesAnnotation, ResponsesInput,
+        ResponsesInputItem, ResponsesToolDefinition, ShellDomainSecret, ShellEnvironment,
+        ShellNetworkPolicyType,
     },
     config::{ContainersConfig, ShellLimitsConfig},
     models::UsageLogEntry,
@@ -723,8 +724,10 @@ pub fn preprocess_shell_tools(payload: &mut CreateResponsesPayload, hint: &Shell
     let Some(tools) = payload.tools.as_mut() else {
         return;
     };
-    let rewrite =
-        ResponsesToolDefinition::Function(ShellToolArguments::function_tool_definition(hint));
+    let rewrite = ResponsesToolDefinition::Function(
+        FunctionTool::from_json(ShellToolArguments::function_tool_definition(hint))
+            .expect("shell function-tool definition is well-formed"),
+    );
     for tool in tools.iter_mut() {
         if tool.is_shell() {
             *tool = rewrite.clone();
@@ -1268,14 +1271,17 @@ pub struct ShellExecutor {
     /// Pre-allocated container id from the pipeline. When `Some`, the
     /// executor checks the registry for an existing session and
     /// reattaches (or creates) under this id; when `None`, it
-    /// generates a fresh id on first use (Phase 1/2 behaviour for
-    /// in-memory-only deployments).
+    /// generates a fresh id on first use (in-memory-only deployments).
     container_id_hint: Option<String>,
     /// Files captured across every shell call in this response,
     /// keyed by path so an overwrite replaces the prior entry. Read
     /// synchronously by `transform_event` to populate
     /// `container_file_citation` annotations on output_text events.
     captured_files: Arc<std::sync::Mutex<HashMap<String, ContainerFileRef>>>,
+    /// Hides the rewritten `shell` function-call plumbing from the
+    /// client stream; the executor emits the spec-shaped `shell_call` /
+    /// `shell_call_output` items itself.
+    suppressor: crate::services::server_tools::FunctionCallSuppressor,
     /// `input_file` parts the request asked us to stage into
     /// `/mnt/data` before the first shell command. Drained on the
     /// first `execute()` call; subsequent calls see `None`.
@@ -1283,7 +1289,7 @@ pub struct ShellExecutor {
     /// Optional database write-through. When `Some`, a `containers`
     /// row is inserted on session start and every captured file is
     /// upserted into `container_files`; when `None`, the session
-    /// runs entirely in-memory (Phase 1/2 behaviour).
+    /// runs entirely in-memory.
     persistence: Option<ContainerPersistence>,
     /// Usage log buffer. When set, the executor pushes a `record_type:
     /// "tool"` entry per completed call with `tool_runtime_seconds` set.
@@ -1328,6 +1334,7 @@ impl ShellExecutor {
             registry,
             container_id_hint,
             captured_files: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            suppressor: crate::services::server_tools::FunctionCallSuppressor::new(),
             pending_input_files: Arc::new(Mutex::new(pending)),
             persistence,
             #[cfg(feature = "concurrency")]
@@ -1353,9 +1360,8 @@ impl ServerExecutedTool for ShellExecutor {
                     t.is_shell()
                         || matches!(
                             t,
-                            ResponsesToolDefinition::Function(v)
-                                if v.get("name").and_then(|n| n.as_str())
-                                    == Some(ShellToolArguments::FUNCTION_NAME)
+                            ResponsesToolDefinition::Function(f)
+                                if f.name == ShellToolArguments::FUNCTION_NAME
                         )
                 })
             })
@@ -2193,9 +2199,8 @@ impl ServerExecutedTool for ShellExecutor {
             let before = tools.len();
             tools.retain(|t| !t.is_shell());
             tools.retain(|t| {
-                if let ResponsesToolDefinition::Function(v) = t {
-                    v.get("name").and_then(|n| n.as_str())
-                        != Some(ShellToolArguments::FUNCTION_NAME)
+                if let ResponsesToolDefinition::Function(f) = t {
+                    f.name != ShellToolArguments::FUNCTION_NAME
                 } else {
                     true
                 }
@@ -2217,6 +2222,15 @@ impl ServerExecutedTool for ShellExecutor {
     /// `response.content_part.done` events using the captured-files
     /// map populated by each `execute()` call.
     fn transform_event(&self, event: Bytes) -> Bytes {
+        // Hide the rewritten `shell` function-call plumbing first; the
+        // executor emits the spec-shaped `shell_call` / `shell_call_output`
+        // items itself.
+        let event = self
+            .suppressor
+            .suppress(event, |name| name == ShellToolArguments::FUNCTION_NAME);
+        if event.is_empty() {
+            return event;
+        }
         let captured: Vec<ContainerFileRef> = {
             let guard = match self.captured_files.lock() {
                 Ok(g) => g,
@@ -2316,9 +2330,11 @@ mod tests {
         hosts: &[&str],
         secrets: &[(&str, &str, &[&str])],
     ) -> ShellLimitsConfig {
-        let mut limits = ShellLimitsConfig::default();
-        limits.max_mem_limit_mb = max_mb;
-        limits.allowed_egress_hosts = hosts.iter().map(|s| (*s).to_string()).collect();
+        let mut limits = ShellLimitsConfig {
+            max_mem_limit_mb: max_mb,
+            allowed_egress_hosts: hosts.iter().map(|s| (*s).to_string()).collect(),
+            ..Default::default()
+        };
         for (name, value, hs) in secrets {
             limits.allowed_domain_secrets.insert(
                 (*name).to_string(),
@@ -2357,8 +2373,10 @@ mod tests {
 
     #[test]
     fn resolver_none_inherits_operator_default_memory() {
-        let mut limits = ShellLimitsConfig::default();
-        limits.default_mem_limit_mb = Some(512);
+        let limits = ShellLimitsConfig {
+            default_mem_limit_mb: Some(512),
+            ..Default::default()
+        };
         let r = resolve_shell_environment(None, &limits, &default_containers()).unwrap();
         assert_eq!(r.mem_limit_bytes, Some(512 * 1024 * 1024));
         assert!(r.egress_policy.allow_hosts.is_empty());
@@ -2731,7 +2749,7 @@ mod tests {
             panic!("expected function tool");
         };
         // Default hint advertises Hadrian-hosted sandbox and the workdir.
-        let desc = func.get("description").and_then(|d| d.as_str()).unwrap();
+        let desc = func.description.as_deref().unwrap();
         assert!(
             desc.contains("/mnt/data"),
             "description should mention workdir: {desc}"

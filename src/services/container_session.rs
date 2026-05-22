@@ -2,10 +2,10 @@
 //! `/mnt/data` between shell commands and captures any
 //! new/changed files as `ContainerFileRef`s.
 //!
-//! Phase 1 scope: one session per `ShellExecutor` (i.e. per response).
-//! File content lives in process memory keyed by `file_id`. Phase 3
-//! will replace the in-memory store with a `container_files` table +
-//! storage backend.
+//! One session per `ShellExecutor` (i.e. per response). File content
+//! is committed to the `container_files` table for durability and
+//! shadowed in process memory for fast access during the active
+//! response.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -219,10 +219,10 @@ pub struct ContainerPersistence {
 
 /// A persistent shell-tool session backed by a `SessionHandle`.
 ///
-/// Owns the underlying VM for the lifetime of one response (Phase 1)
-/// and will own it for the lifetime of a `Container` resource in
-/// later phases. Implements `Drop` to detach a terminate task so the
-/// VM is cleaned up even on client disconnect.
+/// Owns the underlying VM for the lifetime of one response. Future
+/// work may extend ownership to a `Container` resource that spans
+/// multiple responses. Implements `Drop` to detach a terminate task
+/// so the VM is cleaned up even on client disconnect.
 pub struct ContainerSession {
     pub container_id: String,
     pub runtime_label: &'static str,
@@ -725,8 +725,8 @@ impl ContainerSession {
         }
 
         // Files that disappeared from /mnt/data: drop their tracking
-        // info. We don't emit deletion events in Phase 1 — only
-        // creations/modifications surface as annotations.
+        // info. We don't emit deletion events — only creations and
+        // modifications surface as annotations.
         let removed_paths: Vec<String> = state
             .snapshot
             .keys()
@@ -799,11 +799,10 @@ impl ContainerSession {
     /// Write a batch of user-supplied files into `/mnt/data` and
     /// register them as captured artifacts with `source = User`.
     ///
-    /// Used by Phase 2: the responses pipeline resolves `input_file`
-    /// parts into `StagedFile`s and feeds them in before the first
-    /// shell command runs. The snapshot is updated as we go so the
-    /// next `capture_changes()` call doesn't re-report these as
-    /// new/changed.
+    /// The responses pipeline resolves `input_file` parts into
+    /// `StagedFile`s and feeds them in before the first shell command
+    /// runs. The snapshot is updated as we go so the next
+    /// `capture_changes()` call doesn't re-report these as new/changed.
     ///
     /// No-ops with `Ok(vec![])` when artifact capture is disabled or
     /// the runtime doesn't expose `file_io`. Returns the per-file
@@ -937,8 +936,8 @@ impl ContainerSession {
     }
 
     /// All container files currently tracked, regardless of when they
-    /// were first captured. Phase 1 callers use this to attach an
-    /// annotation per file to the assistant's final output_text.
+    /// were first captured. Callers attach an annotation per file to
+    /// the assistant's final `output_text`.
     pub async fn list_captured(&self) -> Vec<ContainerFileRef> {
         let state = self.state.lock().await;
         state

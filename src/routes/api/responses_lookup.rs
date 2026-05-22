@@ -291,13 +291,8 @@ pub async fn api_v1_responses_get(
     let org_id = require_caller_org(auth.as_ref())?;
 
     if query.stream.unwrap_or(false) {
-        return stream_response_events(
-            state.clone(),
-            response_id,
-            org_id,
-            query.starting_after,
-        )
-        .await;
+        return stream_response_events(state.clone(), response_id, org_id, query.starting_after)
+            .await;
     }
 
     let record = store
