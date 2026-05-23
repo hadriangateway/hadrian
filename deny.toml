@@ -24,6 +24,20 @@ ignore = [
     # `rand::rng()` during trace-level logging. Hadrian uses `tracing-subscriber`, so the
     # affected code path is unreachable. Pulled in transitively via augurs, kreuzberg, sqlx.
     { id = "RUSTSEC-2026-0097", reason = "unreachable: hadrian has no custom log::Log impl that invokes rand::rng()" },
+    # hickory-proto 0.25.2 NSEC3 closest-encloser unbounded loop. Pulled in only by
+    # microsandbox-network (the `runtime-microsandbox` feature) for in-microVM DNS
+    # resolution behind the sandbox egress allowlist. The vulnerable DnssecDnsHandle
+    # only compiles with the `dnssec-ring`/`dnssec-aws-lc-rs` features, which
+    # microsandbox-network does not enable, so the path is not built. No safe upgrade
+    # exists for 0.25.x; a fix requires a microsandbox bump (0.4.6 pins an
+    # incompatible hickory line — see the dependency comment in Cargo.toml). Hadrian's
+    # own resolver uses hickory-resolver 0.26.1. Mirrors .cargo/audit.toml.
+    { id = "RUSTSEC-2026-0118", reason = "unreachable: dnssec features not enabled on microsandbox-network's hickory-client; no 0.25.x fix" },
+    # hickory-proto 0.25.2 O(n²) name-compression CPU exhaustion. Same provenance as
+    # RUSTSEC-2026-0118: microsandbox-network's in-microVM DNS behind the egress
+    # allowlist. Fixed in hickory-proto 0.26.1, which microsandbox 0.4.5 cannot adopt.
+    # Mirrors .cargo/audit.toml.
+    { id = "RUSTSEC-2026-0119", reason = "limited reach: microsandbox-network in-microVM DNS only; no 0.25.x fix until microsandbox bump" },
 ]
 
 # Licenses - ensure all dependencies use acceptable licenses
