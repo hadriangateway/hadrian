@@ -558,6 +558,24 @@ impl ContainerSession {
             let mut state = self.state.lock().await;
             state.last_active = Some(Instant::now());
         }
+        // Persist the activity ping so the idle reaper doesn't expire a busy
+        // container and the containers API shows a moving last_active_at /
+        // expires_at. The in-memory `last_active` above only guards the
+        // process-local registry. Best-effort: a failed write must not fail
+        // the command.
+        if let Some(persistence) = &self.persistence
+            && let Err(e) = persistence
+                .service
+                .touch_last_active(&self.container_id, persistence.org_id)
+                .await
+        {
+            debug!(
+                stage = "container_touch_last_active_failed",
+                container_id = %self.container_id,
+                error = %e,
+                "Failed to persist container last_active_at"
+            );
+        }
         Ok(ExecOutcome { handle: exec })
     }
 

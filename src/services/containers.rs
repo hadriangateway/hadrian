@@ -477,16 +477,13 @@ impl ContainersService {
     }
 
     /// Touch `last_active_at` so the reaper doesn't expire a busy
-    /// container. Called by `ContainerSession::exec` after every
-    /// successful shell command.
-    pub async fn touch_last_active(
-        &self,
-        id: &str,
-        org_id: Uuid,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> ContainersServiceResult<()> {
+    /// container and the containers API surfaces a moving `expires_at`.
+    /// Called by `ContainerSession::exec` after every successful shell
+    /// command. Truncates to millis to match every other container
+    /// timestamp write (cursor-comparison safety).
+    pub async fn touch_last_active(&self, id: &str, org_id: Uuid) -> ContainersServiceResult<()> {
         let patch = crate::db::repos::ContainerPatch {
-            last_active_at: Some(now),
+            last_active_at: Some(truncate_to_millis(Utc::now())),
             ..Default::default()
         };
         self.update_within_org(id, org_id, patch).await?;
