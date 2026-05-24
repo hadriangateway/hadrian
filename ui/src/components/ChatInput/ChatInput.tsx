@@ -490,7 +490,7 @@ export function ChatInput({
                   type="button"
                   onClick={() => onRemoveQueuedMessage(msg.id)}
                   className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  aria-label="Remove queued message"
+                  aria-label={`Remove queued message: ${msg.content || "(attachment only)"}`}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>

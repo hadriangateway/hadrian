@@ -265,18 +265,20 @@ export default function ChatPage() {
   const { queuedMessages, sendOrQueue, removeQueuedMessage, clearQueue } =
     useMessageQueue(sendMessage);
 
-  // Drop pending queued messages when the user switches to a different existing
-  // conversation, so they don't leak into the new one. Skip the undefined → id
-  // transition (the first message creating a conversation, which also remounts
-  // this component — clearing then would discard a just-queued follow-up).
-  const previousConvIdRef = useRef(currentConversation?.id);
+  // Drop pending queued messages when leaving the conversation they were queued
+  // for, so the singleton doesn't drain them through a different conversation's
+  // send context. The cleanup fires on a same-route switch (/chat/:idA →
+  // /chat/:idB, where the id dep changes) and on a remount that unmounts this
+  // instance (/chat/:id → /chat via "New Chat"), using the id captured at setup.
+  // The create transition (/chat → /chat/:id) unmounts the conversation-less
+  // /chat instance, whose captured id is undefined, so a queued follow-up is
+  // preserved. The local→remote URL flip keeps currentConversation.id stable, so
+  // the dep doesn't change and the queue survives it.
   useEffect(() => {
     const id = currentConversation?.id;
-    const previous = previousConvIdRef.current;
-    previousConvIdRef.current = id;
-    if (previous !== undefined && id !== undefined && previous !== id) {
-      clearQueue();
-    }
+    return () => {
+      if (id !== undefined) clearQueue();
+    };
   }, [currentConversation?.id, clearQueue]);
 
   const handleSendMessage = useCallback(

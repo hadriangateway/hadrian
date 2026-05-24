@@ -15,9 +15,15 @@ import { chatMessageQueue, type SendFn } from "./messageQueue";
 export function useMessageQueue(send: SendFn) {
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
 
-  // Keep the singleton pointed at the latest send closure. Done in render (like
-  // updating a ref) so an immediately-following send uses the current config.
-  chatMessageQueue.setSend(send);
+  // Keep the singleton pointed at the latest send closure. In an effect (not in
+  // the render phase) so a render that React starts but discards in concurrent
+  // mode can't leave the singleton holding an uncommitted closure. `send`
+  // changes whenever model/tool/config changes; the effect commits well before
+  // any user-triggered send or queue drain, so dispatch always uses the current
+  // context.
+  useEffect(() => {
+    chatMessageQueue.setSend(send);
+  }, [send]);
 
   useEffect(() => chatMessageQueue.subscribe(setQueuedMessages), []);
 
