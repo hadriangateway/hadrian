@@ -15,7 +15,8 @@ import { ChatHeader } from "./ChatHeader";
 function makeUsage(
   total: Partial<MessageUsage>,
   modeOverhead?: Partial<MessageUsage>,
-  discarded?: Partial<MessageUsage> & { count?: number }
+  discarded?: Partial<MessageUsage> & { count?: number },
+  titleGeneration?: Partial<MessageUsage>
 ): TotalUsageResult {
   const fill = (u?: Partial<MessageUsage>): MessageUsage => ({
     inputTokens: u?.inputTokens ?? 0,
@@ -25,26 +26,33 @@ function makeUsage(
     cachedTokens: u?.cachedTokens,
     reasoningTokens: u?.reasoningTokens,
   });
+  // Initial value makes the contract explicit (and never throws on an empty call).
   const sum = (...parts: MessageUsage[]): MessageUsage =>
-    parts.reduce((acc, p) => ({
-      inputTokens: acc.inputTokens + p.inputTokens,
-      outputTokens: acc.outputTokens + p.outputTokens,
-      totalTokens: acc.totalTokens + p.totalTokens,
-      cost: (acc.cost ?? 0) + (p.cost ?? 0),
-      cachedTokens: (acc.cachedTokens ?? 0) + (p.cachedTokens ?? 0),
-      reasoningTokens: (acc.reasoningTokens ?? 0) + (p.reasoningTokens ?? 0),
-    }));
+    parts.reduce(
+      (acc, p) => ({
+        inputTokens: acc.inputTokens + p.inputTokens,
+        outputTokens: acc.outputTokens + p.outputTokens,
+        totalTokens: acc.totalTokens + p.totalTokens,
+        cost: (acc.cost ?? 0) + (p.cost ?? 0),
+        cachedTokens: (acc.cachedTokens ?? 0) + (p.cachedTokens ?? 0),
+        reasoningTokens: (acc.reasoningTokens ?? 0) + (p.reasoningTokens ?? 0),
+      }),
+      fill()
+    );
   const t = fill(total);
   const m = fill(modeOverhead);
   const d = fill(discarded);
   const grandTotal = sum(t, m);
+  // Mirror useTotalUsage exactly: spentTotal = context + discarded + title gen.
+  const title = titleGeneration ? fill(titleGeneration) : undefined;
   return {
     total: t,
     modeOverhead: m,
     grandTotal,
     discarded: d,
     discardedResponseCount: discarded?.count ?? (d.totalTokens > 0 ? 1 : 0),
-    spentTotal: sum(grandTotal, d),
+    titleGeneration: title,
+    spentTotal: sum(grandTotal, d, title ?? fill()),
   };
 }
 
