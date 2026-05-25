@@ -11,38 +11,48 @@ import { TooltipProvider } from "@/components/Tooltip/Tooltip";
 
 import { ChatHeader } from "./ChatHeader";
 
-/** Helper to create TotalUsageResult with optional mode overhead */
+/** Helper to create TotalUsageResult with optional mode overhead and discarded usage */
 function makeUsage(
   total: Partial<MessageUsage>,
-  modeOverhead?: Partial<MessageUsage>
+  modeOverhead?: Partial<MessageUsage>,
+  discarded?: Partial<MessageUsage> & { count?: number },
+  titleGeneration?: Partial<MessageUsage>
 ): TotalUsageResult {
-  const t: MessageUsage = {
-    inputTokens: total.inputTokens ?? 0,
-    outputTokens: total.outputTokens ?? 0,
-    totalTokens: total.totalTokens ?? 0,
-    cost: total.cost,
-    cachedTokens: total.cachedTokens,
-    reasoningTokens: total.reasoningTokens,
-  };
-  const m: MessageUsage = {
-    inputTokens: modeOverhead?.inputTokens ?? 0,
-    outputTokens: modeOverhead?.outputTokens ?? 0,
-    totalTokens: modeOverhead?.totalTokens ?? 0,
-    cost: modeOverhead?.cost,
-    cachedTokens: modeOverhead?.cachedTokens,
-    reasoningTokens: modeOverhead?.reasoningTokens,
-  };
+  const fill = (u?: Partial<MessageUsage>): MessageUsage => ({
+    inputTokens: u?.inputTokens ?? 0,
+    outputTokens: u?.outputTokens ?? 0,
+    totalTokens: u?.totalTokens ?? 0,
+    cost: u?.cost,
+    cachedTokens: u?.cachedTokens,
+    reasoningTokens: u?.reasoningTokens,
+  });
+  // Initial value makes the contract explicit (and never throws on an empty call).
+  const sum = (...parts: MessageUsage[]): MessageUsage =>
+    parts.reduce(
+      (acc, p) => ({
+        inputTokens: acc.inputTokens + p.inputTokens,
+        outputTokens: acc.outputTokens + p.outputTokens,
+        totalTokens: acc.totalTokens + p.totalTokens,
+        cost: (acc.cost ?? 0) + (p.cost ?? 0),
+        cachedTokens: (acc.cachedTokens ?? 0) + (p.cachedTokens ?? 0),
+        reasoningTokens: (acc.reasoningTokens ?? 0) + (p.reasoningTokens ?? 0),
+      }),
+      fill()
+    );
+  const t = fill(total);
+  const m = fill(modeOverhead);
+  const d = fill(discarded);
+  const grandTotal = sum(t, m);
+  // Mirror useTotalUsage exactly: spentTotal = context + discarded + title gen.
+  const title = titleGeneration ? fill(titleGeneration) : undefined;
   return {
     total: t,
     modeOverhead: m,
-    grandTotal: {
-      inputTokens: t.inputTokens + m.inputTokens,
-      outputTokens: t.outputTokens + m.outputTokens,
-      totalTokens: t.totalTokens + m.totalTokens,
-      cost: (t.cost ?? 0) + (m.cost ?? 0),
-      cachedTokens: (t.cachedTokens ?? 0) + (m.cachedTokens ?? 0),
-      reasoningTokens: (t.reasoningTokens ?? 0) + (m.reasoningTokens ?? 0),
-    },
+    grandTotal,
+    discarded: d,
+    discardedResponseCount: discarded?.count ?? (d.totalTokens > 0 ? 1 : 0),
+    titleGeneration: title,
+    spentTotal: sum(grandTotal, d, title ?? fill()),
   };
 }
 

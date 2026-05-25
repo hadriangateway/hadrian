@@ -75,6 +75,18 @@ interface ConversationState {
    * Each instance can have its own label and parameters.
    */
   selectedInstances: ModelInstance[];
+  /**
+   * Session-only accumulator for usage of assistant responses that were removed
+   * from the conversation — discarded by edit-and-rerun (`deleteMessagesAfter`)
+   * or overwritten by regeneration (`replaceAssistantMessage`). These tokens were
+   * really spent but are no longer present in `messages`, so `useTotalUsage` would
+   * otherwise undercount them. Combines per-response usage and mode overhead.
+   *
+   * Reset whenever the conversation changes (load/switch/clear); not persisted.
+   */
+  discardedUsage: MessageUsage;
+  /** Number of discarded/regenerated assistant responses counted into `discardedUsage`. */
+  discardedResponseCount: number;
 }
 
 interface ConversationActions {
@@ -154,6 +166,8 @@ export const useConversationStore = create<ConversationStore>((set) => ({
   messages: [],
   selectedModels: [],
   selectedInstances: [],
+  discardedUsage: emptyUsage(),
+  discardedResponseCount: 0,
 
   setConversations: (conversations) => set({ conversations }),
 
@@ -166,6 +180,9 @@ export const useConversationStore = create<ConversationStore>((set) => ({
       messages: conversation?.messages ?? [],
       selectedModels: models,
       selectedInstances: instances,
+      // Switching conversations starts a fresh session-only discard tally.
+      discardedUsage: emptyUsage(),
+      discardedResponseCount: 0,
     });
   },
 
@@ -218,8 +235,17 @@ export const useConversationStore = create<ConversationStore>((set) => ({
     set((state) => {
       const messageIndex = state.messages.findIndex((m) => m.id === messageId);
       if (messageIndex === -1) return state;
+      // The dropped responses were really billed even though they leave the
+      // conversation — fold their usage into the session discard tally so
+      // "total spent" stays accurate after an edit-and-rerun.
+      const removed = state.messages.slice(messageIndex + 1);
+      const { discardedUsage, discardedResponseCount } = mergeDiscarded(state, removed);
       // Keep messages up to and including the specified message
-      return { messages: state.messages.slice(0, messageIndex + 1) };
+      return {
+        messages: state.messages.slice(0, messageIndex + 1),
+        discardedUsage,
+        discardedResponseCount,
+      };
     }),
 
   replaceAssistantMessage: (userMessageId, model, updates) =>
@@ -229,9 +255,13 @@ export const useConversationStore = create<ConversationStore>((set) => ({
       if (userIndex === -1) return state;
 
       let replaced = false;
+      // Usage of the response being overwritten by regeneration — billed but
+      // about to disappear, so it must be carried into the discard tally.
+      let discardDelta: ChatMessage[] = [];
       for (let i = userIndex + 1; i < messages.length; i++) {
         if (messages[i].role === "user") break;
         if (messages[i].role === "assistant" && messages[i].model === model) {
+          discardDelta = [messages[i]];
           messages[i] = {
             ...messages[i],
             ...updates,
@@ -258,7 +288,8 @@ export const useConversationStore = create<ConversationStore>((set) => ({
         });
       }
 
-      return { messages };
+      const { discardedUsage, discardedResponseCount } = mergeDiscarded(state, discardDelta);
+      return { messages, discardedUsage, discardedResponseCount };
     }),
 
   setMessageFeedback: (userMessageId, model, feedback) =>
@@ -311,9 +342,11 @@ export const useConversationStore = create<ConversationStore>((set) => ({
       return { messages };
     }),
 
-  clearMessages: () => set({ messages: [] }),
+  clearMessages: () =>
+    set({ messages: [], discardedUsage: emptyUsage(), discardedResponseCount: 0 }),
 
-  setMessages: (messages) => set({ messages }),
+  setMessages: (messages) =>
+    set({ messages, discardedUsage: emptyUsage(), discardedResponseCount: 0 }),
 
   setSelectedModels: (models) => {
     // Also update instances for backwards compatibility
@@ -507,14 +540,77 @@ function emptyUsage(): MessageUsage {
   };
 }
 
+/**
+ * Add a message's mode-specific overhead (router/synthesizer/vote/summary/
+ * decomposition/aggregate sub-calls) into an accumulator. Shared by the live
+ * usage tally and the discard tally so both count overhead identically.
+ */
+function addModeOverhead(acc: MessageUsage, meta: MessageModeMetadata | undefined): void {
+  if (!meta) return;
+  addUsage(acc, meta.routerUsage);
+  addUsage(acc, meta.synthesizerUsage);
+  addUsage(acc, meta.voteUsage);
+  addUsage(acc, meta.summaryUsage);
+  addUsage(acc, meta.decompositionUsage);
+  addUsage(acc, meta.aggregateUsage);
+}
+
+/**
+ * Fold the usage (response + mode overhead) of removed assistant messages into
+ * a fresh copy of the running discard accumulator. Returns the next
+ * `discardedUsage`/`discardedResponseCount` pair for a store update; the input
+ * accumulator is never mutated.
+ */
+function mergeDiscarded(
+  state: ConversationState,
+  removed: ChatMessage[]
+): { discardedUsage: MessageUsage; discardedResponseCount: number } {
+  const discardedUsage = emptyUsage();
+  addUsage(discardedUsage, state.discardedUsage);
+  let added = 0;
+  for (const msg of removed) {
+    if (msg.role !== "assistant") continue;
+    // Only count responses that carried billable data; placeholder/errored
+    // turns with neither usage nor overhead don't move the tally.
+    if (!msg.usage && !msg.modeMetadata) continue;
+    addUsage(discardedUsage, msg.usage);
+    addModeOverhead(discardedUsage, msg.modeMetadata);
+    added++;
+  }
+  return {
+    discardedUsage,
+    discardedResponseCount: state.discardedResponseCount + added,
+  };
+}
+
 /** Result from useTotalUsage including mode overhead breakdown */
 export interface TotalUsageResult {
-  /** Total usage from all message responses */
+  /** Total usage from all message responses currently in the conversation */
   total: MessageUsage;
   /** Aggregate usage from mode-specific overhead (routing, synthesis, voting, etc.) */
   modeOverhead: MessageUsage;
-  /** Combined total + modeOverhead */
+  /**
+   * Combined total + modeOverhead — the cost of the conversation **as it
+   * currently stands** (i.e. what re-sending it now would weigh). This is the
+   * "context" figure and excludes discarded responses and title generation.
+   */
   grandTotal: MessageUsage;
+  /**
+   * Usage of responses no longer in the conversation — those discarded by
+   * edit-and-rerun or overwritten by regeneration this session. Real spend
+   * that `grandTotal` no longer reflects.
+   */
+  discarded: MessageUsage;
+  /** Number of responses counted into `discarded`. */
+  discardedResponseCount: number;
+  /** Usage from automatic title generation, if any (lives on the conversation). */
+  titleGeneration?: MessageUsage;
+  /**
+   * Everything actually spent on this conversation this session:
+   * `grandTotal + discarded + titleGeneration`. This is the honest "total
+   * spent" figure; it can exceed `grandTotal` after edits/regenerations.
+   */
+  spentTotal: MessageUsage;
 }
 
 /**
@@ -532,6 +628,11 @@ export interface TotalUsageResult {
  */
 export const useTotalUsage = (): TotalUsageResult | null => {
   const messages = useMessages();
+  const discarded = useConversationStore((state) => state.discardedUsage);
+  const discardedResponseCount = useConversationStore((state) => state.discardedResponseCount);
+  const titleGeneration = useConversationStore(
+    (state) => state.currentConversation?.titleGenerationUsage
+  );
 
   return useMemo(() => {
     const total = emptyUsage();
@@ -540,29 +641,34 @@ export const useTotalUsage = (): TotalUsageResult | null => {
     for (const msg of messages) {
       // Add regular message usage
       addUsage(total, msg.usage);
-
       // Add mode-specific overhead from modeMetadata
-      const meta = msg.modeMetadata;
-      if (meta) {
-        addUsage(modeOverhead, meta.routerUsage);
-        addUsage(modeOverhead, meta.synthesizerUsage);
-        addUsage(modeOverhead, meta.voteUsage);
-        addUsage(modeOverhead, meta.summaryUsage);
-        addUsage(modeOverhead, meta.decompositionUsage);
-        addUsage(modeOverhead, meta.aggregateUsage);
-      }
+      addModeOverhead(modeOverhead, msg.modeMetadata);
     }
 
-    // Return null if no usage recorded
-    if (total.totalTokens === 0 && modeOverhead.totalTokens === 0) {
-      return null;
-    }
-
-    // Calculate grand total
+    // Calculate grand total (the "context" cost of the live conversation)
     const grandTotal = emptyUsage();
     addUsage(grandTotal, total);
     addUsage(grandTotal, modeOverhead);
 
-    return { total, modeOverhead, grandTotal };
-  }, [messages]);
+    // Total spent this session = context + discarded responses + title gen.
+    const spentTotal = emptyUsage();
+    addUsage(spentTotal, grandTotal);
+    addUsage(spentTotal, discarded);
+    addUsage(spentTotal, titleGeneration);
+
+    // Nothing has been spent yet anywhere — render nothing.
+    if (spentTotal.totalTokens === 0) {
+      return null;
+    }
+
+    return {
+      total,
+      modeOverhead,
+      grandTotal,
+      discarded,
+      discardedResponseCount,
+      titleGeneration,
+      spentTotal,
+    };
+  }, [messages, discarded, discardedResponseCount, titleGeneration]);
 };

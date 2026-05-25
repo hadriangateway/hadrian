@@ -212,20 +212,11 @@ export function ChatHeader({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="text-[10px] sm:text-xs text-muted-foreground cursor-help px-1.5 sm:px-2 py-1 rounded bg-muted/50 whitespace-nowrap">
-                    {formatTokens(
-                      totalUsage.grandTotal.totalTokens +
-                        (conversation?.titleGenerationUsage?.totalTokens ?? 0)
-                    )}
+                    {formatTokens(totalUsage.spentTotal.totalTokens)}
                     <span className="hidden sm:inline"> tokens</span>
-                    {(totalUsage.grandTotal.cost ?? 0) +
-                      (conversation?.titleGenerationUsage?.cost ?? 0) >
-                      0 && (
+                    {(totalUsage.spentTotal.cost ?? 0) > 0 && (
                       <span className="ml-1 sm:ml-1.5 text-muted-foreground">
-                        ·{" "}
-                        {formatCost(
-                          (totalUsage.grandTotal.cost ?? 0) +
-                            (conversation?.titleGenerationUsage?.cost ?? 0)
-                        )}
+                        · {formatCost(totalUsage.spentTotal.cost ?? 0)}
                       </span>
                     )}
                   </span>
@@ -233,6 +224,15 @@ export function ChatHeader({
                 <TooltipContent side="bottom" className="text-xs">
                   <div className="space-y-1">
                     <div className="font-medium">Conversation Usage</div>
+                    {/* Context = the live conversation as it currently stands. */}
+                    <div className="font-medium text-muted-foreground">
+                      Context (current): {formatTokens(totalUsage.grandTotal.totalTokens)} tokens
+                      {(totalUsage.grandTotal.cost ?? 0) > 0 && (
+                        <span className="ml-1">
+                          · {formatCost(totalUsage.grandTotal.cost ?? 0)}
+                        </span>
+                      )}
+                    </div>
                     <div>Input: {formatTokens(totalUsage.total.inputTokens)} tokens</div>
                     <div>Output: {formatTokens(totalUsage.total.outputTokens)} tokens</div>
                     {totalUsage.total.cachedTokens !== undefined &&
@@ -259,31 +259,50 @@ export function ChatHeader({
                         </div>
                       </div>
                     )}
-                    {conversation?.titleGenerationUsage && (
+                    {/* Spend that left the conversation via edit-and-rerun or regeneration. */}
+                    {totalUsage.discarded.totalTokens > 0 && (
+                      <div className="pt-1 border-t border-border/50">
+                        <div className="font-medium text-muted-foreground">
+                          Edited / regenerated
+                        </div>
+                        <div>
+                          {formatTokens(totalUsage.discarded.totalTokens)} tokens
+                          {totalUsage.discarded.cost !== undefined &&
+                            totalUsage.discarded.cost > 0 && (
+                              <span className="ml-1">
+                                · {formatCost(totalUsage.discarded.cost)}
+                              </span>
+                            )}
+                          {totalUsage.discardedResponseCount > 0 && (
+                            <span className="ml-1 text-muted-foreground">
+                              ({totalUsage.discardedResponseCount} discarded)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {totalUsage.titleGeneration && (
                       <div className="pt-1 border-t border-border/50">
                         <div className="font-medium text-muted-foreground">Title Generation</div>
                         <div>
-                          {formatTokens(conversation.titleGenerationUsage.totalTokens)} tokens
-                          {conversation.titleGenerationUsage.cost !== undefined &&
-                            conversation.titleGenerationUsage.cost > 0 && (
+                          {formatTokens(totalUsage.titleGeneration.totalTokens)} tokens
+                          {totalUsage.titleGeneration.cost !== undefined &&
+                            totalUsage.titleGeneration.cost > 0 && (
                               <span className="ml-1">
-                                · {formatCost(conversation.titleGenerationUsage.cost)}
+                                · {formatCost(totalUsage.titleGeneration.cost)}
                               </span>
                             )}
                         </div>
                       </div>
                     )}
-                    {(totalUsage.grandTotal.cost ?? 0) +
-                      (conversation?.titleGenerationUsage?.cost ?? 0) >
-                      0 && (
-                      <div className="pt-1 border-t border-border/50">
-                        Total Cost:{" "}
-                        {formatCost(
-                          (totalUsage.grandTotal.cost ?? 0) +
-                            (conversation?.titleGenerationUsage?.cost ?? 0)
-                        )}
-                      </div>
-                    )}
+                    <div className="pt-1 border-t border-border/50 font-medium">
+                      Total spent: {formatTokens(totalUsage.spentTotal.totalTokens)} tokens
+                      {(totalUsage.spentTotal.cost ?? 0) > 0 && (
+                        <span className="ml-1">
+                          · {formatCost(totalUsage.spentTotal.cost ?? 0)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </TooltipContent>
               </Tooltip>
