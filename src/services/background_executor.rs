@@ -152,6 +152,11 @@ pub async fn execute_persisted_response(
     // that step, so the queued row still carries the original chain link).
     // Hadrian owns chaining for every provider, so this must run here too or
     // background turns would lose all prior context.
+    //
+    // Stash the original chain link before reconstruction clears it: the
+    // skills-union and container_id_hint lookups below still need it to resolve
+    // which container this turn chains off of.
+    let original_previous_response_id = payload.previous_response_id.clone();
     if let Some(prev_id) = payload.previous_response_id.clone() {
         let reconstructed = crate::services::responses_chain::reconstruct_input(
             &store,
@@ -218,7 +223,7 @@ pub async fn execute_persisted_response(
     if let Some(svc) = state.containers_service.as_ref() {
         let candidate_container_id: Option<String> = match (
             resolved_shell_env_pre.referenced_container_id.as_deref(),
-            payload.previous_response_id.as_deref(),
+            original_previous_response_id.as_deref(),
         ) {
             (Some(referenced), _) => Some(referenced.to_string()),
             (None, Some(prev)) => store
@@ -395,9 +400,10 @@ pub async fn execute_persisted_response(
     } else {
         // Implicit chaining via `previous_response_id`. Any
         // non-active prior container silently falls back to a fresh
-        // one rather than erroring.
+        // one rather than erroring. Reconstruction cleared
+        // `payload.previous_response_id`, so use the stashed original.
         match (
-            payload.previous_response_id.as_deref(),
+            original_previous_response_id.as_deref(),
             state.containers_service.as_ref(),
         ) {
             (Some(prev_id), Some(containers_svc)) => {

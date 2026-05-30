@@ -2457,8 +2457,13 @@ pub async fn api_v1_responses(
             // chaining. Walking the prior response's row gives us a
             // clean fall-through path when the container has expired
             // or been deleted — we silently start fresh.
+            //
+            // Use `original_previous_response_id`: reconstruction above
+            // already cleared `payload.previous_response_id` (so nothing
+            // is forwarded upstream), but the chain link is exactly what
+            // tells us which container to resume.
             match (
-                payload.previous_response_id.as_deref(),
+                original_previous_response_id.as_deref(),
                 principal.org_id,
                 state.responses_store.as_ref(),
                 state.containers_service.as_ref(),
