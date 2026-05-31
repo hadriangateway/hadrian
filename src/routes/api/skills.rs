@@ -612,6 +612,9 @@ fn files_from_multipart(
         return skill_zip::unpack_zip_to_files(&raw[0].2, max_bytes, max_files).map_err(zip_err);
     }
 
+    // Directory upload: the zip branch enforces the cap inside the unpacker, so
+    // bound the part count here.
+    check_file_count(raw.len(), max_files)?;
     let mut files = Vec::with_capacity(raw.len());
     for (name, ct, bytes) in raw {
         if name.is_empty() {
@@ -638,6 +641,21 @@ fn files_from_multipart(
         });
     }
     Ok(files)
+}
+
+/// Reject bundles whose file count exceeds the per-skill cap. Enforced on
+/// every upload path (JSON, multipart directory, zip) so none can flood the
+/// `skill_version_files` table with many tiny rows while staying under the
+/// byte budget.
+fn check_file_count(count: usize, max_files: usize) -> Result<(), ApiError> {
+    if count > max_files {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_many_files",
+            format!("skill bundle exceeds the maximum of {max_files} files"),
+        ));
+    }
+    Ok(())
 }
 
 fn owner_from_parts(owner_type: &str, owner_id: Uuid) -> Result<SkillOwner, ApiError> {
@@ -683,6 +701,7 @@ async fn parse_create_body(
             .await
             .map_err(json_err)?;
         let body: CreateSkillBody = serde_json::from_slice(&bytes).map_err(json_err)?;
+        check_file_count(body.files.len(), max_files)?;
         Ok(ParsedSkillBody {
             owner: body.owner,
             name: body.name,
@@ -722,6 +741,7 @@ async fn parse_version_body(
             .await
             .map_err(json_err)?;
         let body: CreateSkillVersionBody = serde_json::from_slice(&bytes).map_err(json_err)?;
+        check_file_count(body.files.len(), max_files)?;
         Ok(ParsedSkillBody {
             description: body.description,
             user_invocable: body.user_invocable,

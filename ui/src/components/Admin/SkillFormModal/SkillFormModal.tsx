@@ -235,10 +235,15 @@ export function SkillFormModal({
             : "Failed to save skill"
         );
       }
+      // `skillCreateVersion` returns a version, not the skill projection.
+      // Re-fetch the skill so `onSaved` sees the new default_version/files
+      // rather than the stale pre-edit object.
+      const refreshed = await skillGet({ path: { skill_id: id } });
+      return (refreshed.data ?? editingSkill) as SkillResource;
     },
-    onSuccess: () => {
+    onSuccess: (skill) => {
       invalidateSkillQueries();
-      onSaved?.(editingSkill as SkillResource);
+      onSaved?.(skill);
       onClose();
     },
   });
