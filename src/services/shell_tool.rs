@@ -849,7 +849,12 @@ fn render_shell_output_text(item: &ShellCallOutputItem) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     if !item.output_files.is_empty() {
-        combined.push_str("\noutput_files:\n");
+        // Only separate from the chunk text when there is some; an empty
+        // `output` array (no chunks) would otherwise leave a leading newline.
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str("output_files:\n");
         for f in &item.output_files {
             combined.push_str(&format!("- {} ({} bytes)\n", f.path, f.bytes));
         }
@@ -3029,14 +3034,13 @@ mod tests {
             panic!("expected items input");
         };
         assert_eq!(items.len(), 3);
-        // The user message is preserved (not a tool item).
-        assert!(!matches!(
-            items[0],
-            ResponsesInputItem::ShellCall(_)
-                | ResponsesInputItem::ShellCallOutput(_)
-                | ResponsesInputItem::OutputFunctionCall(_)
-                | ResponsesInputItem::FunctionCallOutput(_)
-        ));
+        // The user message is preserved as-is. A bare-string `content`
+        // with no `type` deserializes to the `EasyMessage` variant.
+        assert!(
+            matches!(items[0], ResponsesInputItem::EasyMessage(_)),
+            "expected user message at index 0, got {:?}",
+            items[0]
+        );
         // shell_call → function_call with reconstructed `shell` arguments,
         // pairing preserved via call_id.
         let ResponsesInputItem::OutputFunctionCall(call) = &items[1] else {
