@@ -227,7 +227,7 @@ GET    /v1/containers/{cntr_id}/files/{id}/content     # Raw bytes
     "allowed_domains": ["pypi.org"]
   },
   "skills": [
-    { "type": "skill_reference", "skill_id": "<uuid>", "version": "latest" },
+    { "type": "skill_reference", "skill_id": "skill_…", "version": "latest" },
     {
       "type": "inline",
       "name": "extract-csv",
@@ -242,12 +242,14 @@ GET    /v1/containers/{cntr_id}/files/{id}/content     # Raw bytes
 }
 ```
 
-`skill_reference` resolves to a stored skill by UUID. `inline` carries the bundle on
-the request itself — today only `media_type: "text/markdown"` is supported (decoded as
-the synthetic `SKILL.md`); multi-file (`application/zip`) inline skills reject with
-`unsupported_inline_skill_media_type`. `version` accepts `"latest"` only — passing
-anything else rejects with `unsupported_skill_version` so a future versioned-skills
-release doesn't silently downgrade requests that wanted a pin.
+`skill_reference` resolves to a skill stored via [`/v1/skills`](/docs/features/skills) —
+`skill_id` accepts a prefixed id (`skill_…`), a bare UUID, or the skill's name slug, all
+scoped to the caller's organization. `version` is a positive integer or `"latest"`; omit
+it for the skill's default version. An unknown or malformed version rejects with
+`unsupported_skill_version`. `inline` carries the bundle on the request itself — today
+only `media_type: "text/markdown"` is supported (decoded as the synthetic `SKILL.md`);
+multi-file (`application/zip`) inline skills reject with
+`unsupported_inline_skill_media_type`.
 
 Containers can also be enumerated:
 

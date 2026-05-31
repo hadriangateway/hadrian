@@ -313,20 +313,28 @@ async fn enforce_authz(
 fn validate_skill_entry(entry: &crate::api_types::RequestSkill) -> Result<(), ApiError> {
     match entry {
         crate::api_types::RequestSkill::SkillReference(reference) => {
-            Uuid::parse_str(&reference.skill_id).map_err(|_| {
-                ApiError::new(
+            // A reference is addressed by a prefixed (`skill_…`) or bare UUID,
+            // or by a skill name slug. Existence is resolved at request time.
+            let id_ok = reference.skill_id.parse::<crate::models::SkillId>().is_ok();
+            if !id_ok && crate::models::validate_skill_name(&reference.skill_id).is_err() {
+                return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "invalid_skill_id",
-                    format!("skill id '{}' is not a valid UUID", reference.skill_id),
-                )
-            })?;
+                    format!(
+                        "skill id '{}' is not a valid skill id or name",
+                        reference.skill_id
+                    ),
+                ));
+            }
+            // Version: omit, `latest`, or a positive integer.
             if let Some(v) = reference.version.as_deref()
                 && v != "latest"
+                && !matches!(v.parse::<i64>(), Ok(n) if n > 0)
             {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "unsupported_skill_version",
-                    format!("only `version = \"latest\"` is supported (got `{v}`)"),
+                    format!("invalid skill version `{v}`; use a positive integer or `latest`"),
                 ));
             }
             Ok(())
@@ -351,7 +359,7 @@ fn validate_skill_entry(entry: &crate::api_types::RequestSkill) -> Result<(), Ap
                 ));
             }
             use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD
+            let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.as_bytes())
                 .map_err(|e| {
                     ApiError::new(
@@ -360,6 +368,15 @@ fn validate_skill_entry(entry: &crate::api_types::RequestSkill) -> Result<(), Ap
                         format!("inline skill `{}` base64: {e}", inline.name),
                     )
                 })?;
+            // Mirror the resolver: text/markdown payloads must be valid UTF-8,
+            // so reject early rather than failing later at mount time.
+            if std::str::from_utf8(&bytes).is_err() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_inline_skill",
+                    format!("inline skill `{}` payload is not valid UTF-8", inline.name),
+                ));
+            }
             Ok(())
         }
     }

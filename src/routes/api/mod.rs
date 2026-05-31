@@ -37,6 +37,8 @@ mod images;
 mod models;
 #[cfg(feature = "server")]
 pub mod responses_lookup;
+#[cfg(feature = "server")]
+pub mod skills;
 pub(crate) mod tools;
 mod vector_stores;
 
@@ -370,9 +372,15 @@ fn check_resource_access(
                     .unwrap_or(false)
         }
         VectorStoreOwnerType::Team => {
-            // Team membership check requires database lookup
-            // For now, return false - team access must be verified via database
-            false
+            // Check identity team membership or API key team ownership
+            auth.identity()
+                .map(|i| i.team_ids.contains(&owner_id.to_string()))
+                .unwrap_or(false)
+                || auth
+                    .api_key()
+                    .and_then(|k| k.team_id)
+                    .map(|id| id == owner_id)
+                    .unwrap_or(false)
         }
         VectorStoreOwnerType::Project => {
             // Check identity project membership or API key project ownership
@@ -824,6 +832,7 @@ fn get_services(state: &AppState) -> Result<&Services, ApiError> {
 pub(crate) struct ApiBodyLimits {
     pub audio: usize,
     pub files: usize,
+    pub skills: usize,
 }
 
 #[cfg(any(feature = "server", feature = "wasm"))]
@@ -833,6 +842,7 @@ impl Default for ApiBodyLimits {
         Self {
             audio: 100 * 1024 * 1024,
             files: 512 * 1024 * 1024,
+            skills: 64 * 1024 * 1024,
         }
     }
 }
@@ -919,6 +929,41 @@ pub(crate) fn api_v1_routes(limits: ApiBodyLimits) -> Router<AppState> {
     );
     #[cfg(not(feature = "server"))]
     let router = router.route("/v1/files", get(api_v1_files_list));
+    // Skills API (OpenAI-compatible). Server-only: uploads parse multipart/zip
+    // and downloads emit zip. Create/version-create get the larger body cap.
+    #[cfg(feature = "server")]
+    let router = router
+        .route(
+            "/v1/skills",
+            post(skills::api_v1_skills_create)
+                .layer(DefaultBodyLimit::max(limits.skills))
+                .merge(get(skills::api_v1_skills_list)),
+        )
+        .route(
+            "/v1/skills/{skill_id}",
+            get(skills::api_v1_skills_get)
+                .merge(post(skills::api_v1_skills_set_default))
+                .merge(delete(skills::api_v1_skills_delete)),
+        )
+        .route(
+            "/v1/skills/{skill_id}/content",
+            get(skills::api_v1_skills_get_content),
+        )
+        .route(
+            "/v1/skills/{skill_id}/versions",
+            post(skills::api_v1_skills_create_version)
+                .layer(DefaultBodyLimit::max(limits.skills))
+                .merge(get(skills::api_v1_skills_list_versions)),
+        )
+        .route(
+            "/v1/skills/{skill_id}/versions/{version}",
+            get(skills::api_v1_skills_get_version)
+                .merge(delete(skills::api_v1_skills_delete_version)),
+        )
+        .route(
+            "/v1/skills/{skill_id}/versions/{version}/content",
+            get(skills::api_v1_skills_get_version_content),
+        );
     router
         .route(
             "/v1/files/{file_id}",
@@ -976,6 +1021,7 @@ pub fn get_api_routes(state: AppState) -> Router<AppState> {
     let limits = ApiBodyLimits {
         audio: state.config.server.audio_body_limit_bytes,
         files: state.config.server.files_body_limit_bytes,
+        skills: state.config.server.skills_body_limit_bytes,
     };
     api_v1_routes(limits)
         // Apply middleware layers in order (ServiceBuilder runs top-to-bottom):

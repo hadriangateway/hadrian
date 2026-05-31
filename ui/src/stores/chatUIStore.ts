@@ -149,6 +149,13 @@ interface ChatUIState {
    */
   enabledSkillIds: string[];
   /**
+   * Id of a skill the user just invoked via slash command whose `SKILL.md`
+   * should be seeded directly into the next outgoing request, so the skill
+   * loads deterministically instead of relying on the model to call the tool.
+   * Consumed and cleared by `sendMessage`.
+   */
+  pendingSkillId: string | null;
+  /**
    * Data files registered with DuckDB for SQL queries.
    * Files are registered in-memory and reset on page reload.
    */
@@ -304,8 +311,13 @@ interface ChatUIActions {
   enableTool: (toolId: string) => void;
   /** Toggle a skill's enabled state for this session. */
   toggleSkill: (skillId: string) => void;
-  /** Enable a skill (no-op if already enabled). */
-  enableSkill: (skillId: string) => void;
+  /**
+   * Mark a skill as explicitly user-invoked (via slash command): enables it and
+   * queues its `SKILL.md` to be seeded directly into the next request.
+   */
+  markSkillUserInvoked: (skillId: string) => void;
+  /** Clear the queued pending-skill seed (after it's consumed or dismissed). */
+  clearPendingSkill: () => void;
   /** Replace the full set of enabled skills. */
   setEnabledSkillIds: (ids: string[]) => void;
   /** Disable a specific tool */
@@ -429,6 +441,7 @@ const initialState: ChatUIState = {
   clientSideRAG: false,
   enabledTools: [],
   enabledSkillIds: [],
+  pendingSkillId: null,
   dataFiles: [],
   maxToolIterations: 25,
   captureRawSSEEvents: false,
@@ -599,18 +612,27 @@ export const useChatUIStore = create<ChatUIStore>((set) => ({
     })),
 
   toggleSkill: (skillId) =>
-    set((state) => ({
-      enabledSkillIds: state.enabledSkillIds.includes(skillId)
-        ? state.enabledSkillIds.filter((id) => id !== skillId)
-        : [...state.enabledSkillIds, skillId],
-    })),
+    set((state) => {
+      const willDisable = state.enabledSkillIds.includes(skillId);
+      return {
+        enabledSkillIds: willDisable
+          ? state.enabledSkillIds.filter((id) => id !== skillId)
+          : [...state.enabledSkillIds, skillId],
+        // Disabling a skill also drops any queued seed for it.
+        pendingSkillId:
+          willDisable && state.pendingSkillId === skillId ? null : state.pendingSkillId,
+      };
+    }),
 
-  enableSkill: (skillId) =>
+  markSkillUserInvoked: (skillId) =>
     set((state) => ({
       enabledSkillIds: state.enabledSkillIds.includes(skillId)
         ? state.enabledSkillIds
         : [...state.enabledSkillIds, skillId],
+      pendingSkillId: skillId,
     })),
+
+  clearPendingSkill: () => set({ pendingSkillId: null }),
 
   setEnabledSkillIds: (ids) => set({ enabledSkillIds: ids }),
 

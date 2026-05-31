@@ -20,8 +20,8 @@ function utf8ByteLength(content: string): number {
 
 /**
  * A skill discovered in a GitHub repository, ready to be sent to
- * `skillCreate`. Fields mirror the server's `CreateSkill` minus the owner
- * (owner is injected at import time).
+ * `skillCreate`. Fields mirror the server's `CreateSkillBody` minus the
+ * owner (owner is injected at import time).
  */
 export interface DiscoveredSkill {
   /** Relative path of the SKILL.md inside the repo. Used for keying. */

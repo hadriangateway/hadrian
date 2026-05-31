@@ -1,4 +1,4 @@
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 
 /**
  * Build the `Skill` tool's description: a directory of every enabled skill
@@ -9,7 +9,7 @@ import type { Skill } from "@/api/generated/types.gen";
  * where a single `Skill` tool's description carries the catalog. Skills are
  * NOT injected into the system prompt — they live in the tool description.
  */
-export function buildSkillToolDescription(skills: Skill[]): string {
+export function buildSkillToolDescription(skills: SkillResource[]): string {
   if (skills.length === 0) {
     return "Invoke a skill by name.";
   }

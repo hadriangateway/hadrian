@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Brain } from "lucide-react";
 
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 import { SkillOwnerBadge } from "@/components/SkillsButton/SkillOwnerBadge";
 import { matchSkills } from "@/pages/chat/utils/slashCommandMatcher";
 
 export interface SlashCommandPopoverProps {
   /** All skills the current user can invoke. */
-  skills: Skill[];
+  skills: SkillResource[];
   /** Current query (text after the leading `/`). */
   query: string;
   /** Currently highlighted row (0-indexed). */
   activeIndex: number;
   /** Called when the user picks a skill. */
-  onSelect: (skill: Skill) => void;
+  onSelect: (skill: SkillResource) => void;
   /** Called with the filtered list length so parent can clamp `activeIndex`. */
-  onMatchesChange: (matches: Skill[]) => void;
+  onMatchesChange: (matches: SkillResource[]) => void;
 }
 
 export function SlashCommandPopover({

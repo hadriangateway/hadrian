@@ -1,7 +1,7 @@
 import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
 import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 import {
   Dropdown,
   DropdownContent,
@@ -11,7 +11,7 @@ import {
 import { SkillOwnerBadge } from "@/components/SkillsButton/SkillOwnerBadge";
 import { formatDateTime } from "@/utils/formatters";
 
-const columnHelper = createColumnHelper<Skill>();
+const columnHelper = createColumnHelper<SkillResource>();
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -20,9 +20,9 @@ function formatBytes(n: number): string {
 }
 
 export function createSkillColumns(
-  onEdit: (skill: Skill) => void,
-  onDelete: (skill: Skill) => void
-): ColumnDef<Skill, unknown>[] {
+  onEdit: (skill: SkillResource) => void,
+  onDelete: (skill: SkillResource) => void
+): ColumnDef<SkillResource, unknown>[] {
   return [
     columnHelper.accessor("name", {
       header: "Name",
@@ -57,7 +57,7 @@ export function createSkillColumns(
     }),
     columnHelper.accessor("created_at", {
       header: "Created",
-      cell: (info) => formatDateTime(info.getValue()),
+      cell: (info) => formatDateTime(new Date(info.getValue() * 1000)),
     }),
     columnHelper.display({
       id: "actions",
@@ -79,5 +79,5 @@ export function createSkillColumns(
         </Dropdown>
       ),
     }),
-  ] as ColumnDef<Skill, unknown>[];
+  ] as ColumnDef<SkillResource, unknown>[];
 }

@@ -2005,10 +2005,11 @@ pub async fn api_v1_responses(
             SRE::NoService => "skills_not_configured",
             SRE::Db(_) => "skill_lookup_failed",
         };
-        let status = if matches!(e, SRE::Db(_)) {
-            StatusCode::INTERNAL_SERVER_ERROR
-        } else {
-            StatusCode::BAD_REQUEST
+        let status = match &e {
+            SRE::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // Gateway misconfiguration, not a client error.
+            SRE::NoService => StatusCode::NOT_IMPLEMENTED,
+            _ => StatusCode::BAD_REQUEST,
         };
         ApiError::new(status, code, e.to_string())
     })?;

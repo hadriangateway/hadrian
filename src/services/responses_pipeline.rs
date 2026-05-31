@@ -22,7 +22,9 @@ use crate::{
     auth::AuthenticatedRequest,
     config::ProviderConfig,
     db::repos::ResponseOwner,
-    models::{ApiKeyOwner, SKILL_MAIN_FILE},
+    models::{
+        ApiKeyOwner, SKILL_MAIN_FILE, SkillId, SkillRef, VersionSelector, validate_skill_name,
+    },
     routes::{
         api::wrap_streaming_with_guardrails,
         execution::{ProviderExecutor, ResponsesExecutor},
@@ -133,7 +135,7 @@ pub enum SkillResolutionError {
     NoService,
     #[error("skill lookup failed: {0}")]
     Db(String),
-    #[error("only `version = \"latest\"` is supported (got `{0}`)")]
+    #[error("invalid skill version `{0}`; use a positive integer or `latest`")]
     UnsupportedVersion(String),
     #[error("inline skill `{name}` has invalid base64 data: {detail}")]
     InvalidBase64 { name: String, detail: String },
@@ -244,35 +246,48 @@ async fn resolve_one_skill(
 ) -> Result<ResolvedSkill, SkillResolutionError> {
     match entry {
         crate::api_types::RequestSkill::SkillReference(reference) => {
-            // Version pin: only `latest` (and the absence of a value)
-            // are honored today. Reject anything else loudly so callers
-            // discover the gap instead of silently getting `latest`.
-            if let Some(v) = reference.version.as_deref()
-                && v != "latest"
-            {
-                return Err(SkillResolutionError::UnsupportedVersion(v.to_string()));
-            }
             let services = state
                 .services
                 .as_ref()
                 .ok_or(SkillResolutionError::NoService)?;
             let org = org_id.ok_or(SkillResolutionError::MissingOrg)?;
-            let id = Uuid::parse_str(&reference.skill_id)
-                .map_err(|_| SkillResolutionError::InvalidId(reference.skill_id.clone()))?;
-            let skill = services
+
+            // Version selector: omit → default, `latest` → newest, a positive
+            // integer → that exact version. Anything else is rejected loudly.
+            let selector = match reference.version.as_deref() {
+                None => VersionSelector::Default,
+                Some("latest") => VersionSelector::Latest,
+                Some(v) => match v.parse::<i64>() {
+                    Ok(n) if n > 0 => VersionSelector::Exact(n),
+                    _ => return Err(SkillResolutionError::UnsupportedVersion(v.to_string())),
+                },
+            };
+
+            // Reference: a prefixed (`skill_…`) or bare UUID, else a name slug.
+            let skill_ref = match reference.skill_id.parse::<SkillId>() {
+                Ok(id) => SkillRef::Id(id.into_inner()),
+                Err(_) if validate_skill_name(&reference.skill_id).is_ok() => {
+                    SkillRef::Name(reference.skill_id.clone())
+                }
+                Err(_) => {
+                    return Err(SkillResolutionError::InvalidId(reference.skill_id.clone()));
+                }
+            };
+
+            let version = services
                 .skills
-                .get_by_id_and_org(id, org)
+                .resolve_version_for_reference(skill_ref, selector, org)
                 .await
                 .map_err(|e| SkillResolutionError::Db(e.to_string()))?
                 .ok_or_else(|| SkillResolutionError::NotFound(reference.skill_id.clone()))?;
 
-            let mount_path = format!("/skills/{}", skill.id);
-            let main_content = skill
+            let mount_path = format!("/skills/{}", version.skill_id);
+            let main_content = version
                 .files
                 .iter()
                 .find(|f| f.path == SKILL_MAIN_FILE)
                 .map(|f| f.content.clone());
-            let files = skill
+            let files = version
                 .files
                 .iter()
                 .map(|f| MountedFile {
@@ -281,9 +296,9 @@ async fn resolve_one_skill(
                 })
                 .collect();
             Ok(ResolvedSkill {
-                skill_id: skill.id.to_string(),
-                name: skill.name,
-                description: skill.description,
+                skill_id: version.skill_id.to_string(),
+                name: version.name,
+                description: version.description,
                 mount_path,
                 files,
                 main_content,

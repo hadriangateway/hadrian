@@ -1,15 +1,13 @@
 import { useMemo } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   organizationListOptions,
-  skillListByOrgOptions,
-  skillListByUserOptions,
+  skillListOptions,
 } from "@/api/generated/@tanstack/react-query.gen";
-import type { Organization, Skill } from "@/api/generated/types.gen";
-import { useAuth } from "@/auth";
+import type { Organization, SkillResource } from "@/api/generated/types.gen";
 
-export interface SkillWithContext extends Skill {
+export interface SkillWithContext extends SkillResource {
   /** Org this skill is accessible through (for org/team/project-owned skills). */
   org_id?: string;
   org_slug?: string;
@@ -25,27 +23,22 @@ export interface UseUserSkillsResult {
 }
 
 /**
- * Fetch every skill accessible to the current user: their own, plus skills
- * reachable through each organization they belong to (the backend returns
- * org- team- and project-scoped skills together). Deduplicated by id.
+ * Fetch every skill accessible to the current principal. The `/v1/skills`
+ * endpoint, called with no owner filter, returns the full accessible set
+ * (the principal's own skills plus any org-, team-, and project-scoped
+ * skills they can reach) in a single request. Deduplicated by id.
  *
  * Skills are returned with `files_manifest` populated but file contents
  * omitted — call `skillGet` for the full body.
  */
 export function useUserSkills(): UseUserSkillsResult {
-  const { user } = useAuth();
-
   const {
-    data: userSkillsData,
-    isLoading: userSkillsLoading,
-    error: userSkillsError,
+    data: skillsData,
+    isLoading: skillsLoading,
+    error: skillsError,
   } = useQuery({
-    ...skillListByUserOptions({
-      path: { user_id: user?.id ?? "" },
-      query: { limit: 50 },
-    }),
+    ...skillListOptions({ query: { limit: 50 } }),
     staleTime: 5 * 60 * 1000,
-    enabled: !!user?.id,
   });
 
   const {
@@ -59,53 +52,31 @@ export function useUserSkills(): UseUserSkillsResult {
 
   const organizations = useMemo(() => orgsData?.data ?? [], [orgsData?.data]);
 
-  const orgQueries = useQueries({
-    queries: organizations.map((org) => ({
-      ...skillListByOrgOptions({
-        path: { org_slug: org.slug },
-        query: { limit: 50 },
-      }),
-      staleTime: 5 * 60 * 1000,
-      enabled: organizations.length > 0,
-    })),
-  });
-
   const skills = useMemo(() => {
+    // Resolve org context for org-owned skills by matching `owner_id`
+    // against the org list. Team/project owners don't carry an org id on
+    // the resource, so they render without an org name (still labelled by
+    // their owner type via `SkillOwnerBadge`).
+    const orgById = new Map(organizations.map((o) => [o.id, o]));
+
     const seen = new Set<string>();
     const result: SkillWithContext[] = [];
 
-    for (const s of userSkillsData?.data ?? []) {
-      if (!seen.has(s.id)) {
-        seen.add(s.id);
-        result.push(s);
-      }
-    }
+    for (const s of skillsData?.data ?? []) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
 
-    for (let i = 0; i < organizations.length; i++) {
-      const org = organizations[i];
-      for (const s of orgQueries[i]?.data?.data ?? []) {
-        if (!seen.has(s.id)) {
-          seen.add(s.id);
-          result.push({
-            ...s,
-            org_id: org.id,
-            org_slug: org.slug,
-            org_name: org.name,
-          });
-        }
-      }
+      const org = s.owner_type === "organization" ? orgById.get(s.owner_id) : undefined;
+      result.push(org ? { ...s, org_id: org.id, org_slug: org.slug, org_name: org.name } : s);
     }
 
     result.sort((a, b) => a.name.localeCompare(b.name));
     return result;
-  }, [userSkillsData?.data, organizations, orgQueries]);
+  }, [skillsData?.data, organizations]);
 
-  const isLoading = userSkillsLoading || orgsLoading || orgQueries.some((q) => q.isLoading);
-  const queryError = orgQueries.find((q) => q.error)?.error;
-  const error = userSkillsError ?? orgsError ?? queryError ?? null;
-  const hasMore =
-    (userSkillsData?.pagination?.has_more ?? false) ||
-    orgQueries.some((q) => q.data?.pagination?.has_more === true);
+  const isLoading = skillsLoading || orgsLoading;
+  const error = skillsError ?? orgsError ?? null;
+  const hasMore = skillsData?.has_more ?? false;
 
   return {
     skills,

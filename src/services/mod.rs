@@ -64,6 +64,8 @@ pub mod server_tools;
 mod service_accounts;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shell_tool;
+#[cfg(feature = "server")]
+pub mod skill_zip;
 mod skills;
 #[cfg(feature = "sso")]
 mod sso_group_mappings;

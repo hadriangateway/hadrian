@@ -49,9 +49,11 @@ import {
   type ToolExecutorContext,
 } from "./utils/toolExecutors";
 import { buildSkillToolDescription } from "./utils/skillDirectory";
-import type { Skill } from "@/api/generated/types.gen";
+import { loadSkillSeed } from "./utils/skillExecutor";
+import type { SkillResource } from "@/api/generated/types.gen";
 import { getToolStatusLabel } from "@/components/ToolIcons";
 import { useMCPStore } from "@/stores/mcpStore";
+import { useChatUIStore } from "@/stores/chatUIStore";
 import {
   sendChainedMode,
   sendRoutedMode,
@@ -136,7 +138,7 @@ interface UseChatOptions {
    * intent against them. Full SKILL.md bodies are loaded on demand via
    * the frontend `Skill` tool executor (see `skillExecutor.ts`).
    */
-  enabledSkills?: Skill[];
+  enabledSkills?: SkillResource[];
   /**
    * Data files registered with DuckDB for SQL queries.
    * Used to build dynamic tool description with schema information.
@@ -219,6 +221,24 @@ function buildApiContent(content: string, files?: ChatFile[]): string | unknown[
  */
 function messageToApiInput(msg: ChatMessage): { role: string; content: string | unknown[] } {
   return { role: msg.role, content: buildApiContent(msg.content, msg.files) };
+}
+
+/**
+ * Prepend an explicitly slash-invoked skill's `SKILL.md` to the outgoing
+ * request content so the skill loads deterministically, instead of nudging the
+ * model to call the `Skill` tool. The user's displayed message stays clean;
+ * only the API content carries the skill block.
+ */
+function seedSkillIntoApiContent(
+  apiContent: string | unknown[],
+  name: string,
+  text: string
+): string | unknown[] {
+  const block = `The user invoked the "${name}" skill for this request. Follow its instructions.\n\n<skill name="${name}">\n${text}\n</skill>`;
+  if (typeof apiContent === "string") {
+    return apiContent ? `${block}\n\n${apiContent}` : block;
+  }
+  return [{ type: "input_text", text: block }, ...apiContent];
 }
 
 interface UseChatReturn {
@@ -897,7 +917,9 @@ export function useChat({
         // Only `disable_model_invocation` gates model access here.
         // `user_invocable: false` is a UI-only flag that hides skills from
         // the slash-command popover — model-only skills (false/false) must
-        // still appear in the tool description.
+        // still appear in the tool description. A `disable_model_invocation`
+        // skill the user slash-invokes is seeded directly into the request
+        // (see `seedSkillIntoApiContent`), not surfaced to the model here.
         const invocableSkills = enabledSkills.filter((s) => s.disable_model_invocation !== true);
         if (invocableSkills.length > 0) {
           tools.push({
@@ -2327,11 +2349,24 @@ export function useChat({
       // conversation's message list.
       const sendEpoch = conversationIdRef.current;
 
-      // Add user message to conversation store (with the current historyMode)
+      // Add user message to conversation store (with the current historyMode).
+      // The displayed message is just the user's text — any slash-invoked skill
+      // is seeded into the API content below, not the visible bubble.
       addUserMessage(content, files.length > 0 ? files : undefined, historyMode);
 
       // Prepare message content for API (handles both plain text and multi-modal with files)
-      const apiContent = buildApiContent(content, files.length > 0 ? files : undefined);
+      let apiContent = buildApiContent(content, files.length > 0 ? files : undefined);
+
+      // Seed a slash-invoked skill's SKILL.md directly into the request so it
+      // loads deterministically (no reliance on the model calling the tool).
+      const pendingSkillId = useChatUIStore.getState().pendingSkillId;
+      if (pendingSkillId) {
+        useChatUIStore.getState().clearPendingSkill();
+        const seed = await loadSkillSeed(pendingSkillId);
+        if (seed) {
+          apiContent = seedSkillIntoApiContent(apiContent, seed.name, seed.text);
+        }
+      }
 
       // Generate a debug message ID for capturing request/response data
       // This will be used to key the debug info for this message exchange

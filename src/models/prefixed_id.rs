@@ -471,6 +471,158 @@ impl<'de> Deserialize<'de> for ChunkId {
 }
 
 // =============================================================================
+// Skill ID (prefix: "skill_")
+// =============================================================================
+
+/// A skill ID that serializes with `skill_` prefix (OpenAI Skills API).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa", schema(value_type = String, example = "skill_550e8400-e29b-41d4-a716-446655440000"))]
+pub struct SkillId(Uuid);
+
+impl SkillId {
+    pub const PREFIX: &'static str = "skill_";
+
+    pub fn new(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+
+    pub fn into_inner(self) -> Uuid {
+        self.0
+    }
+
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl From<Uuid> for SkillId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<SkillId> for Uuid {
+    fn from(id: SkillId) -> Self {
+        id.0
+    }
+}
+
+impl fmt::Display for SkillId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", Self::PREFIX, self.0)
+    }
+}
+
+impl FromStr for SkillId {
+    type Err = PrefixedIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uuid_str = s.strip_prefix(Self::PREFIX).unwrap_or(s);
+        let uuid = Uuid::parse_str(uuid_str).map_err(|e| PrefixedIdError::InvalidUuid {
+            input: s.to_string(),
+            source: e,
+        })?;
+        Ok(Self(uuid))
+    }
+}
+
+impl Serialize for SkillId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(de::Error::custom)
+    }
+}
+
+// =============================================================================
+// Skill Version ID (prefix: "skillver_")
+// =============================================================================
+
+/// A skill version ID that serializes with `skillver_` prefix (OpenAI Skills API).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa", schema(value_type = String, example = "skillver_550e8400-e29b-41d4-a716-446655440000"))]
+pub struct SkillVersionId(Uuid);
+
+impl SkillVersionId {
+    pub const PREFIX: &'static str = "skillver_";
+
+    pub fn new(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+
+    pub fn into_inner(self) -> Uuid {
+        self.0
+    }
+
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl From<Uuid> for SkillVersionId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<SkillVersionId> for Uuid {
+    fn from(id: SkillVersionId) -> Self {
+        id.0
+    }
+}
+
+impl fmt::Display for SkillVersionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", Self::PREFIX, self.0)
+    }
+}
+
+impl FromStr for SkillVersionId {
+    type Err = PrefixedIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uuid_str = s.strip_prefix(Self::PREFIX).unwrap_or(s);
+        let uuid = Uuid::parse_str(uuid_str).map_err(|e| PrefixedIdError::InvalidUuid {
+            input: s.to_string(),
+            source: e,
+        })?;
+        Ok(Self(uuid))
+    }
+}
+
+impl Serialize for SkillVersionId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillVersionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(de::Error::custom)
+    }
+}
+
+// =============================================================================
 // Serde Helper Modules
 // =============================================================================
 //

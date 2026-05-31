@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Brain, Check, Download, Folder, Loader2 } from "lucide-react";
 
-import type { CreateSkill, SkillOwner } from "@/api/generated/types.gen";
+import type { CreateSkillBody, SkillOwner } from "@/api/generated/types.gen";
 import { skillCreate } from "@/api/generated/sdk.gen";
 import { Button } from "@/components/Button/Button";
 import { FormField } from "@/components/FormField/FormField";
@@ -161,7 +161,7 @@ export function SkillImportModal({
       // stale rows forward.
       setImportStatus({});
       for (const s of skills) {
-        const payload: CreateSkill = {
+        const payload: CreateSkillBody = {
           owner: ownerOverride,
           name: s.name,
           description: s.description || s.name,
@@ -216,10 +216,7 @@ export function SkillImportModal({
     onSuccess: (results) => {
       const ok = results.filter((r) => r.ok).length;
       const failed = results.filter((r) => !r.ok);
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByOrg" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByUser" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByTeam" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByProject" }] });
+      queryClient.invalidateQueries({ queryKey: [{ _id: "skillList" }] });
       if (failed.length === 0) {
         toast({ title: `Imported ${ok} skill${ok === 1 ? "" : "s"}`, type: "success" });
         onClose();

@@ -1786,15 +1786,16 @@ pub enum RequestSkill {
     Inline(InlineSkill),
 }
 
-/// Reference to an existing skill resource (Hadrian skill UUID).
+/// Reference to an existing skill created via the `/v1/skills` API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillReference {
-    /// Hadrian skill UUID. Must belong to the caller's org.
+    /// The referenced skill: a prefixed id (`skill_…`), a bare UUID, or the
+    /// skill's name slug. Must belong to the caller's organization.
     pub skill_id: String,
-    /// Version pin. Only `"latest"` is supported today; passing any
-    /// other value rejects the request with 400 so callers don't
-    /// silently get the latest when they asked for a pin.
+    /// Version selector. Omit for the skill's **default** version, `"latest"`
+    /// for the newest published version, or a positive integer for that exact
+    /// version. Any other value rejects the request with 400.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -2667,16 +2668,17 @@ pub struct CreateResponsesPayload {
     ///
     /// ```json
     /// [
-    ///   {"type": "skill_reference", "skill_id": "<uuid>", "version": "latest"},
+    ///   {"type": "skill_reference", "skill_id": "skill_…", "version": "latest"},
     ///   {"type": "inline", "name": "extract-csv", "description": "...",
     ///    "source": {"type": "base64", "media_type": "text/markdown", "data": "..."}}
     /// ]
     /// ```
     ///
-    /// For `skill_reference`, `skill_id` is a Hadrian skill UUID
-    /// owned by the caller's org. `version` is optional; only
-    /// `"latest"` (the default) is supported today — pinned versions
-    /// reject with 400 until version-pinning lands.
+    /// For `skill_reference`, `skill_id` is a prefixed id (`skill_…`), a bare
+    /// UUID, or the skill's name slug, owned by the caller's org. `version` is
+    /// optional: omit for the skill's **default** version, `"latest"` for the
+    /// newest, or a positive integer for that exact version (default and latest
+    /// can differ).
     ///
     /// For `inline`, the decoded `source.data` is mounted as an
     /// ephemeral skill bundle: `text/markdown` is treated as the

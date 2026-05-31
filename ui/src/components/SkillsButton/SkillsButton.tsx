@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 import { skillDelete } from "@/api/generated/sdk.gen";
 import { Button } from "@/components/Button/Button";
 import {
@@ -42,7 +42,7 @@ export function SkillsButton({ disabled = false }: SkillsButtonProps) {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importTab, setImportTab] = useState<"github" | "filesystem">("github");
-  const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
+  const [editingSkill, setEditingSkill] = useState<SkillResource | null>(null);
 
   const { skills, isLoading, hasMore } = useUserSkills();
   const { user } = useAuth();
@@ -83,12 +83,11 @@ export function SkillsButton({ disabled = false }: SkillsButtonProps) {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await skillDelete({ path: { id } });
+      const response = await skillDelete({ path: { skill_id: id } });
       if (response.error) throw new Error("Failed to delete skill");
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByOrg" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByUser" }] });
+      queryClient.invalidateQueries({ queryKey: [{ _id: "skillList" }] });
       toast({ title: "Skill deleted", type: "success" });
     },
     onError: () => {
@@ -96,7 +95,7 @@ export function SkillsButton({ disabled = false }: SkillsButtonProps) {
     },
   });
 
-  const handleDelete = async (e: React.MouseEvent, skill: Skill) => {
+  const handleDelete = async (e: React.MouseEvent, skill: SkillResource) => {
     e.stopPropagation();
     const confirmed = await confirm({
       title: "Delete Skill",
@@ -109,7 +108,7 @@ export function SkillsButton({ disabled = false }: SkillsButtonProps) {
     }
   };
 
-  const handleRowClick = (skill: Skill) => {
+  const handleRowClick = (skill: SkillResource) => {
     toggleSkill(skill.id);
   };
 

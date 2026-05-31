@@ -38,6 +38,12 @@ pub struct ServerConfig {
     #[serde(default = "default_files_body_limit")]
     pub files_body_limit_bytes: usize,
 
+    /// Maximum request body size for skill uploads (`POST /v1/skills` and
+    /// version creates) in bytes. Covers zip bundles / multipart directories.
+    /// Defaults to 64 MB.
+    #[serde(default = "default_skills_body_limit")]
+    pub skills_body_limit_bytes: usize,
+
     /// Maximum response body size for buffering provider responses (in bytes).
     /// This prevents OOM from malicious or malformed provider responses.
     #[serde(default = "default_max_response_body")]
@@ -120,6 +126,7 @@ impl Default for ServerConfig {
             body_limit_bytes: default_body_limit(),
             audio_body_limit_bytes: default_audio_body_limit(),
             files_body_limit_bytes: default_files_body_limit(),
+            skills_body_limit_bytes: default_skills_body_limit(),
             max_response_body_bytes: default_max_response_body(),
             timeout_secs: default_timeout(),
             streaming_idle_timeout_secs: default_streaming_idle_timeout(),
@@ -154,6 +161,10 @@ fn default_audio_body_limit() -> usize {
 
 fn default_files_body_limit() -> usize {
     512 * 1024 * 1024 // 512 MB — multi-document RAG ingest
+}
+
+fn default_skills_body_limit() -> usize {
+    64 * 1024 * 1024 // 64 MB — skill zip bundles / multipart directories
 }
 
 fn default_max_response_body() -> usize {

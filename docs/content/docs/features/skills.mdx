@@ -7,9 +7,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Skills extend what the model can do by packaging reusable instructions as
 portable units. Each skill is a `SKILL.md` file plus optional bundled
-scripts, references, and assets. Hadrian implements the
-[Agent Skills](https://agentskills.io) open specification so skills you
-author for Hadrian also work with other compliant agents and vice versa.
+scripts, references, and assets. You author skills with the
+[Agent Skills](https://agentskills.io) `SKILL.md` format, and manage them
+through an **OpenAI-compatible `/v1/skills` API** — skills are immutable and
+versioned, with a `default_version`/`latest_version` pointer, just like the
+OpenAI Skills API (plus Hadrian's multi-tenant ownership extension).
 
 ## What a skill looks like
 
@@ -102,6 +104,66 @@ Like prompt templates, skills belong to one of four owners:
 Chat surfaces all skills the current user can reach. In the admin UI,
 manage project skills from **Project → Skills**.
 
+## Managing skills via the API
+
+Skills live under the OpenAI-compatible `/v1/skills` surface. IDs are prefixed
+strings (`skill_…`, version ids `skillver_…`) and timestamps are unix seconds.
+
+| Method & path                                    | Purpose                                                  |
+| ------------------------------------------------ | -------------------------------------------------------- |
+| `POST /v1/skills`                                | Create a skill (publishes version `1`).                  |
+| `GET /v1/skills`                                 | List skills for the current project / accessible owners. |
+| `GET /v1/skills/{id}`                            | Get a skill (with the default version's files).          |
+| `POST /v1/skills/{id}`                           | Set the default version (`{ "default_version": "2" }`).  |
+| `DELETE /v1/skills/{id}`                         | Delete a skill.                                          |
+| `GET /v1/skills/{id}/content`                    | Download the default version as a zip bundle.            |
+| `POST /v1/skills/{id}/versions`                  | Publish a new immutable version.                         |
+| `GET /v1/skills/{id}/versions`                   | List versions.                                           |
+| `GET /v1/skills/{id}/versions/{version}`         | Get a specific version.                                  |
+| `DELETE /v1/skills/{id}/versions/{version}`      | Delete a version.                                        |
+| `GET /v1/skills/{id}/versions/{version}/content` | Download a specific version as zip.                      |
+
+### Versioning
+
+Skills are **immutable** — content never changes in place. To update a skill,
+publish a new version with `POST /v1/skills/{id}/versions` (pass `"default":
+true` to make it the new default, or repoint later with `POST /v1/skills/{id}`).
+The skill projection (name, description, files) always reflects the **default**
+version. Versions are numbered `1`, `2`, … and never reused; the default
+version cannot be deleted (set another default first).
+
+### Upload formats
+
+Create and version-create accept either:
+
+- **`application/json`** — a `{ path, content }` file array (Hadrian
+  extension; what the chat UI sends). `owner`, `name`, and `description` may be
+  supplied explicitly or sniffed from the SKILL.md frontmatter.
+- **`multipart/form-data`** — a directory of `files[]` parts, or a single zip
+  part. `owner_type`/`owner_id`/`name`/`description`/`default` ride along as
+  form fields.
+
+`GET …/content` returns an `application/zip` bundle.
+
+### Ownership extension
+
+OpenAI's skills are project-scoped; Hadrian keeps `owner_type`/`owner_id`
+(organization/team/project/user) as a documented extension. On create, omit
+`owner` to default to the API key's scope, or set it explicitly. List with
+`?owner_type=&owner_id=` to scope to one owner, or omit both for everything the
+caller can access.
+
+### Referencing skills from the Responses API
+
+Attach skills to a `/v1/responses` request via a `skill_reference`:
+
+```json
+{ "type": "skill_reference", "skill_id": "skill_…", "version": "latest" }
+```
+
+`skill_id` accepts a prefixed id, a bare UUID, or the skill's **name slug**.
+`version` is a positive integer or `"latest"`; omit it for the default version.
+
 ## Invoking a skill as a user
 
 Two equivalent ways:
@@ -151,16 +213,28 @@ max_skills_per_owner = 5000
 # Maximum total size of a skill's files in bytes (SKILL.md + bundled).
 # Default: 512000 (500 KiB). Set to 0 for unlimited.
 max_skill_bytes = 512_000
+
+# Maximum immutable versions retained per skill. Default: 0 (unlimited).
+max_skill_versions_per_skill = 0
+```
+
+The skill upload request body cap is separate, under `[server]`:
+
+```toml
+[server]
+# Max request body for skill uploads (zip bundles / multipart). Default: 64 MiB.
+skills_body_limit_bytes = 67_108_864
 ```
 
 ## v1 limitations
 
 - **Text-only files.** Binary assets (images, PDFs) are rejected at the API
   boundary. Future work: base64 encoding or object-storage offload.
-- **Scripts are read-only.** The agent can _read_ `scripts/` files through
-  the `Skill` tool but cannot execute them — there is no client-side
-  sandbox in the Hadrian chat UI. Skills that require script execution
-  won't work end-to-end.
-- **Model-invocation is frontend-only.** The gateway server does not
-  inspect skills. Custom clients that hit `/v1/responses` directly must
-  build the `Skill` tool themselves.
+- **Scripts are read-only in chat.** The chat UI's `Skill` tool can _read_
+  `scripts/` files but cannot execute them — there is no client-side sandbox.
+  Skills that require script execution won't work end-to-end in the chat UI.
+- **Two invocation paths.** The chat UI's `/<name>` slash command and `Skill`
+  tool are frontend-only. Separately, the Responses API resolves a
+  `skill_reference` server-side and mounts the referenced version's files into
+  the shell-tool sandbox (under `/skills/<id>`), where scripts _can_ run if the
+  configured runtime supports it.

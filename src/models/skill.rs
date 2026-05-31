@@ -1,9 +1,17 @@
-//! Agent Skills per https://agentskills.io/specification.md.
+//! Agent Skills, modeled on the OpenAI Skills API (immutable, versioned) with
+//! a Hadrian ownership extension.
 //!
-//! A skill is a packaged set of instructions (SKILL.md) plus optional
-//! bundled files (scripts, references, assets). Hadrian's extension of the
-//! spec is that every skill is owned by an organization, team, project, or
-//! user — matching the ownership model used by prompt templates.
+//! A skill is a packaged set of instructions (SKILL.md) plus optional bundled
+//! files (scripts, references, assets). The OpenAI model is immutable and
+//! versioned: a skill carries a `default_version`/`latest_version` pointer and
+//! the only way to change content is to publish a new version. Hadrian extends
+//! the spec so every skill is owned by an organization, team, project, or user
+//! — matching the ownership model used by prompt templates.
+//!
+//! Storage: a `skills` row (identity + version pointers) → many immutable
+//! `skill_versions` → each with its own `skill_version_files`. The [`Skill`]
+//! struct here is a *projection* that surfaces the default version's
+//! metadata/files alongside the skill's pointers.
 
 use std::collections::HashMap;
 
@@ -12,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
-/// The filename of the required main instructions file in every skill.
+/// The filename of the required main instructions file in every skill version.
 pub const SKILL_MAIN_FILE: &str = "SKILL.md";
 
 /// Owner type for skills (organization, team, project, or user).
@@ -90,8 +98,8 @@ pub fn validate_skill_path(path: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// A file bundled with a skill. Returned in full detail by get-by-id; list
-/// endpoints populate [`SkillFileManifest`] instead.
+/// A file bundled with a skill version. Returned in full detail by get-by-id;
+/// list endpoints populate [`SkillFileManifest`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct SkillFile {
@@ -104,7 +112,6 @@ pub struct SkillFile {
     /// MIME type, e.g. "text/markdown".
     pub content_type: String,
     pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 /// Lightweight file entry returned by list endpoints — contents omitted.
@@ -116,60 +123,70 @@ pub struct SkillFileManifest {
     pub content_type: String,
 }
 
-/// A packaged Agent Skill.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+/// A skill: identity (owner + per-owner unique slug) plus version pointers,
+/// projected with the **default version's** metadata and files. This is the
+/// internal domain type; the `/v1` route layer maps it to an OpenAI-shaped
+/// wire response.
+#[derive(Debug, Clone)]
 pub struct Skill {
     pub id: Uuid,
     pub owner_type: SkillOwnerType,
     pub owner_id: Uuid,
     /// Skill name (unique per owner). See [`validate_skill_name`].
     pub name: String,
-    /// Human-readable description. Used by the model to decide when to
-    /// invoke the skill.
+    /// Default version sequence number (the public `default_version` string).
+    pub default_version_seq: i64,
+    /// Latest live version sequence number (the public `latest_version` string).
+    pub latest_version_seq: i64,
+
+    // ---- Projected from the default version ----
+    /// Human-readable description. Used by the model to decide when to invoke.
     pub description: String,
-
-    /// If `false`, the skill is hidden from the user-visible slash-command
-    /// list. `None` = unset (defaults to `true`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_invocable: Option<bool>,
-    /// If `true`, the model cannot auto-invoke this skill. `None` = unset
-    /// (defaults to `false`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub disable_model_invocation: Option<bool>,
-    /// Tools the skill is allowed to use. Informational; the chat UI may
-    /// use this to pre-approve tools while the skill is active.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
-    /// Hint shown during autocomplete to describe expected arguments.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub argument_hint: Option<String>,
-    /// Origin URL if imported (e.g. a GitHub tree URL).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
-    /// Git ref if imported.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
-    /// Unknown / forward-compat frontmatter keys preserved verbatim.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub frontmatter_extra: Option<HashMap<String, serde_json::Value>>,
-
-    /// Cached total size across all files (bytes).
+    /// Default version's total file size (bytes).
     pub total_bytes: i64,
-
-    /// Full file contents. Populated by get-by-id endpoints.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Default version's full file contents. Populated by get-by-id endpoints.
     pub files: Vec<SkillFile>,
-    /// File summary (no contents). Populated by list endpoints.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Default version's file summary (no contents). Populated by list endpoints.
     pub files_manifest: Vec<SkillFileManifest>,
 
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
+/// An immutable version of a skill.
+#[derive(Debug, Clone)]
+pub struct SkillVersion {
+    pub id: Uuid,
+    pub skill_id: Uuid,
+    /// Version sequence number (the public `version` string, e.g. "1").
+    pub version_seq: i64,
+    /// Snapshot of the skill slug at creation time.
+    pub name: String,
+    pub description: String,
+    pub user_invocable: Option<bool>,
+    pub disable_model_invocation: Option<bool>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub argument_hint: Option<String>,
+    pub source_url: Option<String>,
+    pub source_ref: Option<String>,
+    pub frontmatter_extra: Option<HashMap<String, serde_json::Value>>,
+    pub total_bytes: i64,
+    /// Full file contents. Populated by get-version endpoints.
+    pub files: Vec<SkillFile>,
+    /// File summary (no contents). Populated by list-versions endpoints.
+    pub files_manifest: Vec<SkillFileManifest>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Owner specification for creating a skill.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SkillOwner {
@@ -199,7 +216,7 @@ impl SkillOwner {
     }
 }
 
-/// A single file in a create/update request.
+/// A single file in a create/version request.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct SkillFileInput {
@@ -213,10 +230,12 @@ pub struct SkillFileInput {
     pub content_type: Option<String>,
 }
 
-/// Request to create a new skill. `files` must contain exactly one entry
-/// with `path == "SKILL.md"`; the service layer rejects otherwise.
-#[derive(Debug, Clone, Deserialize, Validate)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+/// Service-layer input to create a new skill (and its first version). The
+/// `/v1` route layer normalizes the JSON / multipart / zip request body into
+/// this fully-resolved form (owner derived from the API key when omitted;
+/// name/description sniffed from SKILL.md frontmatter when not supplied).
+/// `files` must contain exactly one entry with `path == "SKILL.md"`.
+#[derive(Debug, Clone, Validate)]
 pub struct CreateSkill {
     pub owner: SkillOwner,
     #[validate(custom(function = "validate_skill_name"))]
@@ -238,18 +257,15 @@ pub struct CreateSkill {
     pub frontmatter_extra: Option<HashMap<String, serde_json::Value>>,
 }
 
-/// Request to update a skill. Any field that is `Some(_)` replaces the
-/// stored value. When `files` is `Some(_)`, the entire file set is
-/// replaced.
-#[derive(Debug, Clone, Default, Deserialize, Validate)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct UpdateSkill {
-    #[validate(custom(function = "validate_skill_name"))]
-    pub name: Option<String>,
+/// Service-layer input to publish a new immutable version of an existing skill.
+/// The version's `name` is taken from the skill slug (immutable). `files` must
+/// contain exactly one entry with `path == "SKILL.md"`.
+#[derive(Debug, Clone, Validate)]
+pub struct CreateSkillVersion {
+    #[validate(length(min = 1), nested)]
+    pub files: Vec<SkillFileInput>,
     #[validate(length(min = 1, max = 1024))]
-    pub description: Option<String>,
-    #[validate(nested)]
-    pub files: Option<Vec<SkillFileInput>>,
+    pub description: String,
 
     pub user_invocable: Option<bool>,
     pub disable_model_invocation: Option<bool>,
@@ -261,6 +277,28 @@ pub struct UpdateSkill {
     #[validate(length(max = 255))]
     pub source_ref: Option<String>,
     pub frontmatter_extra: Option<HashMap<String, serde_json::Value>>,
+
+    /// Whether this version becomes the skill's default.
+    pub make_default: bool,
+}
+
+/// How a `skill_reference` addresses a skill: by id (prefixed `skill_…` or bare
+/// UUID) or by its name slug (e.g. `openai-spreadsheets`).
+#[derive(Debug, Clone)]
+pub enum SkillRef {
+    Id(Uuid),
+    Name(String),
+}
+
+/// Which version of a skill to resolve for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionSelector {
+    /// The skill's default version (omitted `version`).
+    Default,
+    /// The newest version (`version = "latest"`).
+    Latest,
+    /// A specific version sequence number.
+    Exact(i64),
 }
 
 #[cfg(test)]

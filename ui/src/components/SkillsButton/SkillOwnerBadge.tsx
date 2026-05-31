@@ -1,15 +1,15 @@
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 import { Badge } from "@/components/Badge/Badge";
 
 import type { SkillWithContext } from "@/hooks/useUserSkills";
 
 export interface SkillOwnerBadgeProps {
-  skill: Skill | SkillWithContext;
+  skill: SkillResource | SkillWithContext;
   /** When set, user-owned skills owned by this user render as "Personal". */
   currentUserId?: string;
 }
 
-function isWithContext(s: Skill | SkillWithContext): s is SkillWithContext {
+function isWithContext(s: SkillResource | SkillWithContext): s is SkillWithContext {
   return (s as SkillWithContext).org_name !== undefined;
 }
 

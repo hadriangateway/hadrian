@@ -1185,8 +1185,12 @@ END $$;
 -- (scripts, references, assets) that the model can auto-invoke or the
 -- user can invoke via slash-command / button.
 --
--- Files are stored inline in skill_files with a per-skill total size cap
--- enforced in the service layer (config: limits.resource_limits.max_skill_bytes).
+-- The `skills` row holds identity (owner + per-owner unique `name` slug) and
+-- mutable version pointers. Each immutable version lives in `skill_versions`
+-- with its own files in `skill_version_files`. The only way to change a
+-- skill's content is to publish a new version; `POST /v1/skills/{id}` just
+-- repoints `default_version_seq`. Per-skill total size cap is enforced in the
+-- service layer (config: limits.resource_limits.max_skill_bytes).
 
 DO $$ BEGIN
     CREATE TYPE skill_owner_type AS ENUM ('organization', 'team', 'project', 'user');
@@ -1198,26 +1202,20 @@ CREATE TABLE IF NOT EXISTS skills (
     id UUID PRIMARY KEY NOT NULL,
     owner_type skill_owner_type NOT NULL,
     owner_id UUID NOT NULL,
-    -- Per spec: 1..=64 chars, [a-z0-9-]+, no leading/trailing/consecutive hyphens
+    -- Per spec: 1..=64 chars, [a-z0-9-]+, no leading/trailing/consecutive hyphens.
+    -- Immutable per-owner slug; doubles as the name used in skill_reference.
     name VARCHAR(64) NOT NULL,
-    -- Per spec: required, 1..=1024 chars
-    description VARCHAR(1024) NOT NULL,
-    -- Optional frontmatter fields (NULL = not set)
-    user_invocable BOOLEAN,                     -- defaults to true in code
-    disable_model_invocation BOOLEAN,           -- defaults to false in code
-    allowed_tools JSONB,                        -- array of tool names
-    argument_hint VARCHAR(255),
-    source_url VARCHAR(2048),                   -- origin URL (e.g. GitHub) if imported
-    source_ref VARCHAR(255),                    -- git ref if imported
-    frontmatter_extra JSONB,                    -- unknown/forward-compat keys
-    -- Cached sum of skill_files.byte_size for fast limit checks
-    total_bytes BIGINT NOT NULL DEFAULT 0,
+    -- Version pointers. API `version` strings are these seqs rendered as decimal.
+    default_version_seq BIGINT NOT NULL,        -- version served by default / GET .../content
+    latest_version_seq BIGINT NOT NULL,         -- highest live version seq
+    next_version_seq BIGINT NOT NULL DEFAULT 2, -- next seq to assign (v1 created at insert); never reused
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
-    UNIQUE(owner_type, owner_id, name)
+    deleted_at TIMESTAMPTZ
 );
 
+-- Name uniqueness only among live skills so soft-delete + recreate works.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_owner_name_active ON skills(owner_type, owner_id, name) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_type, owner_id);
 -- Partial index for non-deleted skills (most queries filter by deleted_at IS NULL)
 CREATE INDEX IF NOT EXISTS idx_skills_owner_active ON skills(owner_type, owner_id) WHERE deleted_at IS NULL;
@@ -1228,11 +1226,40 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
 
--- Files bundled into a skill. Every skill must have exactly one row with
--- path = 'SKILL.md' (enforced in service layer). Additional rows hold
--- bundled scripts/references/assets referenced from SKILL.md.
-CREATE TABLE IF NOT EXISTS skill_files (
+-- Immutable skill versions. name/description and all frontmatter flags are
+-- snapshotted per version (they derive from that version's SKILL.md). The
+-- SkillResource projection surfaces the DEFAULT version's values.
+CREATE TABLE IF NOT EXISTS skill_versions (
+    id UUID PRIMARY KEY NOT NULL,
     skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    version_seq BIGINT NOT NULL,                -- public `version` string = this as decimal
+    -- name snapshots the skill slug; description per spec 1..=1024 chars
+    name VARCHAR(64) NOT NULL,
+    description VARCHAR(1024) NOT NULL,
+    -- Optional frontmatter fields (NULL = not set)
+    user_invocable BOOLEAN,                     -- defaults to true in code
+    disable_model_invocation BOOLEAN,           -- defaults to false in code
+    allowed_tools JSONB,                        -- array of tool names
+    argument_hint VARCHAR(255),
+    source_url VARCHAR(2048),                   -- origin URL (e.g. GitHub) if imported
+    source_ref VARCHAR(255),                    -- git ref if imported
+    frontmatter_extra JSONB,                    -- unknown/forward-compat keys
+    -- Cached sum of skill_version_files.byte_size for fast limit checks
+    total_bytes BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_versions_skill_seq ON skill_versions(skill_id, version_seq);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_active ON skill_versions(skill_id) WHERE deleted_at IS NULL;
+-- Keyset cursor index for version listing
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_created ON skill_versions(skill_id, created_at, id);
+
+-- Files bundled into a skill version. Every version must have exactly one row
+-- with path = 'SKILL.md' (enforced in service layer). Additional rows hold
+-- bundled scripts/references/assets referenced from SKILL.md. Text-only in v1.
+CREATE TABLE IF NOT EXISTS skill_version_files (
+    skill_version_id UUID NOT NULL REFERENCES skill_versions(id) ON DELETE CASCADE,
     -- Relative path inside the skill directory (e.g. 'SKILL.md', 'scripts/extract.py')
     path VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,
@@ -1242,16 +1269,10 @@ CREATE TABLE IF NOT EXISTS skill_files (
     -- extension for others
     content_type VARCHAR(127) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY(skill_id, path)
+    PRIMARY KEY(skill_version_id, path)
 );
 
-CREATE INDEX IF NOT EXISTS idx_skill_files_skill ON skill_files(skill_id);
-
-DO $$ BEGIN
-    CREATE TRIGGER update_skill_files_updated_at BEFORE UPDATE ON skill_files FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-EXCEPTION WHEN duplicate_object THEN null;
-END $$;
+CREATE INDEX IF NOT EXISTS idx_skill_version_files_version ON skill_version_files(skill_version_id);
 
 -- ======================================================================
 -- OAuth PKCE Authorization Codes

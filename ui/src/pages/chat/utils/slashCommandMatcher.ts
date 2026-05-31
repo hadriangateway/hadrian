@@ -1,4 +1,4 @@
-import type { Skill } from "@/api/generated/types.gen";
+import type { SkillResource } from "@/api/generated/types.gen";
 
 /**
  * Detect whether the caret is inside a skill slash-command token and, if
@@ -48,21 +48,21 @@ export function detectSlashQuery(text: string, caret: number): SlashQuery | null
  * the popover's own `useMemo`) share work — without this, each keystroke
  * fanned out into 2–3 redundant linear scans of every user skill.
  */
-let lastSkillsRef: Skill[] | null = null;
+let lastSkillsRef: SkillResource[] | null = null;
 let lastQuery: string | null = null;
-let lastResult: Skill[] = [];
+let lastResult: SkillResource[] = [];
 
-export function matchSkills(skills: Skill[], query: string): Skill[] {
+export function matchSkills(skills: SkillResource[], query: string): SkillResource[] {
   if (skills === lastSkillsRef && query === lastQuery) return lastResult;
 
   const q = query.toLowerCase();
   const invocable = skills.filter((s) => s.user_invocable !== false);
-  let result: Skill[];
+  let result: SkillResource[];
   if (!q) {
     result = invocable.slice(0, 20);
   } else {
-    const prefix: Skill[] = [];
-    const contains: Skill[] = [];
+    const prefix: SkillResource[] = [];
+    const contains: SkillResource[] = [];
     for (const s of invocable) {
       const name = s.name.toLowerCase();
       if (name.startsWith(q)) prefix.push(s);

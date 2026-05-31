@@ -6199,116 +6199,6 @@
         }
       }
     },
-    "/admin/v1/organizations/{org_slug}/projects/{project_slug}/skills": {
-      "get": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "List skills by project.",
-        "operationId": "skill_list_by_project",
-        "parameters": [
-          {
-            "name": "org_slug",
-            "in": "path",
-            "description": "Organization slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "project_slug",
-            "in": "path",
-            "description": "Project slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of results to return",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Cursor for keyset pagination. Encoded as base64 string.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "description": "Pagination direction: \"forward\" (default) or \"backward\".",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "include_deleted",
-            "in": "query",
-            "description": "Include soft-deleted records in results",
-            "required": false,
-            "schema": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of skills",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillListResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid cursor or direction",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Organization or project not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/v1/organizations/{org_slug}/projects/{project_slug}/templates": {
       "get": {
         "tags": [
@@ -8638,107 +8528,6 @@
         }
       }
     },
-    "/admin/v1/organizations/{org_slug}/skills": {
-      "get": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "List skills by organization.",
-        "operationId": "skill_list_by_org",
-        "parameters": [
-          {
-            "name": "org_slug",
-            "in": "path",
-            "description": "Organization slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of results to return",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Cursor for keyset pagination. Encoded as base64 string.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "description": "Pagination direction: \"forward\" (default) or \"backward\".",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "include_deleted",
-            "in": "query",
-            "description": "Include soft-deleted records in results",
-            "required": false,
-            "schema": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of skills",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillListResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid cursor or direction",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Organization not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/v1/organizations/{org_slug}/sso-config": {
       "get": {
         "tags": [
@@ -10736,116 +10525,6 @@
           },
           "404": {
             "description": "Organization, team, or membership not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/v1/organizations/{org_slug}/teams/{team_slug}/skills": {
-      "get": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "List skills by team.",
-        "operationId": "skill_list_by_team",
-        "parameters": [
-          {
-            "name": "org_slug",
-            "in": "path",
-            "description": "Organization slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "team_slug",
-            "in": "path",
-            "description": "Team slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of results to return",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Cursor for keyset pagination. Encoded as base64 string.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "description": "Pagination direction: \"forward\" (default) or \"backward\".",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "include_deleted",
-            "in": "query",
-            "description": "Include soft-deleted records in results",
-            "required": false,
-            "schema": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of skills",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillListResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid cursor or direction",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Organization or team not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -13743,216 +13422,6 @@
         }
       }
     },
-    "/admin/v1/skills": {
-      "post": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "Create a skill.",
-        "operationId": "skill_create",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateSkill"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Skill created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Skill"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid skill (missing SKILL.md, duplicate path, or size limit exceeded)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Owner not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Skill with this name already exists for this owner",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/v1/skills/{id}": {
-      "get": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "Get a skill by ID (with full file contents).",
-        "operationId": "skill_get",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Skill ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Skill found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Skill"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Skill not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "Soft-delete a skill.",
-        "operationId": "skill_delete",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Skill ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Skill deleted"
-          },
-          "404": {
-            "description": "Skill not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "Update a skill.",
-        "description": "When `files` is provided, the full file set is replaced.",
-        "operationId": "skill_update",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Skill ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateSkill"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Skill updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Skill"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid skill (missing SKILL.md, duplicate path, or size limit exceeded)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Skill not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Skill with this name already exists for this owner",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/v1/sso-connections": {
       "get": {
         "tags": [
@@ -16420,98 +15889,6 @@
           },
           "404": {
             "description": "User not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/v1/users/{user_id}/skills": {
-      "get": {
-        "tags": [
-          "skills"
-        ],
-        "summary": "List skills by user.",
-        "operationId": "skill_list_by_user",
-        "parameters": [
-          {
-            "name": "user_id",
-            "in": "path",
-            "description": "User ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of results to return",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Cursor for keyset pagination. Encoded as base64 string.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "description": "Pagination direction: \"forward\" (default) or \"backward\".",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "include_deleted",
-            "in": "query",
-            "description": "Include soft-deleted records in results",
-            "required": false,
-            "schema": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of skills",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillListResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid cursor or direction",
             "content": {
               "application/json": {
                 "schema": {
@@ -19118,6 +18495,721 @@
           },
           "404": {
             "description": "Response not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "List skills for the current project (or a specific owner / accessible set).",
+        "operationId": "skill_list",
+        "parameters": [
+          {
+            "name": "owner_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** owner kind for single-owner listing.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "owner_id",
+            "in": "query",
+            "description": "**Hadrian Extension:** owner id for single-owner listing.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/SortOrder"
+                }
+              ]
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "**Hadrian Extension:** cursor for backward pagination (id of the first\nitem from a previous page).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of skills",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillListResource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Create a new skill (and its first version).",
+        "operationId": "skill_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSkillBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Skill created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Skill name already exists or limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills/{skill_id}": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Get a skill by id.",
+        "operationId": "skill_get",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Set the default version pointer for a skill.",
+        "operationId": "skill_set_default_version",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDefaultSkillVersionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillResource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Delete a skill.",
+        "operationId": "skill_delete",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedSkillResource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills/{skill_id}/content": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Download the default version of a skill as a zip bundle.",
+        "operationId": "skill_get_content",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Skill zip bundle",
+            "content": {
+              "application/zip": {}
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills/{skill_id}/versions": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "List a skill's versions.",
+        "operationId": "skill_list_versions",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/SortOrder"
+                }
+              ]
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "**Hadrian Extension:** cursor for backward pagination (id of the first\nitem from a previous page).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionListResource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Create a new immutable version of a skill.",
+        "operationId": "skill_create_version",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSkillVersionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Version created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionResource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills/{skill_id}/versions/{version}": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Get a specific skill version.",
+        "operationId": "skill_get_version",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version number",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionResource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Delete a skill version.",
+        "operationId": "skill_delete_version",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version number",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedSkillVersionResource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cannot delete the default version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/skills/{skill_id}/versions/{version}/content": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Download a specific skill version as a zip bundle.",
+        "operationId": "skill_get_version_content",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "description": "Skill id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version number",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version zip bundle",
+            "content": {
+              "application/zip": {}
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -23907,7 +23999,7 @@
             "items": {
               "type": "object"
             },
-            "description": "**Hadrian Extension:** Skills to mount into the shell-tool\nsession. Hadrian treats skills as a top-level request field\nrather than threading them through the OpenAI shell-tool\n`environment` block, so they're accepted on every responses\nrequest regardless of whether the upstream provider has its own\nskills surface.\n\nMirrors OpenAI's typed shape — each entry is either a reference\nto a stored skill or an inline bundle:\n\n```json\n[\n  {\"type\": \"skill_reference\", \"skill_id\": \"<uuid>\", \"version\": \"latest\"},\n  {\"type\": \"inline\", \"name\": \"extract-csv\", \"description\": \"...\",\n   \"source\": {\"type\": \"base64\", \"media_type\": \"text/markdown\", \"data\": \"...\"}}\n]\n```\n\nFor `skill_reference`, `skill_id` is a Hadrian skill UUID\nowned by the caller's org. `version` is optional; only\n`\"latest\"` (the default) is supported today — pinned versions\nreject with 400 until version-pinning lands.\n\nFor `inline`, the decoded `source.data` is mounted as an\nephemeral skill bundle: `text/markdown` is treated as the\n`SKILL.md` content; other media types are rejected today.\n\nEach resolved skill's `SKILL.md` is prepended to `instructions`\nso the model knows the skill is available; all skill files are\nmaterialized under `/skills/<skill_id>/` inside the sandbox."
+            "description": "**Hadrian Extension:** Skills to mount into the shell-tool\nsession. Hadrian treats skills as a top-level request field\nrather than threading them through the OpenAI shell-tool\n`environment` block, so they're accepted on every responses\nrequest regardless of whether the upstream provider has its own\nskills surface.\n\nMirrors OpenAI's typed shape — each entry is either a reference\nto a stored skill or an inline bundle:\n\n```json\n[\n  {\"type\": \"skill_reference\", \"skill_id\": \"skill_…\", \"version\": \"latest\"},\n  {\"type\": \"inline\", \"name\": \"extract-csv\", \"description\": \"...\",\n   \"source\": {\"type\": \"base64\", \"media_type\": \"text/markdown\", \"data\": \"...\"}}\n]\n```\n\nFor `skill_reference`, `skill_id` is a prefixed id (`skill_…`), a bare\nUUID, or the skill's name slug, owned by the caller's org. `version` is\noptional: omit for the skill's **default** version, `\"latest\"` for the\nnewest, or a positive integer for that exact version (default and latest\ncan differ).\n\nFor `inline`, the decoded `source.data` is mounted as an\nephemeral skill bundle: `text/markdown` is treated as the\n`SKILL.md` content; other media types are rejected today.\n\nEach resolved skill's `SKILL.md` is prepended to `instructions`\nso the model knows the skill is available; all skill files are\nmaterialized under `/skills/<skill_id>/` inside the sandbox."
           },
           "sovereignty_requirements": {
             "oneOf": [
@@ -24164,15 +24256,9 @@
           }
         }
       },
-      "CreateSkill": {
+      "CreateSkillBody": {
         "type": "object",
-        "description": "Request to create a new skill. `files` must contain exactly one entry\nwith `path == \"SKILL.md\"`; the service layer rejects otherwise.",
-        "required": [
-          "owner",
-          "name",
-          "description",
-          "files"
-        ],
+        "description": "Create-skill request body (`application/json`). **Hadrian Extension:** the\nspec uploads binary `files[]` / a zip via multipart; this JSON variant takes\na `{path, content}` file array plus optional owner/name/frontmatter fields.",
         "properties": {
           "allowed_tools": {
             "type": [
@@ -24181,62 +24267,166 @@
             ],
             "items": {
               "type": "string"
-            }
+            },
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — tools the skill may use."
           },
           "argument_hint": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — argument hint for autocomplete."
           },
           "description": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** description; sniffed from SKILL.md frontmatter when omitted."
           },
           "disable_model_invocation": {
             "type": [
               "boolean",
               "null"
-            ]
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — block model auto-invocation."
           },
           "files": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SkillFileInput"
-            }
+            },
+            "description": "**Hadrian Extension:** skill files as `{path, content}` objects (the spec\nuploads binary `files[]` / a zip via multipart instead)."
           },
           "frontmatter_extra": {
             "type": [
               "object",
               "null"
             ],
+            "description": "**Hadrian Extension:** unknown/forward-compat frontmatter keys, preserved verbatim.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
             }
           },
           "name": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** skill name slug; sniffed from SKILL.md frontmatter when omitted."
           },
           "owner": {
-            "$ref": "#/components/schemas/SkillOwner"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SkillOwner",
+                "description": "**Hadrian Extension:** owner; defaults to the API key's scope when omitted."
+              }
+            ]
           },
           "source_ref": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "**Hadrian Extension:** git ref when imported."
           },
           "source_url": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "**Hadrian Extension:** origin URL when imported."
           },
           "user_invocable": {
             "type": [
               "boolean",
               "null"
-            ]
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — hide from the user `/` menu."
+          }
+        }
+      },
+      "CreateSkillVersionBody": {
+        "type": "object",
+        "description": "Create-version request body (`application/json`).",
+        "properties": {
+          "allowed_tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — tools the skill may use."
+          },
+          "argument_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — argument hint for autocomplete."
+          },
+          "default": {
+            "type": "boolean",
+            "description": "Whether to set this version as the default."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** description; sniffed from SKILL.md frontmatter when omitted."
+          },
+          "disable_model_invocation": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — block model auto-invocation."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileInput"
+            },
+            "description": "**Hadrian Extension:** skill files as `{path, content}` objects (the spec\nuploads binary `files[]` / a zip via multipart instead)."
+          },
+          "frontmatter_extra": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** unknown/forward-compat frontmatter keys, preserved verbatim.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** git ref when imported."
+          },
+          "source_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** origin URL when imported."
+          },
+          "user_invocable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — hide from the user `/` menu."
           }
         }
       },
@@ -25408,6 +25598,50 @@
           "object": {
             "type": "string",
             "description": "Object type (always \"vector_store.deleted\")"
+          }
+        }
+      },
+      "DeletedSkillResource": {
+        "type": "object",
+        "description": "Response for a deleted skill.",
+        "required": [
+          "id",
+          "object",
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          }
+        }
+      },
+      "DeletedSkillVersionResource": {
+        "type": "object",
+        "description": "Response for a deleted skill version.",
+        "required": [
+          "id",
+          "object",
+          "deleted",
+          "version"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -27790,6 +28024,15 @@
               "null"
             ],
             "description": "Bearer / OAuth access token. The caller obtains this\nout-of-band (OpenAI's API does not run the OAuth dance for the\nremote server, and neither does Hadrian). Sent verbatim to the\nMCP server's `Authorization` header. Hadrian does not persist\nthe value — clients must include it on every request."
+          },
+          "call_timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "**Hadrian Extension:** upper bound, in seconds, on a single\n`tools/call` round-trip to this MCP server under `hadrian_hosted`.\nOverrides the `[features.mcp].call_timeout_secs` deployment default\n(300s). On expiry the in-flight `mcp_call` terminates with\n`status=\"incomplete\"` and a timeout `error`. Not part of OpenAI's\nspec; ignored under `passthrough_openai` (the upstream owns the\ncall loop there).",
+            "minimum": 0
           },
           "connector_id": {
             "type": [
@@ -30891,6 +31134,19 @@
           }
         }
       },
+      "SetDefaultSkillVersionBody": {
+        "type": "object",
+        "description": "Update the default version pointer for a skill.",
+        "required": [
+          "default_version"
+        ],
+        "properties": {
+          "default_version": {
+            "type": "string",
+            "description": "The skill version number to set as default."
+          }
+        }
+      },
       "SetPinOrder": {
         "type": "object",
         "description": "Request to set the pin order for a conversation",
@@ -31286,134 +31542,15 @@
           }
         }
       },
-      "Skill": {
-        "type": "object",
-        "description": "A packaged Agent Skill.",
-        "required": [
-          "id",
-          "owner_type",
-          "owner_id",
-          "name",
-          "description",
-          "total_bytes",
-          "created_at",
-          "updated_at"
-        ],
-        "properties": {
-          "allowed_tools": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Tools the skill is allowed to use. Informational; the chat UI may\nuse this to pre-approve tools while the skill is active."
-          },
-          "argument_hint": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Hint shown during autocomplete to describe expected arguments."
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "description": {
-            "type": "string",
-            "description": "Human-readable description. Used by the model to decide when to\ninvoke the skill."
-          },
-          "disable_model_invocation": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "If `true`, the model cannot auto-invoke this skill. `None` = unset\n(defaults to `false`)."
-          },
-          "files": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SkillFile"
-            },
-            "description": "Full file contents. Populated by get-by-id endpoints."
-          },
-          "files_manifest": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SkillFileManifest"
-            },
-            "description": "File summary (no contents). Populated by list endpoints."
-          },
-          "frontmatter_extra": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Unknown / forward-compat frontmatter keys preserved verbatim.",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "name": {
-            "type": "string",
-            "description": "Skill name (unique per owner). See [`validate_skill_name`]."
-          },
-          "owner_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "owner_type": {
-            "$ref": "#/components/schemas/SkillOwnerType"
-          },
-          "source_ref": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Git ref if imported."
-          },
-          "source_url": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Origin URL if imported (e.g. a GitHub tree URL)."
-          },
-          "total_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Cached total size across all files (bytes)."
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "user_invocable": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "If `false`, the skill is hidden from the user-visible slash-command\nlist. `None` = unset (defaults to `true`)."
-          }
-        }
-      },
       "SkillFile": {
         "type": "object",
-        "description": "A file bundled with a skill. Returned in full detail by get-by-id; list\nendpoints populate [`SkillFileManifest`] instead.",
+        "description": "A file bundled with a skill version. Returned in full detail by get-by-id;\nlist endpoints populate [`SkillFileManifest`] instead.",
         "required": [
           "path",
           "content",
           "byte_size",
           "content_type",
-          "created_at",
-          "updated_at"
+          "created_at"
         ],
         "properties": {
           "byte_size": {
@@ -31436,16 +31573,12 @@
           "path": {
             "type": "string",
             "description": "Relative path inside the skill, e.g. \"SKILL.md\" or \"scripts/extract.py\"."
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
           }
         }
       },
       "SkillFileInput": {
         "type": "object",
-        "description": "A single file in a create/update request.",
+        "description": "A single file in a create/version request.",
         "required": [
           "path",
           "content"
@@ -31487,24 +31620,43 @@
           }
         }
       },
-      "SkillListResponse": {
+      "SkillId": {
+        "type": "string",
+        "description": "A skill ID that serializes with `skill_` prefix (OpenAI Skills API).",
+        "example": "skill_550e8400-e29b-41d4-a716-446655440000"
+      },
+      "SkillListResource": {
         "type": "object",
         "description": "Paginated list of skills.",
         "required": [
+          "object",
           "data",
-          "pagination"
+          "has_more"
         ],
         "properties": {
           "data": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Skill"
-            },
-            "description": "List of skills (file contents omitted; see `files_manifest` on each)."
+              "$ref": "#/components/schemas/SkillResource"
+            }
           },
-          "pagination": {
-            "$ref": "#/components/schemas/PaginationMeta",
-            "description": "Pagination metadata."
+          "first_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "object": {
+            "type": "string"
           }
         }
       },
@@ -31598,6 +31750,292 @@
           "project",
           "user"
         ]
+      },
+      "SkillResource": {
+        "type": "object",
+        "description": "A skill (OpenAI `SkillResource` + Hadrian extensions). Timestamps are unix\nseconds; the projection reflects the **default** version's metadata/files.",
+        "required": [
+          "id",
+          "object",
+          "name",
+          "description",
+          "created_at",
+          "default_version",
+          "latest_version",
+          "owner_type",
+          "owner_id",
+          "total_bytes"
+        ],
+        "properties": {
+          "allowed_tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — tools the skill may use."
+          },
+          "argument_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — argument hint for autocomplete."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) for when the skill was created."
+          },
+          "default_version": {
+            "type": "string",
+            "description": "Default version number."
+          },
+          "description": {
+            "type": "string"
+          },
+          "disable_model_invocation": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — block model auto-invocation."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            },
+            "description": "**Hadrian Extension:** default version's files (get-by-id only)."
+          },
+          "files_manifest": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileManifest"
+            },
+            "description": "**Hadrian Extension:** default version's file summary (list only)."
+          },
+          "frontmatter_extra": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** unknown/forward-compat frontmatter keys, preserved verbatim.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier (`skill_<uuid>`)."
+          },
+          "latest_version": {
+            "type": "string",
+            "description": "Latest version number."
+          },
+          "name": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always `skill`."
+          },
+          "owner_id": {
+            "type": "string",
+            "description": "**Hadrian Extension:** owner id."
+          },
+          "owner_type": {
+            "type": "string",
+            "description": "**Hadrian Extension:** owner kind (organization/team/project/user)."
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** git ref when imported."
+          },
+          "source_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** origin URL when imported."
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "**Hadrian Extension:** default version's total file size in bytes."
+          },
+          "user_invocable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — hide from the user `/` menu."
+          }
+        }
+      },
+      "SkillVersionId": {
+        "type": "string",
+        "description": "A skill version ID that serializes with `skillver_` prefix (OpenAI Skills API).",
+        "example": "skillver_550e8400-e29b-41d4-a716-446655440000"
+      },
+      "SkillVersionListResource": {
+        "type": "object",
+        "description": "Paginated list of skill versions.",
+        "required": [
+          "object",
+          "data",
+          "has_more"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillVersionResource"
+            }
+          },
+          "first_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "object": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillVersionResource": {
+        "type": "object",
+        "description": "An immutable skill version (OpenAI `SkillVersionResource` + extensions).",
+        "required": [
+          "object",
+          "id",
+          "skill_id",
+          "version",
+          "created_at",
+          "name",
+          "description",
+          "total_bytes"
+        ],
+        "properties": {
+          "allowed_tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — tools the skill may use."
+          },
+          "argument_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter — argument hint for autocomplete."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) for when the version was created."
+          },
+          "description": {
+            "type": "string"
+          },
+          "disable_model_invocation": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — block model auto-invocation."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            },
+            "description": "**Hadrian Extension:** files (get-version only)."
+          },
+          "files_manifest": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileManifest"
+            },
+            "description": "**Hadrian Extension:** file summary (list only)."
+          },
+          "frontmatter_extra": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** unknown/forward-compat frontmatter keys, preserved verbatim.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier (`skillver_<uuid>`)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always `skill.version`."
+          },
+          "skill_id": {
+            "type": "string",
+            "description": "Identifier of the parent skill (`skill_<uuid>`)."
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** git ref when imported."
+          },
+          "source_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** origin URL when imported."
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "**Hadrian Extension:** total file size in bytes."
+          },
+          "user_invocable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** SKILL.md frontmatter flag — hide from the user `/` menu."
+          },
+          "version": {
+            "type": "string",
+            "description": "Version number for this skill."
+          }
+        }
       },
       "SortOrder": {
         "type": "string",
@@ -34325,82 +34763,6 @@
           }
         }
       },
-      "UpdateSkill": {
-        "type": "object",
-        "description": "Request to update a skill. Any field that is `Some(_)` replaces the\nstored value. When `files` is `Some(_)`, the entire file set is\nreplaced.",
-        "properties": {
-          "allowed_tools": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            }
-          },
-          "argument_hint": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "disable_model_invocation": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "files": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "$ref": "#/components/schemas/SkillFileInput"
-            }
-          },
-          "frontmatter_extra": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_ref": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "user_invocable": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          }
-        }
-      },
       "UpdateSsoGroupMapping": {
         "type": "object",
         "description": "Request to update an existing SSO group mapping.\n\nAll fields are optional - only provided fields will be updated.",
@@ -36487,7 +36849,7 @@
     },
     {
       "name": "skills",
-      "description": "Manage Agent Skills (https://agentskills.io). A skill packages a SKILL.md instruction file plus optional bundled scripts, references, and assets. Skills can be user-invoked via slash command or auto-invoked by the model via the frontend Skill tool."
+      "description": "Manage Skills (OpenAI-compatible `/v1/skills`). A skill packages a SKILL.md instruction file plus optional bundled scripts, references, and assets, published as immutable versions with a `default_version`/`latest_version` pointer. Upload as a JSON file array, a multipart directory, or a zip bundle; download a version as zip via `/content`.\n\n## Hadrian Extensions\n- `owner_type`/`owner_id` for organization/team/project/user ownership (OpenAI is project-scoped)\n- JSON `files` array (`{path, content}`) alongside the spec's zip/multipart upload\n- `files`/`files_manifest`, `total_bytes`, and frontmatter flags on responses\n- `skill_reference` accepts a prefixed/bare id or a name slug, plus a specific `version`"
     },
     {
       "name": "audit-logs",
@@ -36539,7 +36901,8 @@
         "chat",
         "completions",
         "embeddings",
-        "models"
+        "models",
+        "skills"
       ]
     },
     {

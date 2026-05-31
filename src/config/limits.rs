@@ -108,6 +108,11 @@ pub struct ResourceLimits {
     #[serde(default = "default_max_skill_bytes")]
     pub max_skill_bytes: u32,
 
+    /// Maximum number of immutable versions retained per skill. Default: 0
+    /// (unlimited). When set, creating a version past the limit is rejected.
+    #[serde(default = "default_max_skill_versions_per_skill")]
+    pub max_skill_versions_per_skill: u32,
+
     /// Maximum domain verifications per SSO configuration. Default: 50.
     #[serde(default = "default_max_domains_per_sso_config")]
     pub max_domains_per_sso_config: u32,
@@ -158,6 +163,7 @@ impl Default for ResourceLimits {
             max_templates_per_owner: default_max_templates_per_owner(),
             max_skills_per_owner: default_max_skills_per_owner(),
             max_skill_bytes: default_max_skill_bytes(),
+            max_skill_versions_per_skill: default_max_skill_versions_per_skill(),
             max_domains_per_sso_config: default_max_domains_per_sso_config(),
             max_sso_group_mappings_per_org: default_max_sso_group_mappings_per_org(),
             max_members_per_org: default_max_members_per_org(),
@@ -241,6 +247,11 @@ fn default_max_skill_bytes() -> u32 {
     // 500 KiB — generous enough for SKILL.md plus a handful of bundled
     // scripts/references, small enough to keep tool-result tokens bounded.
     512_000
+}
+
+fn default_max_skill_versions_per_skill() -> u32 {
+    // Unlimited by default; operators can cap version history if desired.
+    0
 }
 
 fn default_max_domains_per_sso_config() -> u32 {

@@ -395,6 +395,12 @@ class ConformanceChecker:
         "/containers/{container_id}/files": "/api/v1/containers/{container_id}/files",
         "/containers/{container_id}/files/{file_id}": "/api/v1/containers/{container_id}/files/{file_id}",
         "/containers/{container_id}/files/{file_id}/content": "/api/v1/containers/{container_id}/files/{file_id}/content",
+        "/skills": "/api/v1/skills",
+        "/skills/{skill_id}": "/api/v1/skills/{skill_id}",
+        "/skills/{skill_id}/content": "/api/v1/skills/{skill_id}/content",
+        "/skills/{skill_id}/versions": "/api/v1/skills/{skill_id}/versions",
+        "/skills/{skill_id}/versions/{version}": "/api/v1/skills/{skill_id}/versions/{version}",
+        "/skills/{skill_id}/versions/{version}/content": "/api/v1/skills/{skill_id}/versions/{version}/content",
     }
 
     # Endpoints out of scope for Hadrian
@@ -416,7 +422,6 @@ class ConformanceChecker:
         "/chatkit",  # OpenAI chatkit feature
         "/audio/voice_consents",  # OpenAI voice consent management
         "/audio/voices",  # OpenAI custom voices
-        "/skills",  # OpenAI skills API - not applicable to gateway
     ]
 
     # More specific out-of-scope paths (for sub-paths that don't match prefixes)

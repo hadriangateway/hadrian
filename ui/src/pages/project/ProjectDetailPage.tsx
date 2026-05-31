@@ -188,9 +188,7 @@ export default function ProjectDetailPage() {
       {activeTab === "templates" && (
         <TemplatesTab orgSlug={orgSlug!} projectSlug={projectSlug!} projectId={project.id} />
       )}
-      {activeTab === "skills" && (
-        <SkillsTab orgSlug={orgSlug!} projectSlug={projectSlug!} projectId={project.id} />
-      )}
+      {activeTab === "skills" && <SkillsTab projectId={project.id} />}
       {activeTab === "usage" && (
         <UsageTab orgSlug={orgSlug!} projectSlug={projectSlug!} projectId={project.id} />
       )}

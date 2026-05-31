@@ -6,14 +6,14 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Brain, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 
 import type {
-  CreateSkill,
-  Skill,
+  CreateSkillBody,
+  CreateSkillVersionBody,
   SkillFileInput,
   SkillFileManifest,
   SkillOwner,
-  UpdateSkill,
+  SkillResource,
 } from "@/api/generated/types.gen";
-import { skillCreate, skillGet, skillUpdate } from "@/api/generated/sdk.gen";
+import { skillCreate, skillCreateVersion, skillGet } from "@/api/generated/sdk.gen";
 import { Button } from "@/components/Button/Button";
 import { FormField } from "@/components/FormField/FormField";
 import { Input } from "@/components/Input/Input";
@@ -92,9 +92,9 @@ function formatAllowedTools(tools: string[] | null | undefined): string {
 export interface SkillFormModalProps {
   open: boolean;
   onClose: () => void;
-  editingSkill?: Skill | null;
+  editingSkill?: SkillResource | null;
   ownerOverride: SkillOwner;
-  onSaved?: (skill: Skill) => void;
+  onSaved?: (skill: SkillResource) => void;
 }
 
 export function SkillFormModal({
@@ -163,7 +163,7 @@ export function SkillFormModal({
       // If body isn't populated (list response only), fetch full skill.
       if (!mainFile) {
         setIsLoadingFiles(true);
-        skillGet({ path: { id: editingSkill.id } })
+        skillGet({ path: { skill_id: editingSkill.id } })
           .then((res) => {
             if (res.data) {
               const main = res.data.files?.find((f) => f.path === SKILL_MAIN_FILE);
@@ -199,8 +199,13 @@ export function SkillFormModal({
     setShowAdvanced(false);
   }, [open, editingSkill, form]);
 
+  const invalidateSkillQueries = () => {
+    queryClient.invalidateQueries({ queryKey: [{ _id: "skillList" }] });
+    queryClient.invalidateQueries({ queryKey: [{ _id: "skillGet" }] });
+  };
+
   const createMutation = useMutation({
-    mutationFn: async (data: CreateSkill) => {
+    mutationFn: async (data: CreateSkillBody) => {
       const response = await skillCreate({ body: data });
       if (response.error) {
         throw new Error(
@@ -209,35 +214,35 @@ export function SkillFormModal({
             : "Failed to create skill"
         );
       }
-      return response.data as Skill;
+      return response.data as SkillResource;
     },
     onSuccess: (skill) => {
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByOrg" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByTeam" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByProject" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByUser" }] });
+      invalidateSkillQueries();
       onSaved?.(skill);
       onClose();
     },
   });
 
+  // Editing an existing skill publishes a new version and points the
+  // default pointer at it — there is no in-place update endpoint anymore.
   const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: UpdateSkill }) => {
-      const response = await skillUpdate({ path: { id }, body: data });
+    mutationFn: async ({ id, data }: { id: string; data: CreateSkillVersionBody }) => {
+      const response = await skillCreateVersion({ path: { skill_id: id }, body: data });
       if (response.error) {
         throw new Error(
           typeof response.error === "object" && "message" in response.error
             ? String(response.error.message)
-            : "Failed to update skill"
+            : "Failed to save skill"
         );
       }
-      return response.data as Skill;
+      // `skillCreateVersion` returns a version, not the skill projection.
+      // Re-fetch the skill so `onSaved` sees the new default_version/files
+      // rather than the stale pre-edit object.
+      const refreshed = await skillGet({ path: { skill_id: id } });
+      return (refreshed.data ?? editingSkill) as SkillResource;
     },
     onSuccess: (skill) => {
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByOrg" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByTeam" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByProject" }] });
-      queryClient.invalidateQueries({ queryKey: [{ _id: "skillListByUser" }] });
+      invalidateSkillQueries();
       onSaved?.(skill);
       onClose();
     },
@@ -267,10 +272,12 @@ export function SkillFormModal({
     const argumentHint = data.argument_hint?.trim() || undefined;
 
     if (isEditing && editingSkill) {
-      const payload: UpdateSkill = {
-        name: data.name,
+      // Saving an edit publishes a new default version. The skill's name is
+      // immutable, so it isn't part of the version body.
+      const payload: CreateSkillVersionBody = {
         description: data.description,
         files,
+        default: true,
         user_invocable: parseTriState(data.user_invocable),
         disable_model_invocation: parseTriState(data.disable_model_invocation),
         allowed_tools: allowedTools,
@@ -278,7 +285,7 @@ export function SkillFormModal({
       };
       updateMutation.mutate({ id: editingSkill.id, data: payload });
     } else {
-      const payload: CreateSkill = {
+      const payload: CreateSkillBody = {
         owner: ownerOverride,
         name: data.name,
         description: data.description,
@@ -327,11 +334,22 @@ export function SkillFormModal({
               </div>
             )}
 
+            {isEditing && (
+              <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                Saving publishes a new version of this skill and sets it as the default. Earlier
+                versions are kept.
+              </div>
+            )}
+
             <FormField
               label="Name"
               htmlFor="skill-name"
               required
-              helpText="Lowercase letters, digits, and hyphens. 1–64 characters. Invalid characters are stripped automatically."
+              helpText={
+                isEditing
+                  ? "A skill's name is fixed once created."
+                  : "Lowercase letters, digits, and hyphens. 1–64 characters. Invalid characters are stripped automatically."
+              }
               error={form.formState.errors.name?.message}
             >
               <Input
@@ -351,6 +369,7 @@ export function SkillFormModal({
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
+                readOnly={isEditing}
                 placeholder="e.g., code-review"
               />
             </FormField>

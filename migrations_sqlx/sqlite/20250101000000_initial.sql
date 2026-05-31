@@ -957,20 +957,49 @@ CREATE INDEX IF NOT EXISTS idx_service_accounts_org_slug_active ON service_accou
 -- Skills
 -- ======================================================================
 
--- Agent Skills (https://agentskills.io/specification.md). A skill is a
--- packaged set of instructions (SKILL.md) plus optional bundled files
--- (scripts, references, assets) that the model can auto-invoke or the
--- user can invoke via slash-command / button.
+-- Agent Skills, modeled on the OpenAI Skills API (immutable, versioned) with
+-- a Hadrian ownership extension. A skill is a packaged set of instructions
+-- (SKILL.md) plus optional bundled files (scripts, references, assets) that
+-- the model can auto-invoke or the user can invoke via slash-command / button.
 --
--- Files are stored inline in skill_files with a per-skill total size cap
--- enforced in the service layer (config: limits.resource_limits.max_skill_bytes).
+-- The `skills` row holds identity (owner + per-owner unique `name` slug) and
+-- mutable version pointers. Each immutable version lives in `skill_versions`
+-- with its own files in `skill_version_files`. The only way to change a
+-- skill's content is to publish a new version; `POST /v1/skills/{id}` just
+-- repoints `default_version_seq`. Per-skill total size cap is enforced in the
+-- service layer (config: limits.resource_limits.max_skill_bytes).
 CREATE TABLE IF NOT EXISTS skills (
     id TEXT PRIMARY KEY NOT NULL,
     owner_type TEXT NOT NULL CHECK (owner_type IN ('organization', 'team', 'project', 'user')),
     owner_id TEXT NOT NULL,
-    -- Per spec: 1..=64 chars, [a-z0-9-]+, no leading/trailing/consecutive hyphens
+    -- Per spec: 1..=64 chars, [a-z0-9-]+, no leading/trailing/consecutive hyphens.
+    -- Immutable per-owner slug; doubles as the name used in skill_reference.
     name TEXT NOT NULL,
-    -- Per spec: required, 1..=1024 chars
+    -- Version pointers. API `version` strings are these seqs rendered as decimal.
+    default_version_seq INTEGER NOT NULL,       -- version served by default / GET .../content
+    latest_version_seq INTEGER NOT NULL,        -- highest live version seq
+    next_version_seq INTEGER NOT NULL DEFAULT 2,-- next seq to assign (v1 created at insert); never reused
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
+);
+
+-- Name uniqueness only among live skills so soft-delete + recreate works.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_owner_name_active ON skills(owner_type, owner_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_type, owner_id);
+-- Partial index for non-deleted skills (most queries filter by deleted_at IS NULL)
+CREATE INDEX IF NOT EXISTS idx_skills_owner_active ON skills(owner_type, owner_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+
+-- Immutable skill versions. name/description and all frontmatter flags are
+-- snapshotted per version (they derive from that version's SKILL.md). The
+-- SkillResource projection surfaces the DEFAULT version's values.
+CREATE TABLE IF NOT EXISTS skill_versions (
+    id TEXT PRIMARY KEY NOT NULL,
+    skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    version_seq INTEGER NOT NULL,               -- public `version` string = this as decimal
+    -- name snapshots the skill slug; description per spec 1..=1024 chars
+    name TEXT NOT NULL,
     description TEXT NOT NULL,
     -- Optional frontmatter fields (NULL = not set)
     user_invocable INTEGER,                     -- bool (0/1); defaults to true in code
@@ -980,24 +1009,22 @@ CREATE TABLE IF NOT EXISTS skills (
     source_url TEXT,                            -- origin URL (e.g. GitHub) if imported
     source_ref TEXT,                            -- git ref if imported
     frontmatter_extra TEXT,                     -- JSON object, unknown/forward-compat keys
-    -- Cached sum of skill_files.byte_size for fast limit checks
+    -- Cached sum of skill_version_files.byte_size for fast limit checks
     total_bytes INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    deleted_at TEXT,
-    UNIQUE(owner_type, owner_id, name)
+    deleted_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_type, owner_id);
--- Partial index for non-deleted skills (most queries filter by deleted_at IS NULL)
-CREATE INDEX IF NOT EXISTS idx_skills_owner_active ON skills(owner_type, owner_id) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_versions_skill_seq ON skill_versions(skill_id, version_seq);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_active ON skill_versions(skill_id) WHERE deleted_at IS NULL;
+-- Keyset cursor index for version listing
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill_created ON skill_versions(skill_id, created_at, id);
 
--- Files bundled into a skill. Every skill must have exactly one row with
--- path = 'SKILL.md' (enforced in service layer). Additional rows hold
--- bundled scripts/references/assets referenced from SKILL.md.
-CREATE TABLE IF NOT EXISTS skill_files (
-    skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+-- Files bundled into a skill version. Every version must have exactly one row
+-- with path = 'SKILL.md' (enforced in service layer). Additional rows hold
+-- bundled scripts/references/assets referenced from SKILL.md. Text-only in v1.
+CREATE TABLE IF NOT EXISTS skill_version_files (
+    skill_version_id TEXT NOT NULL REFERENCES skill_versions(id) ON DELETE CASCADE,
     -- Relative path inside the skill directory (e.g. 'SKILL.md', 'scripts/extract.py')
     path TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -1007,11 +1034,10 @@ CREATE TABLE IF NOT EXISTS skill_files (
     -- extension for others
     content_type TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY(skill_id, path)
+    PRIMARY KEY(skill_version_id, path)
 );
 
-CREATE INDEX IF NOT EXISTS idx_skill_files_skill ON skill_files(skill_id);
+CREATE INDEX IF NOT EXISTS idx_skill_version_files_version ON skill_version_files(skill_version_id);
 
 -- ======================================================================
 -- OAuth PKCE Authorization Codes
