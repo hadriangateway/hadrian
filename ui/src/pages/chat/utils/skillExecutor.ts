@@ -1,4 +1,5 @@
 import { skillGet } from "@/api/generated/sdk.gen";
+import { useChatUIStore } from "@/stores/chatUIStore";
 
 import { getFullSkill, getSkillByName, setFullSkill } from "./skillCache";
 import type { ParsedToolCall } from "./toolCallParser";
@@ -147,7 +148,10 @@ export const skillExecutor: ToolExecutor = async (
   // The tool description's enum is a soft hint to the model; enforce
   // `disable_model_invocation` here as the hard boundary so a model that
   // learns a skill name from prior context can't bypass an admin's flag.
-  if (summary.disable_model_invocation === true) {
+  // Exception: a skill the user explicitly slash-invoked is opted in for the
+  // session, so an explicit user invocation can still load it.
+  const userInvoked = useChatUIStore.getState().userInvokedSkillIds.includes(summary.id);
+  if (summary.disable_model_invocation === true && !userInvoked) {
     const message = `Skill "${command}" cannot be invoked by the model.`;
     return {
       success: false,

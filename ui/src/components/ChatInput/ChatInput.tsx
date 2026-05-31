@@ -293,7 +293,7 @@ export function ChatInput({
     setPendingSkill(null);
   }, [content, files, onSend, pendingSkill, isStreaming, isQueuing]);
 
-  const enableSkill = useChatUIStore((s) => s.enableSkill);
+  const markSkillUserInvoked = useChatUIStore((s) => s.markSkillUserInvoked);
 
   const commitSlashSkill = useCallback(
     (skill: SkillResource) => {
@@ -302,14 +302,15 @@ export function ChatInput({
         // Strip the `/<query>` token; anything after the caret stays put.
         return prev.slice(0, slashQuery.start) + prev.slice(slashQuery.end);
       });
-      // Enable the picked skill for this session so the `Skill` tool sees it
-      // and the model can actually load it when asked.
-      enableSkill(skill.id);
+      // Explicit user invocation: enable the skill AND opt it past the
+      // `disable_model_invocation` gate so the `Skill` tool can load it even
+      // for skills the model isn't allowed to auto-pick.
+      markSkillUserInvoked(skill.id);
       setPendingSkill(skill);
       setSlashQuery(null);
       setSlashActiveIndex(0);
     },
-    [slashQuery, enableSkill]
+    [slashQuery, markSkillUserInvoked]
   );
 
   const handleKeyDown = useCallback(

@@ -149,6 +149,14 @@ interface ChatUIState {
    */
   enabledSkillIds: string[];
   /**
+   * IDs of skills the user explicitly invoked via the `/<name>` slash command.
+   * A `disable_model_invocation: true` skill is normally hidden from the model;
+   * an explicit user invocation opts it in for this session so the slash
+   * command can actually load it (the model still can't auto-pick one the user
+   * never invoked). Kept as a subset of `enabledSkillIds`.
+   */
+  userInvokedSkillIds: string[];
+  /**
    * Data files registered with DuckDB for SQL queries.
    * Files are registered in-memory and reset on page reload.
    */
@@ -304,8 +312,11 @@ interface ChatUIActions {
   enableTool: (toolId: string) => void;
   /** Toggle a skill's enabled state for this session. */
   toggleSkill: (skillId: string) => void;
-  /** Enable a skill (no-op if already enabled). */
-  enableSkill: (skillId: string) => void;
+  /**
+   * Mark a skill as explicitly user-invoked (via slash command): enables it and
+   * opts it past the `disable_model_invocation` gate for this session.
+   */
+  markSkillUserInvoked: (skillId: string) => void;
   /** Replace the full set of enabled skills. */
   setEnabledSkillIds: (ids: string[]) => void;
   /** Disable a specific tool */
@@ -429,6 +440,7 @@ const initialState: ChatUIState = {
   clientSideRAG: false,
   enabledTools: [],
   enabledSkillIds: [],
+  userInvokedSkillIds: [],
   dataFiles: [],
   maxToolIterations: 25,
   captureRawSSEEvents: false,
@@ -599,20 +611,35 @@ export const useChatUIStore = create<ChatUIStore>((set) => ({
     })),
 
   toggleSkill: (skillId) =>
-    set((state) => ({
-      enabledSkillIds: state.enabledSkillIds.includes(skillId)
-        ? state.enabledSkillIds.filter((id) => id !== skillId)
-        : [...state.enabledSkillIds, skillId],
-    })),
+    set((state) => {
+      const willDisable = state.enabledSkillIds.includes(skillId);
+      return {
+        enabledSkillIds: willDisable
+          ? state.enabledSkillIds.filter((id) => id !== skillId)
+          : [...state.enabledSkillIds, skillId],
+        // Disabling a skill also revokes any user-invocation opt-in.
+        userInvokedSkillIds: willDisable
+          ? state.userInvokedSkillIds.filter((id) => id !== skillId)
+          : state.userInvokedSkillIds,
+      };
+    }),
 
-  enableSkill: (skillId) =>
+  markSkillUserInvoked: (skillId) =>
     set((state) => ({
       enabledSkillIds: state.enabledSkillIds.includes(skillId)
         ? state.enabledSkillIds
         : [...state.enabledSkillIds, skillId],
+      userInvokedSkillIds: state.userInvokedSkillIds.includes(skillId)
+        ? state.userInvokedSkillIds
+        : [...state.userInvokedSkillIds, skillId],
     })),
 
-  setEnabledSkillIds: (ids) => set({ enabledSkillIds: ids }),
+  // Keep user-invocation opt-ins a subset of the enabled set.
+  setEnabledSkillIds: (ids) =>
+    set((state) => ({
+      enabledSkillIds: ids,
+      userInvokedSkillIds: state.userInvokedSkillIds.filter((id) => ids.includes(id)),
+    })),
 
   addDataFile: (file) =>
     set((state) => ({
@@ -816,6 +843,10 @@ export const useIsToolEnabled = (toolId: string) =>
 /** Get the list of skills enabled for this session. */
 export const useEnabledSkillIds = () =>
   useChatUIStore((state: ChatUIState) => state.enabledSkillIds);
+
+/** Get the ids of skills the user explicitly invoked via slash command. */
+export const useUserInvokedSkillIds = () =>
+  useChatUIStore((state: ChatUIState) => state.userInvokedSkillIds);
 
 /** Get data files registered with DuckDB */
 export const useDataFiles = () => useChatUIStore((state: ChatUIState) => state.dataFiles);

@@ -52,6 +52,7 @@ import { buildSkillToolDescription } from "./utils/skillDirectory";
 import type { SkillResource } from "@/api/generated/types.gen";
 import { getToolStatusLabel } from "@/components/ToolIcons";
 import { useMCPStore } from "@/stores/mcpStore";
+import { useUserInvokedSkillIds } from "@/stores/chatUIStore";
 import {
   sendChainedMode,
   sendRoutedMode,
@@ -360,6 +361,9 @@ export function useChat({
   const debugStore = useDebugStore.getState();
   const modelResponses = useAllStreams();
   const isStreaming = useIsStreaming();
+  // Skills the user explicitly slash-invoked — allowed past the
+  // `disable_model_invocation` gate when building the `Skill` tool.
+  const userInvokedSkillIds = useUserInvokedSkillIds();
 
   const stopStreaming = useCallback(() => {
     abortControllersRef.current.forEach((controller) => controller.abort());
@@ -897,8 +901,12 @@ export function useChat({
         // Only `disable_model_invocation` gates model access here.
         // `user_invocable: false` is a UI-only flag that hides skills from
         // the slash-command popover — model-only skills (false/false) must
-        // still appear in the tool description.
-        const invocableSkills = enabledSkills.filter((s) => s.disable_model_invocation !== true);
+        // still appear in the tool description. A `disable_model_invocation`
+        // skill the user explicitly slash-invoked is opted in for the session
+        // so the slash command can actually load it.
+        const invocableSkills = enabledSkills.filter(
+          (s) => s.disable_model_invocation !== true || userInvokedSkillIds.includes(s.id)
+        );
         if (invocableSkills.length > 0) {
           tools.push({
             type: "function",
@@ -1769,6 +1777,7 @@ export function useChat({
       enabledTools,
       agentConfig,
       enabledSkills,
+      userInvokedSkillIds,
       dataFiles,
     ]
   );
