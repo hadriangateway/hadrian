@@ -1116,6 +1116,10 @@ fn format_shell_call_output_item(
 /// before producing real output (boot failure, passthrough misconfig,
 /// exec error). Both items carry `status: "incomplete"`; the output
 /// item's stderr surfaces the error message so the model can react.
+///
+/// The output item's `done` is sent before the call's `done` for the
+/// same reason as the success path: the call resolving must reliably
+/// mean its paired output is already on the wire.
 #[allow(clippy::too_many_arguments)]
 async fn emit_failure_done(
     event_tx: &mpsc::Sender<Bytes>,
@@ -1127,6 +1131,21 @@ async fn emit_failure_done(
     working_directory: Option<&str>,
     stderr: &str,
 ) {
+    let _ = event_tx
+        .send(format_shell_call_output_item(
+            ItemLifecycle::Done,
+            id,
+            id,
+            0,
+            -1,
+            "",
+            stderr,
+            &[],
+            true,
+            max_output_length,
+            Some("gateway"),
+        ))
+        .await;
     let _ = event_tx
         .send(format_shell_call_item(
             ItemLifecycle::Done,
@@ -1141,21 +1160,6 @@ async fn emit_failure_done(
             "incomplete",
             None,
             Some("model"),
-        ))
-        .await;
-    let _ = event_tx
-        .send(format_shell_call_output_item(
-            ItemLifecycle::Done,
-            id,
-            id,
-            0,
-            -1,
-            "",
-            stderr,
-            &[],
-            true,
-            max_output_length,
-            Some("gateway"),
         ))
         .await;
 }
@@ -2259,6 +2263,30 @@ impl ServerExecutedTool for ShellExecutor {
                 "type": "container_reference",
                 "container_id": container_id_for_items,
             });
+            // Ordering invariant: the `shell_call_output` item's terminal
+            // `done` is sent BEFORE the `shell_call`'s. Hadrian overloads
+            // `shell_call.status` with the execution outcome (`completed`
+            // vs `incomplete`), so consumers reasonably read the call's
+            // `done(completed)` as "execution finished — output available".
+            // Emitting the output first makes that a reliable signal: by
+            // the time the call resolves, its paired output (same
+            // `call_id`) is already on the wire. (Events share one ordered
+            // channel, so this is a strict wire ordering, not a hint.)
+            let _ = event_tx
+                .send(format_shell_call_output_item(
+                    ItemLifecycle::Done,
+                    &id_for_task,
+                    &id_for_task,
+                    0,
+                    exit_for_report,
+                    &stdout_render,
+                    &stderr_render,
+                    &new_files,
+                    killed,
+                    model_max_output_length,
+                    Some("gateway"),
+                ))
+                .await;
             let _ = event_tx
                 .send(format_shell_call_item(
                     ItemLifecycle::Done,
@@ -2273,21 +2301,6 @@ impl ServerExecutedTool for ShellExecutor {
                     shell_call_status,
                     Some(&environment_val),
                     Some("model"),
-                ))
-                .await;
-            let _ = event_tx
-                .send(format_shell_call_output_item(
-                    ItemLifecycle::Done,
-                    &id_for_task,
-                    &id_for_task,
-                    0,
-                    exit_for_report,
-                    &stdout_render,
-                    &stderr_render,
-                    &new_files,
-                    killed,
-                    model_max_output_length,
-                    Some("gateway"),
                 ))
                 .await;
             info!(
@@ -3330,5 +3343,46 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0]["file_id"], "cfile_abc");
         assert_eq!(files[0]["container_id"], "cntr_test");
+    }
+
+    /// Parse an SSE `data:` frame into the carried `output_item.<verb>`
+    /// event JSON.
+    fn parse_sse_event(bytes: &Bytes) -> Value {
+        let s = std::str::from_utf8(bytes).unwrap();
+        let json_str = s.trim().strip_prefix("data: ").unwrap();
+        serde_json::from_str(json_str).unwrap()
+    }
+
+    /// The terminal `done` events must arrive output-then-call so that a
+    /// consumer treating `shell_call → done` as "fully resolved" never
+    /// races the paired `shell_call_output`. Covers the failure path
+    /// directly; the success path emits the same pair in the same order.
+    #[tokio::test]
+    async fn failure_done_emits_output_before_call() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        emit_failure_done(
+            &tx,
+            "call_1",
+            &["echo hi".to_string()],
+            None,
+            None,
+            None,
+            None,
+            "boot failed",
+        )
+        .await;
+        drop(tx);
+
+        let first = parse_sse_event(&rx.recv().await.unwrap());
+        let second = parse_sse_event(&rx.recv().await.unwrap());
+        assert!(rx.recv().await.is_none(), "exactly two events expected");
+
+        assert_eq!(first["type"], "response.output_item.done");
+        assert_eq!(first["item"]["type"], "shell_call_output");
+        assert_eq!(first["item"]["call_id"], "call_1");
+
+        assert_eq!(second["type"], "response.output_item.done");
+        assert_eq!(second["item"]["type"], "shell_call");
+        assert_eq!(second["item"]["call_id"], "call_1");
     }
 }
