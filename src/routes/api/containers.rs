@@ -347,6 +347,17 @@ fn validate_skill_entry(entry: &crate::api_types::RequestSkill) -> Result<(), Ap
                     "inline skill `name` must be non-empty",
                 ));
             }
+            // The name becomes the `/skills/<name>` mount segment, written to
+            // the sandbox verbatim, so it must be a path-safe slug. Mirror the
+            // resolver's check so a bad name is rejected at creation rather than
+            // failing on every later request.
+            if crate::models::validate_skill_name(&inline.name).is_err() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_inline_skill",
+                    format!("inline skill `name` '{}' is not a valid slug", inline.name),
+                ));
+            }
             let crate::api_types::InlineSkillSource::Base64 { media_type, data } = &inline.source;
             if media_type != "text/markdown" {
                 return Err(ApiError::new(
