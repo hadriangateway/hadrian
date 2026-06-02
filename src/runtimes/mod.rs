@@ -194,7 +194,7 @@ pub struct SecretMount {
 #[derive(Debug, Clone)]
 pub struct SkillMount {
     pub skill_id: String,
-    /// Mount path inside the container (e.g. `/skills/<skill_id>`).
+    /// Mount path inside the container (e.g. `/skills/<name>-<version>`).
     pub mount_path: String,
     /// Files to write under `mount_path`. Paths are relative to the
     /// mount point; the adapter is responsible for creating

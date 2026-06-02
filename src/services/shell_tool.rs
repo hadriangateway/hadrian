@@ -396,8 +396,9 @@ pub struct ShellToolHint {
     /// stdout/stderr fed back to the model are truncated past this many
     /// characters with a head+tail keep.
     pub max_output_chars: usize,
-    /// Names of skill bundles mounted under `/skills/<id>` for this
-    /// request.
+    /// Mount-directory names of skill bundles materialized under
+    /// `/skills/<name>-<version>` (or `/skills/<name>` for inline) for
+    /// this request.
     pub mounted_skill_ids: Vec<String>,
     /// Operator-supplied description of the container environment
     /// (`[features.server_tools.shell_limits].environment_description`):

@@ -1998,9 +1998,11 @@ pub async fn api_v1_responses(
         let code = match &e {
             SRE::InvalidId(_) | SRE::NotFound(_) | SRE::MissingOrg => "invalid_skill_reference",
             SRE::UnsupportedVersion(_) => "unsupported_skill_version",
-            SRE::InvalidBase64 { .. } | SRE::InvalidUtf8 { .. } | SRE::EmptyInlineName => {
-                "invalid_inline_skill"
-            }
+            SRE::InvalidBase64 { .. }
+            | SRE::InvalidUtf8 { .. }
+            | SRE::EmptyInlineName
+            | SRE::InvalidInlineName(_) => "invalid_inline_skill",
+            SRE::MountPathConflict { .. } => "skill_mount_conflict",
             SRE::UnsupportedMediaType { .. } => "unsupported_inline_skill_media_type",
             SRE::NoService => "skills_not_configured",
             SRE::Db(_) => "skill_lookup_failed",

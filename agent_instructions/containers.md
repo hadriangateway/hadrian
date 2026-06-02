@@ -160,14 +160,20 @@ extra runtime support is needed.
 `skills` on a Responses-API or `POST /v1/containers` request is a tagged-union list per
 OpenAI's spec:
 
-- `{ "type": "skill_reference", "skill_id": "<uuid>", "version": "latest" }` —
-  resolves to a stored skill via `SkillService::get_by_id_and_org`. `version` accepts
-  `latest` only; anything else rejects with `unsupported_skill_version`.
+- `{ "type": "skill_reference", "skill_id": "<id>", "version": "latest" }` —
+  resolves a stored skill via `resolve_version_for_reference`. `skill_id` is a prefixed
+  id (`skill_…`), a bare UUID, or the skill's name slug. `version` is optional: omit for
+  the **default** version, `latest` for the newest, or a positive integer for that exact
+  version; anything else rejects with `unsupported_skill_version`. Files materialize
+  under `/skills/<name>-<version>/` (e.g. `/skills/csv-insights-1/`), mirroring OpenAI's
+  `<name>-<version>` container layout under Hadrian's `/skills` root.
 - `{ "type": "inline", "name": "...", "description": "...", "source": { "type": "base64",
   "media_type": "text/markdown", "data": "..." } }` — ephemeral. The decoded payload is
-  mounted as a single-file skill under `/skills/skill_inline_<hash>/SKILL.md`. The hash
-  is derived from `(name, content)` so foreground and background lanes mount the inline
-  skill at the same path.
+  mounted as a single-file skill under `/skills/<name>/SKILL.md`. `name` must be a valid
+  lowercase skill slug because it becomes the mount directory (written to the sandbox
+  unsanitized); a non-slug name rejects with `invalid_inline_skill`. The path is derived
+  purely from `name`, so foreground and background lanes mount the inline skill at the
+  same path.
 
 Skills attached at `POST /v1/containers` time are stored verbatim on the row's
 `skill_ids_json` column (the column name predates the typed enum; it now holds the full

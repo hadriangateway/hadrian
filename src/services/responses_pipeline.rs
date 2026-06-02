@@ -147,6 +147,18 @@ pub enum SkillResolutionError {
     InvalidUtf8 { name: String },
     #[error("inline skill name must be non-empty")]
     EmptyInlineName,
+    #[error(
+        "inline skill name `{0}` must be a lowercase slug (1-64 chars of a-z, 0-9, and hyphens; no leading, trailing, or consecutive hyphens)"
+    )]
+    InvalidInlineName(String),
+    #[error(
+        "skills `{first}` and `{second}` both resolve to mount path `{path}`; each skill must mount to a distinct directory (remove the duplicate or rename it)"
+    )]
+    MountPathConflict {
+        path: String,
+        first: String,
+        second: String,
+    },
 }
 
 /// Resolve `payload.skills` to mountable bundles and prepend each
@@ -172,13 +184,20 @@ pub async fn resolve_and_inject_skills(
         return Ok(Vec::new());
     }
 
-    let mut mounts = Vec::with_capacity(skills.len());
-    let mut preamble_sections = Vec::with_capacity(skills.len());
-
+    let mut resolved = Vec::with_capacity(skills.len());
     for entry in skills {
-        let mount = resolve_one_skill(state, org_id, entry).await?;
-        let preamble = mount.build_preamble();
-        preamble_sections.push(preamble);
+        resolved.push(resolve_one_skill(state, org_id, entry).await?);
+    }
+
+    // Two skills resolving to the same directory would clobber each
+    // other's files at mount time (and confuse the model's path hints),
+    // so reject the request rather than silently dropping one.
+    ensure_unique_mount_paths(&resolved)?;
+
+    let mut mounts = Vec::with_capacity(resolved.len());
+    let mut preamble_sections = Vec::with_capacity(resolved.len());
+    for mount in resolved {
+        preamble_sections.push(mount.build_preamble());
         mounts.push(mount.into_skill_mount());
     }
 
@@ -239,6 +258,25 @@ impl ResolvedSkill {
     }
 }
 
+/// Reject a skill set in which two entries resolve to the same mount
+/// directory. The list is tiny (a handful of skills per request), so a
+/// quadratic scan is cheaper than allocating a set.
+fn ensure_unique_mount_paths(resolved: &[ResolvedSkill]) -> Result<(), SkillResolutionError> {
+    for (i, skill) in resolved.iter().enumerate() {
+        if let Some(first) = resolved[..i]
+            .iter()
+            .find(|s| s.mount_path == skill.mount_path)
+        {
+            return Err(SkillResolutionError::MountPathConflict {
+                path: skill.mount_path.clone(),
+                first: first.name.clone(),
+                second: skill.name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn resolve_one_skill(
     state: &AppState,
     org_id: Option<Uuid>,
@@ -281,7 +319,12 @@ async fn resolve_one_skill(
                 .map_err(|e| SkillResolutionError::Db(e.to_string()))?
                 .ok_or_else(|| SkillResolutionError::NotFound(reference.skill_id.clone()))?;
 
-            let mount_path = format!("/skills/{}", version.skill_id);
+            // Mount under `<name>-<version>` to mirror OpenAI's container
+            // layout (`/home/oai/skills/csv-insights-1`); we keep Hadrian's
+            // `/skills` root. The snapshot slug is path-safe (validated at
+            // creation) and the version suffix disambiguates multiple
+            // versions of the same skill mounted in one request.
+            let mount_path = format!("/skills/{}-{}", version.name, version.version_seq);
             let main_content = version
                 .files
                 .iter()
@@ -314,6 +357,12 @@ fn resolve_inline_skill(
     if inline.name.trim().is_empty() {
         return Err(SkillResolutionError::EmptyInlineName);
     }
+    // The name becomes the mount-path segment (`/skills/<name>`), which the
+    // runtime writes to the sandbox verbatim — unlike per-file paths it is
+    // not sanitized downstream. So it must be a path-safe slug, or a name
+    // like `../../etc/...` would escape the skills directory.
+    validate_skill_name(&inline.name)
+        .map_err(|_| SkillResolutionError::InvalidInlineName(inline.name.clone()))?;
     let crate::api_types::InlineSkillSource::Base64 { media_type, data } = &inline.source;
     if media_type != "text/markdown" {
         return Err(SkillResolutionError::UnsupportedMediaType {
@@ -331,35 +380,23 @@ fn resolve_inline_skill(
     let content = String::from_utf8(bytes).map_err(|_| SkillResolutionError::InvalidUtf8 {
         name: inline.name.clone(),
     })?;
-    // Synthetic per-request id derived from the payload hash so the
-    // mount path is stable across foreground/background dispatch but
-    // doesn't collide with stored skill UUIDs.
-    let synthetic_id = inline_skill_synthetic_id(&inline.name, &content);
-    let mount_path = format!("/skills/{synthetic_id}");
+    // Inline skills have no version, so the mount path is just the slug.
+    // Derived purely from `inline.name`, it's stable across the
+    // foreground / background dispatch lanes (both run off the same
+    // payload).
+    let mount_path = format!("/skills/{}", inline.name);
     let files = vec![MountedFile {
         relative_path: SKILL_MAIN_FILE.to_string(),
         content: Bytes::from(content.clone().into_bytes()),
     }];
     Ok(ResolvedSkill {
-        skill_id: synthetic_id,
+        skill_id: inline.name.clone(),
         name: inline.name.clone(),
         description: inline.description.clone(),
         mount_path,
         files,
         main_content: Some(content),
     })
-}
-
-/// Synthetic id used as the mount-path segment for inline skills.
-/// Hash-based so the same payload reuses the same path across the
-/// foreground / background lanes (otherwise the response that resumes
-/// from a background tick would mount the skill at a different path).
-fn inline_skill_synthetic_id(name: &str, content: &str) -> String {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    content.hash(&mut hasher);
-    format!("skill_inline_{:016x}", hasher.finish())
 }
 
 /// Wrap a streaming Responses-API response with the full server-side
@@ -880,8 +917,9 @@ mod skill_tests {
             },
         };
         let mount = resolve_inline_skill(&inline).expect("should resolve");
-        assert!(mount.skill_id.starts_with("skill_inline_"));
-        assert_eq!(mount.mount_path, format!("/skills/{}", mount.skill_id));
+        // Inline skills mount under their slug name, no version suffix.
+        assert_eq!(mount.skill_id, "useful");
+        assert_eq!(mount.mount_path, "/skills/useful");
         assert_eq!(mount.files.len(), 1);
         assert_eq!(mount.files[0].relative_path, SKILL_MAIN_FILE);
         assert_eq!(
@@ -911,6 +949,28 @@ mod skill_tests {
     }
 
     #[test]
+    fn inline_rejects_non_slug_name() {
+        // The name becomes the mount directory, so a path-traversal name
+        // must be rejected before it can escape `/skills/`.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"# x");
+        for bad in ["../etc", "Has Space", "UPPER", "trailing-", "a--b"] {
+            let inline = InlineSkill {
+                name: bad.into(),
+                description: "x".into(),
+                source: InlineSkillSource::Base64 {
+                    media_type: "text/markdown".into(),
+                    data: encoded.clone(),
+                },
+            };
+            let err = resolve_inline_skill(&inline).expect_err("should reject");
+            assert!(
+                matches!(err, SkillResolutionError::InvalidInlineName(_)),
+                "name {bad:?} got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn inline_rejects_invalid_base64() {
         let inline = InlineSkill {
             name: "x".into(),
@@ -924,12 +984,69 @@ mod skill_tests {
         assert!(matches!(err, SkillResolutionError::InvalidBase64 { .. }));
     }
 
+    fn resolved(name: &str, mount_path: &str) -> ResolvedSkill {
+        ResolvedSkill {
+            skill_id: name.into(),
+            name: name.into(),
+            description: "x".into(),
+            mount_path: mount_path.into(),
+            files: Vec::new(),
+            main_content: None,
+        }
+    }
+
     #[test]
-    fn inline_synthetic_id_stable_for_same_payload() {
-        let a = inline_skill_synthetic_id("foo", "bar");
-        let b = inline_skill_synthetic_id("foo", "bar");
-        assert_eq!(a, b);
-        let c = inline_skill_synthetic_id("foo", "different");
-        assert_ne!(a, c);
+    fn distinct_mount_paths_are_accepted() {
+        let set = [
+            resolved("foo", "/skills/foo-1"),
+            resolved("foo", "/skills/foo-2"),
+            resolved("bar", "/skills/bar"),
+        ];
+        assert!(ensure_unique_mount_paths(&set).is_ok());
+    }
+
+    #[test]
+    fn colliding_mount_paths_are_rejected() {
+        // A stored skill `foo` v1 and an inline skill literally named
+        // `foo-1` both want `/skills/foo-1`.
+        let set = [
+            resolved("foo", "/skills/foo-1"),
+            resolved("foo-1", "/skills/foo-1"),
+        ];
+        let err = ensure_unique_mount_paths(&set).expect_err("should conflict");
+        match err {
+            SkillResolutionError::MountPathConflict {
+                path,
+                first,
+                second,
+            } => {
+                assert_eq!(path, "/skills/foo-1");
+                assert_eq!(first, "foo");
+                assert_eq!(second, "foo-1");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_mount_path_is_name_derived() {
+        // The inline mount path depends only on the name (so the
+        // foreground/background lanes agree), not on the content.
+        let resolve = |name: &str, body: &str| {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+            resolve_inline_skill(&InlineSkill {
+                name: name.into(),
+                description: "x".into(),
+                source: InlineSkillSource::Base64 {
+                    media_type: "text/markdown".into(),
+                    data: encoded,
+                },
+            })
+            .expect("should resolve")
+            .mount_path
+        };
+        assert_eq!(resolve("foo", "bar"), "/skills/foo");
+        assert_eq!(resolve("foo", "different"), "/skills/foo");
+        assert_ne!(resolve("foo", "bar"), resolve("bar", "bar"));
     }
 }

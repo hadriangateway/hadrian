@@ -1800,8 +1800,8 @@ pub struct SkillReference {
     pub version: Option<String>,
 }
 
-/// Inline skill bundle. Mounted under `/skills/<synthetic-id>/` for
-/// the lifetime of the request (or the container, when supplied at
+/// Inline skill bundle. Mounted under `/skills/<name>/` for the
+/// lifetime of the request (or the container, when supplied at
 /// container creation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2682,11 +2682,15 @@ pub struct CreateResponsesPayload {
     ///
     /// For `inline`, the decoded `source.data` is mounted as an
     /// ephemeral skill bundle: `text/markdown` is treated as the
-    /// `SKILL.md` content; other media types are rejected today.
+    /// `SKILL.md` content; other media types are rejected today. The
+    /// `name` must be a lowercase slug — it becomes the mount directory.
     ///
     /// Each resolved skill's `SKILL.md` is prepended to `instructions`
     /// so the model knows the skill is available; all skill files are
-    /// materialized under `/skills/<skill_id>/` inside the sandbox.
+    /// materialized under `/skills/<name>-<version>/` (stored skills) or
+    /// `/skills/<name>/` (inline skills) inside the sandbox. The path
+    /// mirrors OpenAI's `<name>-<version>` container layout under
+    /// Hadrian's `/skills` root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Object>))]
     pub skills: Option<Vec<RequestSkill>>,
