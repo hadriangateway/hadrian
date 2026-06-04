@@ -59,6 +59,7 @@ pub mod responses_webhook;
 mod scim_configs;
 #[cfg(feature = "sso")]
 mod scim_provisioning;
+pub mod server_tool_history;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server_tools;
 mod service_accounts;

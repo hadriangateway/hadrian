@@ -33,7 +33,10 @@ use crate::{
         ResponsesInputItem, ResponsesMcpToolChoice, ResponsesNamedToolChoice,
         ResponsesNamedToolChoiceType, ResponsesToolChoice, ResponsesToolDefinition,
     },
-    services::{mcp::tool_search::TOOL_SEARCH_FUNCTION_NAME, mcp_tool::McpProviderKind},
+    services::{
+        mcp::tool_search::TOOL_SEARCH_FUNCTION_NAME, mcp_tool::McpProviderKind,
+        server_tool_history::rewrite_hosted_calls_to_function_pairs,
+    },
 };
 
 /// Failures surfaced by [`rewrite_mcp_tools`]. `ListToolsFailed` maps
@@ -401,27 +404,10 @@ fn collect_inlined_catalogs(
 /// content. `mcp_approval_request` / `mcp_approval_response` items are
 /// also left alone — pending approvals are resolved by [`super::resume`].
 fn rewrite_mcp_history(payload: &mut CreateResponsesPayload) {
-    let Some(ResponsesInput::Items(items)) = payload.input.as_mut() else {
-        return;
-    };
-    if !items
-        .iter()
-        .any(|i| matches!(i, ResponsesInputItem::McpCall(_)))
-    {
-        return;
-    }
-    let mut rewritten = Vec::with_capacity(items.len() + 1);
-    for item in std::mem::take(items) {
-        match item {
-            ResponsesInputItem::McpCall(call) => {
-                let (function_call, output) = mcp_call_to_function_pair(call);
-                rewritten.push(ResponsesInputItem::FunctionCall(function_call));
-                rewritten.push(ResponsesInputItem::FunctionCallOutput(output));
-            }
-            other => rewritten.push(other),
-        }
-    }
-    *items = rewritten;
+    rewrite_hosted_calls_to_function_pairs(payload, |item| match item {
+        ResponsesInputItem::McpCall(call) => Some(mcp_call_to_function_pair(call)),
+        _ => None,
+    });
 }
 
 /// Reconstruct the `(function_call, function_call_output)` pair for one
@@ -431,12 +417,11 @@ fn rewrite_mcp_history(payload: &mut CreateResponsesPayload) {
 /// executor's live-loop continuation: `output` verbatim on success,
 /// `{"error": …}` on failure (the executor stores at most one of
 /// `output` / `error`).
-fn mcp_call_to_function_pair(call: McpCallItem) -> (FunctionToolCall, FunctionCallOutput) {
+fn mcp_call_to_function_pair(call: &McpCallItem) -> (FunctionToolCall, FunctionCallOutput) {
     let function_name = synthesize_function_name(&call.server_label, &call.name);
     // Reuse the item id as the pairing token — it's already unique per
     // response and never collides with a live `function_call.call_id`
     // (those are suppressed before the client ever sees them).
-    let call_id = call.id.clone();
     let output_text = match (&call.output, &call.error) {
         (_, Some(err)) => serde_json::json!({ "error": err }).to_string(),
         (Some(out), None) => out.clone(),
@@ -444,16 +429,16 @@ fn mcp_call_to_function_pair(call: McpCallItem) -> (FunctionToolCall, FunctionCa
     };
     let function_call = FunctionToolCall {
         type_: FunctionToolCallType::FunctionCall,
-        id: call.id,
-        call_id: call_id.clone(),
+        id: call.id.clone(),
+        call_id: call.id.clone(),
         name: function_name,
-        arguments: call.arguments,
+        arguments: call.arguments.clone(),
         status: None,
     };
     let output = FunctionCallOutput {
         type_: FunctionCallOutputType::FunctionCallOutput,
         id: None,
-        call_id,
+        call_id: call.id.clone(),
         output: output_text,
         status: None,
     };

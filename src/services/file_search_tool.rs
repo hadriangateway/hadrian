@@ -45,10 +45,10 @@ use crate::{
     api_types::responses::{
         CreateResponsesPayload, FileSearchCallOutput, FileSearchCallOutputType,
         FileSearchComparisonFilter, FileSearchCompoundFilter, FileSearchFilter,
-        FileSearchFilterComparison, FileSearchFilterLogicalType, FileSearchResultContent,
-        FileSearchResultItem, FileSearchTool, FunctionCallOutput, FunctionCallOutputType,
-        FunctionTool, ResponsesAnnotation, ResponsesIncludable, ResponsesInput, ResponsesInputItem,
-        ResponsesToolDefinition, WebSearchStatus,
+        FileSearchFilterComparison, FileSearchFilterLogicalType, FileSearchResultItem,
+        FileSearchTool, FunctionCallOutput, FunctionCallOutputType, FunctionTool, FunctionToolCall,
+        FunctionToolCallType, ResponsesAnnotation, ResponsesIncludable, ResponsesInput,
+        ResponsesInputItem, ResponsesToolDefinition, WebSearchStatus,
     },
     auth::AuthenticatedRequest,
     config::FileSearchConfig,
@@ -57,7 +57,10 @@ use crate::{
         LogicalOperator,
     },
     observability::{metrics::record_file_search, otel_span_error, otel_span_ok},
-    services::{FileSearchRequest, FileSearchResponse, FileSearchService},
+    services::{
+        FileSearchRequest, FileSearchResponse, FileSearchService,
+        server_tool_history::rewrite_hosted_calls_to_function_pairs,
+    },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +241,12 @@ impl FileSearchToolArguments {
 /// // payload.tools now contains function tools instead of file_search tools
 /// ```
 pub fn preprocess_file_search_tools(payload: &mut CreateResponsesPayload) {
+    // Rewrite any hosted `file_search_call` items echoed back in the input
+    // before the tools early-return, so a continuation that no longer
+    // re-declares file_search still gets its history rewritten. See
+    // [`rewrite_file_search_history`].
+    rewrite_file_search_history(payload);
+
     let Some(tools) = payload.tools.as_mut() else {
         return;
     };
@@ -256,6 +265,59 @@ pub fn preprocess_file_search_tools(payload: &mut CreateResponsesPayload) {
             );
         }
     }
+}
+
+/// Rewrite hosted `file_search_call` items echoed back in `payload.input` into
+/// the `function_call` + `function_call_output` pair every provider understands.
+///
+/// File search is server-executed exactly like `web_search`:
+/// [`preprocess_file_search_tools`] rewrites the `file_search` tool to a function
+/// tool, so the provider never produces a native `file_search_call`. The shared
+/// driver [`rewrite_hosted_calls_to_function_pairs`] does the expansion, replaying
+/// the retained [`FileSearchCallOutput::replay_content`] as the tool output so the
+/// model keeps the retrieved chunks in later-turn context. See its docs and
+/// `web_search_tool::rewrite_web_search_history` for the sibling rewrite.
+///
+/// RAG chunks are larger than web snippets, so re-injecting them every turn costs
+/// more tokens than web search does — the tradeoff for keeping multi-turn file
+/// search coherent rather than dropping the evidence the model already cited.
+fn rewrite_file_search_history(payload: &mut CreateResponsesPayload) {
+    rewrite_hosted_calls_to_function_pairs(payload, |item| match item {
+        ResponsesInputItem::FileSearchCall(call) => Some(file_search_call_to_function_pair(call)),
+        _ => None,
+    });
+}
+
+/// Reconstruct the `(function_call, function_call_output)` pair for one echoed
+/// `file_search_call`. The two share a `call_id` derived from the item id so the
+/// provider conversion pairs them. The function arguments mirror what the model
+/// originally emitted (`{"query": …}`, taken from the first of `queries`) and the
+/// output is the retained [`FileSearchCallOutput::replay_content`] — the same
+/// retrieval text the model saw when the search first ran. A missing query/content
+/// (e.g. a failed search or a row from before content retention) degrades to an
+/// empty string rather than dropping the pair, so the transcript stays well-formed.
+fn file_search_call_to_function_pair(
+    call: &FileSearchCallOutput,
+) -> (FunctionToolCall, FunctionCallOutput) {
+    let query = call.queries.first().cloned().unwrap_or_default();
+    let arguments = serde_json::json!({ "query": query }).to_string();
+    let output_text = call.replay_content.clone().unwrap_or_default();
+    let function_call = FunctionToolCall {
+        type_: FunctionToolCallType::FunctionCall,
+        id: call.id.clone(),
+        call_id: call.id.clone(),
+        name: FileSearchToolArguments::FUNCTION_NAME.to_string(),
+        arguments,
+        status: None,
+    };
+    let output = FunctionCallOutput {
+        type_: FunctionCallOutputType::FunctionCallOutput,
+        id: None,
+        call_id: call.id.clone(),
+        output: output_text,
+        status: None,
+    };
+    (function_call, output)
 }
 
 /// Check if a payload contains any file_search tools.
@@ -955,12 +1017,16 @@ fn should_include_results(payload: &CreateResponsesPayload) -> bool {
 ///
 /// This creates the output item that OpenAI returns when the model invokes
 /// the file_search tool. When `include_results` is true, the detailed search
-/// results are included in the response.
+/// results are included in the response. `replay_content` — the formatted
+/// retrieval text fed to the model — is always retained (independent of
+/// `include_results`) so the call can be replayed on a later turn (see
+/// [`rewrite_file_search_history`]).
 fn build_file_search_call_output(
     tool_call_id: &str,
     query: &str,
     response: &FileSearchResponse,
     include_results: bool,
+    replay_content: &str,
 ) -> FileSearchCallOutput {
     let results = if include_results {
         Some(
@@ -979,9 +1045,7 @@ fn build_file_search_call_output(
                         filename: r.filename.clone().unwrap_or_else(|| "unknown".to_string()),
                         score: r.score,
                         attributes,
-                        content: vec![FileSearchResultContent::Text {
-                            text: r.content.clone(),
-                        }],
+                        text: r.content.clone(),
                     }
                 })
                 .collect(),
@@ -996,6 +1060,7 @@ fn build_file_search_call_output(
         queries: vec![query.to_string()],
         status: WebSearchStatus::Completed,
         results,
+        replay_content: Some(replay_content.to_string()),
     }
 }
 
@@ -1030,12 +1095,17 @@ fn synthesize_file_search_invalid_handle(
     error: &str,
 ) -> crate::services::server_tools::ToolExecutionHandle {
     let id = call_id.to_string();
+    let error_text = crate::services::server_tools::invalid_arguments_text("file_search", error);
+    // The arguments couldn't be parsed, so there's no query to record; keep the
+    // error as `replay_content` so a later-turn replay surfaces the same failure
+    // rather than an empty retrieval.
     let failed_item = FileSearchCallOutput {
         type_: FileSearchCallOutputType::FileSearchCall,
         id: id.clone(),
         queries: Vec::new(),
         status: WebSearchStatus::Failed,
         results: None,
+        replay_content: Some(error_text.clone()),
     };
     let events = vec![
         format_file_search_in_progress_event(&id, 0),
@@ -1046,7 +1116,7 @@ fn synthesize_file_search_invalid_handle(
         type_: FunctionCallOutputType::FunctionCallOutput,
         id: Some(id.clone()),
         call_id: id.clone(),
-        output: crate::services::server_tools::invalid_arguments_text("file_search", error),
+        output: error_text,
         status: None,
     });
     let result = crate::services::server_tools::ToolCallResult {
@@ -1621,12 +1691,15 @@ impl crate::services::server_tools::ServerExecutedTool for FileSearchExecutor {
                 );
             }
 
-            // Emit the file_search_call output_item.done event.
+            // Emit the file_search_call output_item.done event. `search_result.content`
+            // is the formatted retrieval text fed to the model below; retain it as
+            // `replay_content` so the call replays on a later turn.
             let call_output = build_file_search_call_output(
                 &tool_call.id,
                 &tool_call.query,
                 raw,
                 include_results,
+                &search_result.content,
             );
             let _ = event_tx
                 .send(format_file_search_call_sse_event(&call_output))
@@ -2236,12 +2309,15 @@ mod tests {
             vector_stores_searched: 1,
         };
 
-        let output = build_file_search_call_output("call_123", "test query", &response, false);
+        let output =
+            build_file_search_call_output("call_123", "test query", &response, false, "formatted");
 
         assert_eq!(output.id, "call_123");
         assert_eq!(output.queries, vec!["test query"]);
         assert_eq!(output.status, WebSearchStatus::Completed);
         assert!(output.results.is_none()); // Results not included
+        // replay_content is retained even when results are not included.
+        assert_eq!(output.replay_content.as_deref(), Some("formatted"));
     }
 
     #[test]
@@ -2264,7 +2340,8 @@ mod tests {
             vector_stores_searched: 1,
         };
 
-        let output = build_file_search_call_output("call_456", "test query", &response, true);
+        let output =
+            build_file_search_call_output("call_456", "test query", &response, true, "formatted");
 
         assert_eq!(output.id, "call_456");
         assert_eq!(output.queries, vec!["test query"]);
@@ -2277,7 +2354,75 @@ mod tests {
         assert_eq!(results[0].filename, "test.pdf");
         assert_eq!(results[0].score, 0.85);
         assert!(results[0].attributes.is_some());
-        assert_eq!(results[0].content.len(), 1);
+        // Flat `text` per OpenAI's Responses API schema (not a `content` array).
+        assert_eq!(results[0].text, "Test content");
+
+        // Lock the spec-shaped wire form: `text` is a flat string and there is
+        // no `content` array.
+        let wire = serde_json::to_value(&results[0]).unwrap();
+        assert_eq!(wire["text"], "Test content");
+        assert!(
+            wire.get("content").is_none(),
+            "no `content` array on results"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_file_search_history_expands_to_function_pair() {
+        // Continuation turn: a synthesized file_search_call comes back between two
+        // user messages and must expand to a function_call + function_call_output
+        // pair, replaying the retained chunk text — even with no tools re-declared
+        // (the rewrite must run before the tools early-return).
+        let mut payload: CreateResponsesPayload = serde_json::from_value(serde_json::json!({
+            "input": [
+                {"role": "user", "content": "find the policy"},
+                {"role": "user", "content": "and the appendix?"},
+            ],
+            "stream": false,
+        }))
+        .unwrap();
+        let file_search_call = ResponsesInputItem::FileSearchCall(FileSearchCallOutput {
+            type_: FileSearchCallOutputType::FileSearchCall,
+            id: "fs_1".to_string(),
+            queries: vec!["policy".to_string()],
+            status: WebSearchStatus::Completed,
+            results: None,
+            replay_content: Some("Retrieved: the policy says...".to_string()),
+        });
+        let Some(ResponsesInput::Items(items)) = payload.input.as_mut() else {
+            panic!("expected items input");
+        };
+        items.insert(1, file_search_call);
+        assert_eq!(items.len(), 3);
+
+        assert!(payload.tools.is_none());
+        preprocess_file_search_tools(&mut payload);
+
+        let Some(ResponsesInput::Items(items)) = payload.input else {
+            panic!("expected items input");
+        };
+        // The file_search_call expands to a pair, so 2 user messages + 2 = 4.
+        assert_eq!(items.len(), 4);
+        assert!(
+            !items
+                .iter()
+                .any(|i| matches!(i, ResponsesInputItem::FileSearchCall(_))),
+            "no file_search_call items should remain"
+        );
+        let ResponsesInputItem::FunctionCall(ref fc) = items[1] else {
+            panic!("expected a function_call at index 1, got {:?}", items[1]);
+        };
+        assert_eq!(fc.name, "file_search");
+        assert_eq!(fc.call_id, "fs_1");
+        assert!(fc.arguments.contains("policy"));
+        let ResponsesInputItem::FunctionCallOutput(ref out) = items[2] else {
+            panic!(
+                "expected a function_call_output at index 2, got {:?}",
+                items[2]
+            );
+        };
+        assert_eq!(out.call_id, "fs_1");
+        assert_eq!(out.output, "Retrieved: the policy says...");
     }
 
     #[test]
@@ -2292,6 +2437,7 @@ mod tests {
             queries: vec!["test query".to_string()],
             status: WebSearchStatus::Completed,
             results: None,
+            replay_content: Some("formatted".to_string()),
         };
 
         let sse_event = format_file_search_call_sse_event(&output);

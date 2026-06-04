@@ -14,12 +14,15 @@ use tracing::{debug, error, info};
 use crate::{
     api_types::responses::{
         CreateResponsesPayload, FunctionCallOutput, FunctionCallOutputType, FunctionTool,
-        ResponsesInput, ResponsesInputItem, ResponsesToolDefinition, WebSearchCallOutput,
-        WebSearchCallOutputType, WebSearchStatus,
+        FunctionToolCall, FunctionToolCallType, ResponsesIncludable, ResponsesInput,
+        ResponsesInputItem, ResponsesToolDefinition, WebSearchAction, WebSearchActionType,
+        WebSearchCallOutput, WebSearchCallOutputType, WebSearchSource, WebSearchSourceType,
+        WebSearchStatus,
     },
     config::WebSearchConfig,
     observability::metrics::record_web_search,
     routes::api::tools::{WebSearchResult, execute_web_search},
+    services::server_tool_history::rewrite_hosted_calls_to_function_pairs,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,6 +80,12 @@ impl WebSearchToolArguments {
 /// After preprocessing, the model sees a standard function tool named `"web_search"`.
 /// The streaming middleware intercepts calls to this function and executes them.
 pub fn preprocess_web_search_tools(payload: &mut CreateResponsesPayload) {
+    // Normalize any hosted `web_search_call` items echoed back in the input
+    // before the tools early-return, so a continuation that no longer
+    // re-declares web_search still gets its history rewritten. See
+    // [`rewrite_web_search_history`].
+    rewrite_web_search_history(payload);
+
     let Some(tools) = payload.tools.as_mut() else {
         return;
     };
@@ -94,6 +103,72 @@ pub fn preprocess_web_search_tools(payload: &mut CreateResponsesPayload) {
             );
         }
     }
+}
+
+/// Rewrite hosted `web_search_call` items echoed back in `payload.input` into
+/// the `function_call` + `function_call_output` pair every provider understands.
+/// Mutates in place; a no-op when no `web_search_call` items are present.
+///
+/// Web search is always server-executed in Hadrian: [`preprocess_web_search_tools`]
+/// rewrites the `web_search` tool to a function tool for *every* provider, so the
+/// model only ever emits a `web_search` function call (suppressed from the client)
+/// and the provider never produces a native `web_search_call`. The shared driver
+/// [`rewrite_hosted_calls_to_function_pairs`] does the expansion; see its docs and
+/// `file_search_tool::rewrite_file_search_history` /
+/// `mcp::preprocess::rewrite_mcp_history` for the sibling rewrites.
+fn rewrite_web_search_history(payload: &mut CreateResponsesPayload) {
+    rewrite_hosted_calls_to_function_pairs(payload, |item| match item {
+        ResponsesInputItem::WebSearchCall(call) => Some(web_search_call_to_function_pair(call)),
+        _ => None,
+    });
+}
+
+/// Reconstruct the `(function_call, function_call_output)` pair for one echoed
+/// `web_search_call`. The two share a `call_id` derived from the item id so the
+/// provider conversion pairs them. The function arguments mirror what the model
+/// originally emitted (`{"query": …}`) and the output is the retained
+/// [`WebSearchCallOutput::replay_content`] — the same result text the model saw
+/// when the search first ran. A missing query/content (e.g. a failed search or a
+/// pre-existing row from before content retention) degrades to an empty string
+/// rather than dropping the pair, so the transcript stays well-formed.
+fn web_search_call_to_function_pair(
+    call: &WebSearchCallOutput,
+) -> (FunctionToolCall, FunctionCallOutput) {
+    // Prefer the (deprecated) singular query Hadrian always writes; fall back to
+    // the first of `queries` for native items that only carry the array form.
+    let query = if !call.action.query.is_empty() {
+        call.action.query.clone()
+    } else {
+        call.action.queries.first().cloned().unwrap_or_default()
+    };
+    let arguments = serde_json::json!({ "query": query }).to_string();
+    let output_text = call.replay_content.clone().unwrap_or_default();
+    let function_call = FunctionToolCall {
+        type_: FunctionToolCallType::FunctionCall,
+        id: call.id.clone(),
+        call_id: call.id.clone(),
+        name: WebSearchToolArguments::FUNCTION_NAME.to_string(),
+        arguments,
+        status: None,
+    };
+    let output = FunctionCallOutput {
+        type_: FunctionCallOutputType::FunctionCallOutput,
+        id: None,
+        call_id: call.id.clone(),
+        output: output_text,
+        status: None,
+    };
+    (function_call, output)
+}
+
+/// Whether the request opted into source URLs via
+/// `include: ["web_search_call.action.sources"]`.
+fn should_include_sources(payload: &CreateResponsesPayload) -> bool {
+    payload
+        .include
+        .as_ref()
+        .map(|includes| includes.contains(&ResponsesIncludable::WebSearchCallActionSources))
+        .unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,16 +391,15 @@ fn format_web_search_completed_event(item_id: &str, output_index: usize) -> Byte
     Bytes::from(format!("data: {}\n\n", json_str))
 }
 
-fn format_web_search_call_output_event(item_id: &str) -> Option<Bytes> {
-    let output = WebSearchCallOutput {
-        type_: WebSearchCallOutputType::WebSearchCall,
-        id: item_id.to_string(),
-        status: WebSearchStatus::Completed,
-    };
+/// Wrap a completed/failed `web_search_call` item in the canonical
+/// `response.output_item.done` event. The item carries the spec-shaped
+/// `action` (query + optional sources) and the retained `replay_content`, so
+/// the persisted output is enough to replay the search on a later turn.
+fn format_web_search_call_output_event(item: &WebSearchCallOutput) -> Option<Bytes> {
     let event_data = serde_json::json!({
         "type": "response.output_item.done",
         "output_index": 0,
-        "item": output,
+        "item": item,
     });
     let json_str = serde_json::to_string(&event_data).ok()?;
     Some(Bytes::from(format!("data: {}\n\n", json_str)))
@@ -341,32 +415,33 @@ fn synthesize_web_search_invalid_handle(
     error: &str,
 ) -> crate::services::server_tools::ToolExecutionHandle {
     let id = call_id.to_string();
+    let error_text = crate::services::server_tools::invalid_arguments_text(
+        WebSearchToolArguments::FUNCTION_NAME,
+        error,
+    );
+    // The arguments couldn't be parsed, so there's no query to record — emit the
+    // spec-required `action` with an empty query (the spec keeps `action` even on
+    // a `failed` call) and keep the error as `replay_content` so a later-turn
+    // replay surfaces the same failure rather than an empty result.
     let failed_item = WebSearchCallOutput {
         type_: WebSearchCallOutputType::WebSearchCall,
         id: id.clone(),
         status: WebSearchStatus::Failed,
+        action: WebSearchAction::default(),
+        replay_content: Some(error_text.clone()),
     };
-    let done_event = serde_json::json!({
-        "type": "response.output_item.done",
-        "output_index": 0,
-        "item": failed_item,
-    });
-    let events = vec![
-        format_web_search_in_progress_event(&id, 0),
-        Bytes::from(format!(
-            "data: {}\n\n",
-            serde_json::to_string(&done_event).unwrap_or_default()
-        )),
-    ];
+    // Reuse the canonical `output_item.done` formatter so the failed item's
+    // envelope stays in lockstep with the success/failure paths.
+    let mut events = vec![format_web_search_in_progress_event(&id, 0)];
+    if let Some(done_event) = format_web_search_call_output_event(&failed_item) {
+        events.push(done_event);
+    }
 
     let continuation_item = ResponsesInputItem::FunctionCallOutput(FunctionCallOutput {
         type_: FunctionCallOutputType::FunctionCallOutput,
         id: Some(id.clone()),
         call_id: id.clone(),
-        output: crate::services::server_tools::invalid_arguments_text(
-            WebSearchToolArguments::FUNCTION_NAME,
-            error,
-        ),
+        output: error_text,
         status: None,
     });
     let result = crate::services::server_tools::ToolCallResult {
@@ -472,7 +547,7 @@ impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
     async fn execute(
         &self,
         call: crate::services::server_tools::DetectedToolCall,
-        _ctx: &crate::services::server_tools::ToolContext,
+        ctx: &crate::services::server_tools::ToolContext,
     ) -> Result<
         crate::services::server_tools::ToolExecutionHandle,
         crate::services::server_tools::ToolError,
@@ -502,20 +577,47 @@ impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
             .await;
 
         let context = self.context.clone();
+        let include_sources = should_include_sources(&ctx.original_payload);
         let start = Instant::now();
         let search_outcome = context.execute_search(&query).await;
         let duration = start.elapsed().as_secs_f64();
 
+        // Build the spec-shaped `web_search_call` item once and emit it as the
+        // canonical `output_item.done`. `replay_content` is the same result text
+        // we feed the model below, retained so the search can be replayed on a
+        // later turn (see `rewrite_web_search_history`).
         let content = match search_outcome {
             Ok(results) => {
                 record_web_search("success", duration, results.len() as u32);
-                if let Some(out_event) = format_web_search_call_output_event(&id) {
+                let content = format_web_search_results(&query, &results);
+                let sources = include_sources.then(|| {
+                    results
+                        .iter()
+                        .map(|r| WebSearchSource {
+                            type_: WebSearchSourceType::Url,
+                            url: r.url.clone(),
+                        })
+                        .collect()
+                });
+                let item = WebSearchCallOutput {
+                    type_: WebSearchCallOutputType::WebSearchCall,
+                    id: id.clone(),
+                    status: WebSearchStatus::Completed,
+                    action: WebSearchAction {
+                        type_: WebSearchActionType::Search,
+                        query: query.clone(),
+                        queries: vec![query.clone()],
+                        sources,
+                    },
+                    replay_content: Some(content.clone()),
+                };
+                if let Some(out_event) = format_web_search_call_output_event(&item) {
                     let _ = event_tx.send(out_event).await;
                 }
                 let _ = event_tx
                     .send(format_web_search_completed_event(&id, 0))
                     .await;
-                format_web_search_results(&query, &results)
+                content
             }
             Err(e) => {
                 record_web_search("error", duration, 0);
@@ -525,8 +627,26 @@ impl crate::services::server_tools::ServerExecutedTool for WebSearchExecutor {
                     error = %e,
                     "Web search execution failed"
                 );
-                // Surface error text back to the model rather than dropping it.
-                format!("Web search failed for query \"{}\": {}", query, e)
+                // Surface error text back to the model rather than dropping it,
+                // and emit a `failed` item so the call still appears in (and
+                // replays from) the transcript.
+                let content = format!("Web search failed for query \"{}\": {}", query, e);
+                let item = WebSearchCallOutput {
+                    type_: WebSearchCallOutputType::WebSearchCall,
+                    id: id.clone(),
+                    status: WebSearchStatus::Failed,
+                    action: WebSearchAction {
+                        type_: WebSearchActionType::Search,
+                        query: query.clone(),
+                        queries: vec![query.clone()],
+                        sources: None,
+                    },
+                    replay_content: Some(content.clone()),
+                };
+                if let Some(out_event) = format_web_search_call_output_event(&item) {
+                    let _ = event_tx.send(out_event).await;
+                }
+                content
             }
         };
 
@@ -756,5 +876,158 @@ mod tests {
         if let ResponsesToolDefinition::Function(ref f) = tools[0] {
             assert_eq!(f.name, "web_search");
         }
+    }
+
+    fn web_search_call(id: &str, query: &str, content: &str) -> ResponsesInputItem {
+        ResponsesInputItem::WebSearchCall(WebSearchCallOutput {
+            type_: WebSearchCallOutputType::WebSearchCall,
+            id: id.to_string(),
+            status: WebSearchStatus::Completed,
+            action: WebSearchAction {
+                type_: WebSearchActionType::Search,
+                query: query.to_string(),
+                queries: vec![query.to_string()],
+                sources: None,
+            },
+            replay_content: Some(content.to_string()),
+        })
+    }
+
+    #[test]
+    fn test_rewrite_web_search_history_expands_to_function_pair() {
+        // Simulates reconstructed history from a `previous_response_id` chain:
+        // a user message, a synthesized web_search_call, then a follow-up.
+        let mut payload: CreateResponsesPayload = serde_json::from_value(serde_json::json!({
+            "input": [
+                {"role": "user", "content": "weather?"},
+                {"role": "user", "content": "tomorrow?"},
+            ],
+            "stream": false,
+        }))
+        .unwrap();
+        let Some(ResponsesInput::Items(items)) = payload.input.as_mut() else {
+            panic!("expected items input");
+        };
+        items.insert(
+            1,
+            web_search_call("ws_1", "weather today", "Results: sunny, 25C"),
+        );
+        assert_eq!(items.len(), 3);
+
+        rewrite_web_search_history(&mut payload);
+
+        let Some(ResponsesInput::Items(items)) = payload.input else {
+            panic!("expected items input");
+        };
+        // The single web_search_call expands to a function_call + output pair,
+        // so the two user messages plus the pair = 4 items.
+        assert_eq!(items.len(), 4);
+        assert!(
+            !items
+                .iter()
+                .any(|i| matches!(i, ResponsesInputItem::WebSearchCall(_))),
+            "no web_search_call items should remain"
+        );
+        // The function_call carries the query; its paired output carries the
+        // retained result text, sharing a call_id.
+        let ResponsesInputItem::FunctionCall(ref fc) = items[1] else {
+            panic!("expected a function_call at index 1, got {:?}", items[1]);
+        };
+        assert_eq!(fc.name, "web_search");
+        assert_eq!(fc.call_id, "ws_1");
+        assert!(fc.arguments.contains("weather today"));
+        let ResponsesInputItem::FunctionCallOutput(ref out) = items[2] else {
+            panic!(
+                "expected a function_call_output at index 2, got {:?}",
+                items[2]
+            );
+        };
+        assert_eq!(out.call_id, "ws_1");
+        assert_eq!(out.output, "Results: sunny, 25C");
+    }
+
+    #[test]
+    fn test_preprocess_rewrites_history_without_redeclared_tools() {
+        // Continuation turn: the client chained via `previous_response_id` and did
+        // not re-declare the web_search tool. The reconstructed history still
+        // carries a web_search_call that must be rewritten before dispatch — the
+        // rewrite must run *before* the tools early-return.
+        let mut payload: CreateResponsesPayload =
+            serde_json::from_value(serde_json::json!({"stream": false})).unwrap();
+        payload.input = Some(ResponsesInput::Items(vec![web_search_call(
+            "ws_1",
+            "rust async",
+            "Results: ...",
+        )]));
+        assert!(payload.tools.is_none());
+
+        preprocess_web_search_tools(&mut payload);
+
+        let Some(ResponsesInput::Items(items)) = payload.input else {
+            panic!("expected items input");
+        };
+        assert_eq!(
+            items.len(),
+            2,
+            "web_search_call must expand to a function pair"
+        );
+        assert!(matches!(items[0], ResponsesInputItem::FunctionCall(_)));
+        assert!(matches!(
+            items[1],
+            ResponsesInputItem::FunctionCallOutput(_)
+        ));
+    }
+
+    #[test]
+    fn test_should_include_sources() {
+        let with = serde_json::from_value::<CreateResponsesPayload>(serde_json::json!({
+            "include": ["web_search_call.action.sources"],
+            "stream": false,
+        }))
+        .unwrap();
+        assert!(should_include_sources(&with));
+
+        let without =
+            serde_json::from_value::<CreateResponsesPayload>(serde_json::json!({"stream": false}))
+                .unwrap();
+        assert!(!should_include_sources(&without));
+    }
+
+    #[test]
+    fn test_web_search_call_serialization_is_spec_shaped() {
+        // OpenAI requires `action` on every `web_search_call` and `query` on the
+        // search action. Assert both are always serialized — including the
+        // default action used when arguments fail to parse — and that the modern
+        // `queries` array is emitted alongside the deprecated `query`.
+        let completed = serde_json::to_value(WebSearchCallOutput {
+            type_: WebSearchCallOutputType::WebSearchCall,
+            id: "ws_1".to_string(),
+            status: WebSearchStatus::Completed,
+            action: WebSearchAction {
+                type_: WebSearchActionType::Search,
+                query: "rust 2024".to_string(),
+                queries: vec!["rust 2024".to_string()],
+                sources: None,
+            },
+            replay_content: Some("results".to_string()),
+        })
+        .unwrap();
+        assert_eq!(completed["action"]["type"], "search");
+        assert_eq!(completed["action"]["query"], "rust 2024");
+        assert_eq!(completed["action"]["queries"][0], "rust 2024");
+
+        // The malformed-arguments path emits a default action; `action` and
+        // `query` must still be present (query as an empty string).
+        let failed = serde_json::to_value(WebSearchCallOutput {
+            type_: WebSearchCallOutputType::WebSearchCall,
+            id: "ws_2".to_string(),
+            status: WebSearchStatus::Failed,
+            action: WebSearchAction::default(),
+            replay_content: Some("error".to_string()),
+        })
+        .unwrap();
+        assert!(failed.get("action").is_some(), "action must be serialized");
+        assert_eq!(failed["action"]["type"], "search");
+        assert_eq!(failed["action"]["query"], "");
     }
 }

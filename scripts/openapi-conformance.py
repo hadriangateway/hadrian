@@ -62,6 +62,7 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/chat/completions", "POST", "request", "function_call"): "Deprecated - use tool_choice instead",
     ("/chat/completions", "POST", "request", "functions"): "Deprecated - use tools instead",
     ("/chat/completions", "POST", "request", "include_obfuscation"): "OpenAI internal obfuscation feature",
+    ("/chat/completions", "POST", "request", "moderation"): "OpenAI hosted moderation pass (omni-moderation) - Hadrian has separate guardrails feature",
     # /completions - Legacy endpoint, minimal support
     ("/completions", "POST", "request", "include_usage"): "Legacy completions - use chat/completions instead",
     ("/completions", "POST", "request", "include_obfuscation"): "OpenAI internal obfuscation feature",
@@ -72,6 +73,7 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     # /models - Object field missing (schema issue)
     ("/models", "GET", "response", "object"): "List response object type - TODO: add to schema",
     # /responses - OpenAI-specific features
+    ("/responses", "POST", "request", "moderation"): "OpenAI hosted moderation pass (omni-moderation) - Hadrian has separate guardrails feature",
     ("/responses", "POST", "request", "top_logprobs"): "Log probabilities not implemented",
     ("/responses", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
     ("/responses", "POST", "request", "max_tool_calls"): "Tool call limits not implemented",

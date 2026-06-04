@@ -233,6 +233,8 @@ pub enum ResponsesIncludable {
     ReasoningEncryptedContent,
     #[serde(rename = "code_interpreter_call.outputs")]
     CodeInterpreterCallOutputs,
+    #[serde(rename = "web_search_call.action.sources")]
+    WebSearchCallActionSources,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -668,12 +670,74 @@ pub enum WebSearchCallOutputType {
     WebSearchCall,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchActionType {
+    #[default]
+    Search,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchSourceType {
+    Url,
+}
+
+/// A single source the model consulted during a web search — an entry in
+/// `web_search_call.action.sources`. Per OpenAI's spec the only source kind is
+/// a URL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchSource {
+    #[serde(rename = "type")]
+    pub type_: WebSearchSourceType,
+    pub url: String,
+}
+
+/// The action a `web_search_call` performed. Mirrors OpenAI's Responses API
+/// `search` action: it carries the issued query and, only when the request
+/// opts in via `include: ["web_search_call.action.sources"]`, the list of
+/// consulted source URLs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSearchAction {
+    #[serde(rename = "type")]
+    pub type_: WebSearchActionType,
+    /// The issued search query. OpenAI marks this `[DEPRECATED]` in favour of
+    /// `queries`, but it is still `required` on the `search` action, so it is
+    /// always serialized (empty string when the query is unknown, e.g. a call
+    /// whose arguments failed to parse). `#[serde(default)]` keeps
+    /// deserialization tolerant of native items that omit the deprecated field.
+    #[serde(default)]
+    pub query: String,
+    /// The issued search queries — OpenAI's modern array form, mirroring
+    /// `file_search_call.queries`. Hadrian's `web_search` function takes a
+    /// single query, so this carries at most one entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<WebSearchSource>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchCallOutput {
     #[serde(rename = "type")]
     pub type_: WebSearchCallOutputType,
     pub id: String,
     pub status: WebSearchStatus,
+    /// The action taken (query/queries, and optional source URLs). `action` is
+    /// `required` in OpenAI's `web_search_call`, so it is always serialized;
+    /// `#[serde(default)]` only relaxes deserialization for items persisted
+    /// before the field existed.
+    #[serde(default)]
+    pub action: WebSearchAction,
+    /// **Hadrian Extension:** the full formatted search-result text that was
+    /// fed to the model when this search ran. Hadrian executes web search
+    /// itself (Tavily/Exa) against upstreams that keep no server-side search
+    /// state, so it retains the result text here to replay the search as a
+    /// `function_call` + `function_call_output` pair on a later turn (see
+    /// `services/web_search_tool.rs::rewrite_web_search_history`). OpenAI's
+    /// native item has no equivalent field — it relies on OpenAI-side state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,20 +746,11 @@ pub enum FileSearchCallOutputType {
     FileSearchCall,
 }
 
-/// Content item within a file search result.
-///
-/// Matches OpenAI's format where content is an array of typed items.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum FileSearchResultContent {
-    /// Text content from the search result.
-    Text { text: String },
-}
-
 /// A single result item from a file search operation.
 ///
-/// This matches OpenAI's file search result schema when `include=["file_search_call.results"]`
-/// is specified in the request.
+/// Matches OpenAI's `file_search_call.results[]` schema, surfaced when
+/// `include=["file_search_call.results"]` is set. Each field is optional in the
+/// spec; Hadrian always populates `file_id`, `filename`, `text`, and `score`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSearchResultItem {
     /// The ID of the file this result came from.
@@ -704,12 +759,14 @@ pub struct FileSearchResultItem {
     pub filename: String,
     /// Relevance score between 0 and 1.
     pub score: f64,
-    /// Optional attributes/metadata associated with the file.
+    /// Optional attributes/metadata associated with the file. OpenAI's
+    /// `VectorStoreFileAttributes`: a map of string keys to string/number/bool
+    /// values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attributes: Option<HashMap<String, serde_json::Value>>,
-    /// The content retrieved from the file.
-    /// OpenAI uses an array format with typed content items.
-    pub content: Vec<FileSearchResultContent>,
+    /// The text retrieved from the file. OpenAI's Responses API uses a flat
+    /// string here (unlike the Assistants API's typed `content` array).
+    pub text: String,
 }
 
 /// Output item for a file_search tool call.
@@ -733,6 +790,18 @@ pub struct FileSearchCallOutput {
     /// When not included, this field is omitted from the response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results: Option<Vec<FileSearchResultItem>>,
+    /// **Hadrian Extension:** the full formatted retrieval text that was fed to
+    /// the model when this search ran. Like
+    /// [`WebSearchCallOutput::replay_content`], Hadrian executes file search
+    /// itself against upstreams that keep no server-side search state, so it
+    /// retains the result text here to replay the search as a `function_call` +
+    /// `function_call_output` pair on a later turn (see
+    /// `services/file_search_tool.rs::rewrite_file_search_history`). Unlike
+    /// `results`, this is retained regardless of the `include` parameter — it is
+    /// the model-facing text, not the client-facing chunk list. OpenAI's native
+    /// item has no equivalent field — it relies on OpenAI-side state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
