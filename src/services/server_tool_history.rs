@@ -45,16 +45,19 @@ pub fn rewrite_hosted_calls_to_function_pairs(
     let Some(ResponsesInput::Items(items)) = payload.input.as_mut() else {
         return;
     };
-    // The common case — a turn with no prior hosted-tool calls — must touch
-    // nothing: count the items that expand first, bail before allocating when
-    // there are none, and size the output exactly (each expansion adds one item)
-    // so a run of K expansions never reallocates mid-rewrite.
-    let expansions = items.iter().filter(|item| expand(item).is_some()).count();
-    if expansions == 0 {
+    // The common case — a turn with no prior hosted-tool calls — must allocate
+    // nothing: scan for the first item that expands and bail if there is none.
+    let Some(first) = items.iter().position(|item| expand(item).is_some()) else {
         return;
-    }
-    let mut rewritten = Vec::with_capacity(items.len() + expansions);
-    for item in std::mem::take(items) {
+    };
+    // Move the items out, pass the untouched `[0, first)` prefix through, and
+    // expand from `first` on — calling `expand` at most once more per item.
+    // Reserve for the worst case (every item from `first` expands into two) so
+    // the output never reallocates mid-rewrite.
+    let mut original = std::mem::take(items).into_iter();
+    let mut rewritten = Vec::with_capacity(first + (original.len() - first) * 2);
+    rewritten.extend(original.by_ref().take(first));
+    for item in original {
         match expand(&item) {
             Some((call, output)) => {
                 rewritten.push(ResponsesInputItem::FunctionCall(call));
