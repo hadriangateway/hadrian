@@ -110,6 +110,46 @@ describe("parseToolCallFromEvent", () => {
     expect(completed[0].invalid).toBeTruthy();
   });
 
+  it("recovers a valid parse from output_item.done after a truncated arguments.done", () => {
+    const tracker = createToolCallTracker();
+    parseToolCallFromEvent(added, tracker);
+
+    // arguments.done arrives truncated and flags the call invalid.
+    parseToolCallFromEvent(
+      {
+        type: "response.function_call_arguments.done",
+        item_id: ITEM_ID,
+        output_index: 0,
+        arguments: '{"query": ',
+      },
+      tracker
+    );
+    expect(tracker.toolCalls.get(ITEM_ID)?.invalid).toBeTruthy();
+
+    // output_item.done carries the complete, valid payload — the call must
+    // recover rather than stay permanently flagged invalid.
+    const done = parseToolCallFromEvent(
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "function_call",
+          id: ITEM_ID,
+          call_id: CALL_ID,
+          name: "web_search",
+          arguments: '{"query": "rust"}',
+          status: "completed",
+        },
+      },
+      tracker
+    );
+    expect(done.type).toBe("tool_call_complete");
+    if (done.type === "tool_call_complete") {
+      expect(done.toolCall.invalid).toBeUndefined();
+      expect(done.toolCall.arguments).toEqual({ query: "rust" });
+    }
+  });
+
   it("parses well-formed arguments into a clean completed call", () => {
     const tracker = createToolCallTracker();
     parseToolCallFromEvent(added, tracker);

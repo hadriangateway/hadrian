@@ -476,15 +476,20 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
       // Update existing state
       state.status = "completed";
 
-      // If we don't have parsed arguments yet, try from the done event. An
-      // unparseable payload is marked invalid (not dropped) so the tool loop
-      // feeds the error back to the model instead of ending the turn silently.
-      if (!state.parsedArguments && !state.invalid && itemDoneEvent.item.arguments) {
+      // If we don't have parsed arguments yet, try from the done event.
+      // `output_item.done` carries the complete `item.arguments`, so it can
+      // still recover a valid parse even if an earlier `arguments.done` was
+      // truncated and set `invalid` — so retry whenever args are unset and
+      // clear the stale `invalid` marker on success. An unparseable payload is
+      // (re)marked invalid (not dropped) so the tool loop feeds the error back
+      // to the model instead of ending the turn silently.
+      if (!state.parsedArguments && itemDoneEvent.item.arguments) {
         try {
           state.parsedArguments = JSON.parse(itemDoneEvent.item.arguments) as Record<
             string,
             unknown
           >;
+          state.invalid = undefined;
         } catch (err) {
           state.invalid = err instanceof Error ? err.message : String(err);
         }
