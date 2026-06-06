@@ -1210,7 +1210,20 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd  /mnt/data/sub/
 
     #[async_trait]
     impl ShellSession for FakeSession {
-        async fn exec(&self, _cmd: ExecRequest) -> RuntimeResult<ExecHandle> {
+        async fn exec(&self, cmd: ExecRequest) -> RuntimeResult<ExecHandle> {
+            // Only the `find … sha256sum` listing produces file output; any
+            // other command returns empty stdout so a future second `exec`
+            // call in `capture_changes` can't be silently mis-parsed as a
+            // listing.
+            if !cmd.command.contains("sha256sum") {
+                let events = vec![ExecEvent::Exit {
+                    code: 0,
+                    signal: None,
+                }];
+                return Ok(ExecHandle {
+                    output: Box::pin(stream::iter(events)),
+                });
+            }
             // Emulate the `find … sha256sum` listing the session uses to
             // snapshot /mnt/data.
             let mut out = String::new();
@@ -1299,6 +1312,22 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd  /mnt/data/sub/
             fake.read_count(&path),
             1,
             "snapshot was not advanced: over-budget file re-read on the next command"
+        );
+
+        // Third capture after the file's content changes: the snapshot was
+        // advanced to the *old* hash, so the new content must be re-detected
+        // and re-read (and re-warned, as it's still over budget). This guards
+        // against a regression that advances the snapshot unconditionally.
+        fake.files
+            .lock()
+            .unwrap()
+            .insert(path.clone(), Bytes::from(vec![9u8; 4096]));
+        let refs = session.capture_changes().await.unwrap();
+        assert!(refs.is_empty(), "still over budget after content change");
+        assert_eq!(
+            fake.read_count(&path),
+            2,
+            "content change after a budget-skip must trigger a re-read"
         );
     }
 
