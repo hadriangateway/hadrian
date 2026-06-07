@@ -1698,13 +1698,27 @@ export function useChat({
                   (item: { type: string }) => item.type === "function_call"
                 ) as Array<{ type: string; call_id: string; name: string; arguments: string }>;
                 if (functionCalls.length > 0) {
-                  completedToolCalls = functionCalls.map((fc) => ({
-                    id: fc.call_id, // Use call_id as id since that's what we have
-                    callId: fc.call_id,
-                    name: fc.name,
-                    status: "completed" as const,
-                    arguments: JSON.parse(fc.arguments || "{}"),
-                  }));
+                  completedToolCalls = functionCalls.map((fc) => {
+                    // Parse the model's arguments. An unparseable payload is
+                    // marked invalid (not dropped, and without throwing — a
+                    // throw here would abort the whole handler and strand every
+                    // sibling call) so the tool loop feeds the error back.
+                    let parsedArguments: Record<string, unknown> = {};
+                    let invalid: string | undefined;
+                    try {
+                      parsedArguments = JSON.parse(fc.arguments || "{}") as Record<string, unknown>;
+                    } catch (err) {
+                      invalid = err instanceof Error ? err.message : String(err);
+                    }
+                    return {
+                      id: fc.call_id, // Use call_id as id since that's what we have
+                      callId: fc.call_id,
+                      name: fc.name,
+                      status: "completed" as const,
+                      arguments: parsedArguments,
+                      ...(invalid ? { invalid } : {}),
+                    };
+                  });
                 }
               }
 

@@ -143,6 +143,12 @@ export interface FileSearchToolCall {
   name: "file_search";
   status: ToolCallStatus;
   arguments: FileSearchArguments;
+  /**
+   * Set when the model emitted this call but its `arguments` could not be
+   * parsed as JSON. The call is still surfaced (never dropped) so the tool
+   * loop can feed the error back to the model. See {@link invalidArgumentsText}.
+   */
+  invalid?: string;
 }
 
 /**
@@ -164,6 +170,12 @@ export interface GenericToolCall {
   name: string;
   status: ToolCallStatus;
   arguments: Record<string, unknown>;
+  /**
+   * Set when the model emitted this call but its `arguments` could not be
+   * parsed as JSON. The call is still surfaced (never dropped) so the tool
+   * loop can feed the error back to the model. See {@link invalidArgumentsText}.
+   */
+  invalid?: string;
 }
 
 /**
@@ -191,6 +203,11 @@ export interface ToolCallState {
   parsedArguments?: Record<string, unknown>;
   /** Error message if status is "failed" */
   error?: string;
+  /**
+   * Set when `arguments` could not be parsed as JSON. The call still counts
+   * as completed so the tool loop feeds the error back instead of dropping it.
+   */
+  invalid?: string;
 }
 
 /**
@@ -246,7 +263,7 @@ export function createToolCallTracker(): ToolCallTracker {
 
     getCompletedToolCalls(): ParsedToolCall[] {
       return Array.from(toolCalls.values())
-        .filter((tc) => tc.status === "completed" && tc.parsedArguments)
+        .filter((tc) => tc.status === "completed" && (tc.parsedArguments || tc.invalid))
         .map((tc) => createParsedToolCall(tc));
     },
 
@@ -275,6 +292,15 @@ function mapToolNameToType(name: string): ToolCallType {
 }
 
 /**
+ * Standard human-readable message for an unparseable tool call, fed back to
+ * the model in the `function_call_output` so it can correct the call. Mirrors
+ * the backend's `invalid_arguments_text` (src/services/server_tools/mod.rs).
+ */
+export function invalidArgumentsText(toolName: string, error: string): string {
+  return `Invalid arguments for tool \`${toolName}\`: ${error}`;
+}
+
+/**
  * Create a ParsedToolCall from ToolCallState
  */
 function createParsedToolCall(state: ToolCallState): ParsedToolCall {
@@ -283,6 +309,7 @@ function createParsedToolCall(state: ToolCallState): ParsedToolCall {
     callId: state.callId,
     name: state.name,
     status: state.status,
+    ...(state.invalid ? { invalid: state.invalid } : {}),
   };
 
   if (state.name === "file_search") {
@@ -335,11 +362,16 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
         return { type: "ignored" };
       }
 
-      // Use call_id as the canonical identifier - it's required for matching
-      // function_call_output back to the original call, so it's always present
+      // Key the tracker by the item id (`fc_xxx`): that's what the streaming
+      // `function_call_arguments.delta`/`.done` events carry as `item_id`.
+      // The provider's `call_id` (`toolu_xxx`/`call_xxx`) differs from the item
+      // id, so keying on it here would make every argument delta/done miss the
+      // entry. `callId` is kept as a field for matching `function_call_output`
+      // back to the original call when building the continuation.
+      const itemId = addedEvent.item.id;
       const callId = addedEvent.item.call_id ?? addedEvent.item.id;
       const state: ToolCallState = {
-        id: callId,
+        id: itemId,
         callId: callId,
         name: addedEvent.item.name ?? "unknown",
         outputIndex: addedEvent.output_index,
@@ -347,7 +379,7 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
         status: "pending",
       };
 
-      tracker.toolCalls.set(callId, state);
+      tracker.toolCalls.set(itemId, state);
       return { type: "tool_call_added", toolCall: state };
     }
 
@@ -386,14 +418,13 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
       // Use the final arguments from the event (more reliable than buffer)
       state.argumentsBuffer = doneEvent.arguments;
 
-      // Parse the arguments JSON
+      // Parse the arguments JSON. An unparseable payload is recorded as
+      // invalid (not dropped) so the tool loop can feed the error back to the
+      // model on `output_item.done`; the call is surfaced either way.
       try {
         state.parsedArguments = JSON.parse(doneEvent.arguments) as Record<string, unknown>;
-      } catch {
-        return {
-          type: "error",
-          message: `Failed to parse arguments for tool call ${state.id}: ${doneEvent.arguments}`,
-        };
+      } catch (err) {
+        state.invalid = err instanceof Error ? err.message : String(err);
       }
 
       return { type: "tool_call_arguments_done", id: state.id, arguments: doneEvent.arguments };
@@ -407,15 +438,17 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
         return { type: "ignored" };
       }
 
-      // Use call_id as the canonical identifier
+      // Key by the item id (`fc_xxx`) to match the entry created by
+      // `output_item.added` and the streaming argument events.
+      const itemId = itemDoneEvent.item.id;
       const callId = itemDoneEvent.item.call_id ?? itemDoneEvent.item.id;
-      const state = tracker.toolCalls.get(callId);
+      const state = tracker.toolCalls.get(itemId);
 
       if (!state) {
         // Item might have been created without output_item.added (edge case)
         // Create it now from the done event
         const newState: ToolCallState = {
-          id: callId,
+          id: itemId,
           callId: callId,
           name: itemDoneEvent.item.name ?? "unknown",
           outputIndex: itemDoneEvent.output_index,
@@ -423,40 +456,42 @@ export function parseToolCallFromEvent(event: BaseSSEEvent, tracker: ToolCallTra
           status: "completed",
         };
 
-        // Parse arguments
+        // Parse arguments. An unparseable payload is marked invalid (not
+        // dropped) so the tool loop feeds the error back to the model.
         if (itemDoneEvent.item.arguments) {
           try {
             newState.parsedArguments = JSON.parse(itemDoneEvent.item.arguments) as Record<
               string,
               unknown
             >;
-          } catch {
-            return {
-              type: "error",
-              message: `Failed to parse arguments from output_item.done: ${itemDoneEvent.item.arguments}`,
-            };
+          } catch (err) {
+            newState.invalid = err instanceof Error ? err.message : String(err);
           }
         }
 
-        tracker.toolCalls.set(callId, newState);
+        tracker.toolCalls.set(itemId, newState);
         return { type: "tool_call_complete", toolCall: createParsedToolCall(newState) };
       }
 
       // Update existing state
       state.status = "completed";
 
-      // If we don't have parsed arguments yet, try from the done event
+      // If we don't have parsed arguments yet, try from the done event.
+      // `output_item.done` carries the complete `item.arguments`, so it can
+      // still recover a valid parse even if an earlier `arguments.done` was
+      // truncated and set `invalid` — so retry whenever args are unset and
+      // clear the stale `invalid` marker on success. An unparseable payload is
+      // (re)marked invalid (not dropped) so the tool loop feeds the error back
+      // to the model instead of ending the turn silently.
       if (!state.parsedArguments && itemDoneEvent.item.arguments) {
         try {
           state.parsedArguments = JSON.parse(itemDoneEvent.item.arguments) as Record<
             string,
             unknown
           >;
-        } catch {
-          return {
-            type: "error",
-            message: `Failed to parse arguments from output_item.done: ${itemDoneEvent.item.arguments}`,
-          };
+          state.invalid = undefined;
+        } catch (err) {
+          state.invalid = err instanceof Error ? err.message : String(err);
         }
       }
 

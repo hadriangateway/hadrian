@@ -35,6 +35,7 @@
 
 import type { Citation, ChunkCitation } from "@/components/chat-types";
 import type { ParsedToolCall, FileSearchToolCall } from "./toolCallParser";
+import { invalidArgumentsText } from "./toolCallParser";
 import { executeFileSearch, type ExecuteFileSearchOptions } from "./executeFileSearch";
 import { pyodideService } from "@/services/pyodide";
 import { quickjsService } from "@/services/quickjs";
@@ -2900,6 +2901,20 @@ export async function executeToolCalls(
 
   // Execute all tool calls in parallel
   const execPromises = toolCalls.map(async (toolCall) => {
+    // The model emitted this call but its arguments couldn't be parsed. Mirror
+    // the backend's invalid-argument contract: don't run the underlying tool,
+    // feed the parse error back as a function_call_output so the model can
+    // self-correct on the next round. (See src/services/server_tools/mod.rs.)
+    if (toolCall.invalid) {
+      const message = invalidArgumentsText(toolCall.name, toolCall.invalid);
+      results.set(toolCall.id, {
+        success: false,
+        error: message,
+        output: JSON.stringify({ error: message }),
+      });
+      return;
+    }
+
     // Check for MCP tools (dynamically named with "mcp:" prefix)
     let executor = executors[toolCall.name];
 
