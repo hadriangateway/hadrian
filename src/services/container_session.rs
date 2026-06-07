@@ -713,7 +713,13 @@ impl ContainerSession {
             }
 
             // Enforce the cumulative session cap. If adding this file
-            // would put us over, skip with a warning.
+            // would put us over, skip it — but still advance the
+            // snapshot to this version's hash so we treat it as
+            // accounted-for. Without this, the file stays absent from
+            // (or stale in) `snapshot`, so every later command re-flags
+            // it as changed, re-reads its bytes out of the VM, and
+            // re-emits the same warning. Advancing the snapshot means we
+            // only warn again if the file's content actually changes.
             let prior_bytes = state.captured.get(path).map(|f| f.bytes).unwrap_or(0);
             let projected = state.bytes_total.saturating_sub(prior_bytes) + bytes.len() as u64;
             if projected > self.config.max_bytes_per_session {
@@ -725,6 +731,7 @@ impl ContainerSession {
                     limit = self.config.max_bytes_per_session,
                     "Captured file would exceed max_bytes_per_session; skipping"
                 );
+                state.snapshot.insert(path.clone(), *hash);
                 continue;
             }
 
@@ -1170,5 +1177,178 @@ abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd  /mnt/data/sub/
         assert!(f.starts_with("cfile_"));
         assert_eq!(c.len(), 5 + 32);
         assert_eq!(f.len(), 6 + 32);
+    }
+
+    // ---- capture_changes byte-budget regression coverage ----
+
+    use async_trait::async_trait;
+    use futures_util::stream;
+
+    use crate::runtimes::{ExecEvent, ExecHandle, ExecRequest, RuntimeResult, ShellSession};
+
+    /// In-memory `/mnt/data` backing a fake session. `exec` answers the
+    /// `find … sha256sum` listing command; `read_file` serves stored
+    /// bytes and counts reads per path so a test can assert a file is
+    /// not re-read out of the VM on a subsequent capture.
+    struct FakeSession {
+        files: std::sync::Mutex<HashMap<String, Bytes>>,
+        reads: std::sync::Mutex<HashMap<String, usize>>,
+    }
+
+    impl FakeSession {
+        fn new(files: HashMap<String, Bytes>) -> Self {
+            Self {
+                files: std::sync::Mutex::new(files),
+                reads: std::sync::Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn read_count(&self, path: &str) -> usize {
+            self.reads.lock().unwrap().get(path).copied().unwrap_or(0)
+        }
+    }
+
+    #[async_trait]
+    impl ShellSession for FakeSession {
+        async fn exec(&self, cmd: ExecRequest) -> RuntimeResult<ExecHandle> {
+            // Only the `find … sha256sum` listing produces file output; any
+            // other command returns empty stdout so a future second `exec`
+            // call in `capture_changes` can't be silently mis-parsed as a
+            // listing.
+            if !cmd.command.contains("sha256sum") {
+                let events = vec![ExecEvent::Exit {
+                    code: 0,
+                    signal: None,
+                }];
+                return Ok(ExecHandle {
+                    output: Box::pin(stream::iter(events)),
+                });
+            }
+            // Emulate the `find … sha256sum` listing the session uses to
+            // snapshot /mnt/data.
+            let mut out = String::new();
+            for (path, bytes) in self.files.lock().unwrap().iter() {
+                out.push_str(&hex::encode(sha256_bytes(bytes)));
+                out.push_str("  ");
+                out.push_str(path);
+                out.push('\n');
+            }
+            let events = vec![
+                ExecEvent::Stdout(Bytes::from(out)),
+                ExecEvent::Exit {
+                    code: 0,
+                    signal: None,
+                },
+            ];
+            Ok(ExecHandle {
+                output: Box::pin(stream::iter(events)),
+            })
+        }
+
+        async fn read_file(&self, path: &str) -> RuntimeResult<Bytes> {
+            *self
+                .reads
+                .lock()
+                .unwrap()
+                .entry(path.to_string())
+                .or_insert(0) += 1;
+            self.files
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| RuntimeError::Backend(format!("no such file: {path}")))
+        }
+
+        async fn terminate(&self) -> RuntimeResult<()> {
+            Ok(())
+        }
+    }
+
+    fn test_session(handle: SessionHandle, config: ContainersConfig) -> ContainerSession {
+        ContainerSession {
+            container_id: new_container_id(),
+            runtime_label: "test",
+            created_at: Instant::now(),
+            idle_ttl: Duration::from_secs(60),
+            file_io: true,
+            session: Some(handle),
+            config,
+            state: Mutex::new(SessionState::default()),
+            persistence: None,
+        }
+    }
+
+    /// A file skipped by the session byte budget must advance the
+    /// snapshot so the next `capture_changes` doesn't re-detect it as
+    /// changed, re-read its bytes out of the VM, and re-warn. Without the
+    /// fix, the second capture re-reads the over-budget file.
+    #[tokio::test]
+    async fn over_budget_file_advances_snapshot_and_is_not_reread() {
+        let big = Bytes::from(vec![7u8; 4096]);
+        let path = format!("{MNT_DATA}/big.bin");
+        let mut files = HashMap::new();
+        files.insert(path.clone(), big);
+        let fake = Arc::new(FakeSession::new(files));
+        let handle = SessionHandle::new("sess".into(), Box::new(FakeSessionProxy(fake.clone())));
+
+        // Cap below the file size so it's always over budget.
+        let config = ContainersConfig {
+            max_bytes_per_session: 1024,
+            ..ContainersConfig::default()
+        };
+        let session = test_session(handle, config);
+
+        // First capture: detects the change, reads it once, finds it over
+        // budget, skips it (no ref returned) but records the snapshot.
+        let refs = session.capture_changes().await.unwrap();
+        assert!(refs.is_empty(), "over-budget file must not be captured");
+        assert_eq!(fake.read_count(&path), 1, "expected exactly one read");
+
+        // Second capture with the file unchanged: must NOT re-read it.
+        let refs = session.capture_changes().await.unwrap();
+        assert!(refs.is_empty());
+        assert_eq!(
+            fake.read_count(&path),
+            1,
+            "snapshot was not advanced: over-budget file re-read on the next command"
+        );
+
+        // Third capture after the file's content changes: the snapshot was
+        // advanced to the *old* hash, so the new content must be re-detected
+        // and re-read (and re-warned, as it's still over budget). This guards
+        // against a regression that advances the snapshot unconditionally.
+        fake.files
+            .lock()
+            .unwrap()
+            .insert(path.clone(), Bytes::from(vec![9u8; 4096]));
+        let refs = session.capture_changes().await.unwrap();
+        assert!(refs.is_empty(), "still over budget after content change");
+        assert_eq!(
+            fake.read_count(&path),
+            2,
+            "content change after a budget-skip must trigger a re-read"
+        );
+    }
+
+    /// Thin wrapper so the test can keep an `Arc` to the fake for
+    /// assertions while still handing an owned `Box<dyn ShellSession>` to
+    /// `SessionHandle`.
+    struct FakeSessionProxy(Arc<FakeSession>);
+
+    #[async_trait]
+    impl ShellSession for FakeSessionProxy {
+        async fn exec(&self, cmd: ExecRequest) -> RuntimeResult<ExecHandle> {
+            self.0.exec(cmd).await
+        }
+        async fn read_file(&self, path: &str) -> RuntimeResult<Bytes> {
+            self.0.read_file(path).await
+        }
+        async fn write_file(&self, path: &str, bytes: Bytes) -> RuntimeResult<()> {
+            self.0.write_file(path, bytes).await
+        }
+        async fn terminate(&self) -> RuntimeResult<()> {
+            self.0.terminate().await
+        }
     }
 }
