@@ -206,6 +206,15 @@ impl VertexProvider {
             .await
             .map_err(|e| ProviderError::Internal(format!("Failed to get token: {}", e)))?;
 
+        // `google-cloud-auth` returns the value already prefixed with the
+        // `"Bearer "` scheme. `build_request` adds the scheme itself, so strip
+        // it here to avoid sending `Authorization: Bearer Bearer <token>`, which
+        // Google rejects with `UNAUTHENTICATED`.
+        let token = token
+            .strip_prefix("Bearer ")
+            .map(str::to_owned)
+            .unwrap_or(token);
+
         Ok(Some(token))
     }
 
