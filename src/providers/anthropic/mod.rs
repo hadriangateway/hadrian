@@ -70,7 +70,16 @@ fn max_tokens_with_thinking_headroom(
 ) -> u32 {
     match thinking {
         Some(types::AnthropicThinkingConfig::Enabled { budget_tokens }) => {
-            max_tokens.max(budget_tokens.saturating_add(THINKING_OUTPUT_MARGIN))
+            let raised = max_tokens.max(budget_tokens.saturating_add(THINKING_OUTPUT_MARGIN));
+            if raised != max_tokens {
+                tracing::debug!(
+                    original_max_tokens = max_tokens,
+                    adjusted_max_tokens = raised,
+                    budget_tokens = *budget_tokens,
+                    "Raised max_tokens to clear Anthropic thinking budget plus reply headroom"
+                );
+            }
+            raised
         }
         // Disabled / Adaptive / None: no fixed budget to reconcile against.
         _ => max_tokens,
@@ -589,6 +598,17 @@ mod tests {
         assert_eq!(
             max_tokens_with_thinking_headroom(50000, &enabled_budget(16000)),
             50000,
+        );
+    }
+
+    #[test]
+    fn max_tokens_above_budget_still_gets_margin() {
+        // Boundary case: max_tokens already exceeds budget_tokens (so it would
+        // satisfy Anthropic's raw `max_tokens > budget_tokens` check) but sits
+        // below budget + margin — it must still be raised to clear the margin.
+        assert_eq!(
+            max_tokens_with_thinking_headroom(20000, &enabled_budget(16000)),
+            16000 + THINKING_OUTPUT_MARGIN,
         );
     }
 
