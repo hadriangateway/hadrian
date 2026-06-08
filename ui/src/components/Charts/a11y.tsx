@@ -34,41 +34,43 @@ export function ChartA11y({ ariaLabel, data, columns, children, maxRows = 200 }:
   const truncated = data.length > visibleRows.length;
 
   return (
-    <figure role="img" aria-label={ariaLabel} className="contents">
+    <figure role="img" aria-label={ariaLabel} className="relative m-0 w-full">
       {children}
-      <table className="sr-only">
-        <caption>{ariaLabel}</caption>
-        <thead>
-          <tr>
-            {columns.map((col) => (
-              <th key={col.header} scope="col">
-                {col.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {visibleRows.map((row, index) => (
-            <tr key={index}>
-              {columns.map((col) => {
-                const value = col.render(row, index);
-                return (
-                  <td key={col.header}>
-                    {value === null || value === undefined ? "" : String(value)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-          {truncated && (
+      <div className="sr-only">
+        <table>
+          <caption>{ariaLabel}</caption>
+          <thead>
             <tr>
-              <td colSpan={columns.length}>
-                +{data.length - visibleRows.length} more rows truncated for accessibility
-              </td>
+              {columns.map((col) => (
+                <th key={col.header} scope="col">
+                  {col.header}
+                </th>
+              ))}
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visibleRows.map((row, index) => (
+              <tr key={index}>
+                {columns.map((col) => {
+                  const value = col.render(row, index);
+                  return (
+                    <td key={col.header}>
+                      {value === null || value === undefined ? "" : String(value)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            {truncated && (
+              <tr>
+                <td colSpan={columns.length}>
+                  +{data.length - visibleRows.length} more rows truncated for accessibility
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </figure>
   );
 }
