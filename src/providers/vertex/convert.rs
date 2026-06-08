@@ -110,6 +110,208 @@ pub(super) fn convert_content_to_parts(content: &MessageContent) -> Vec<VertexPa
     }
 }
 
+/// Fields of Gemini's function-declaration `Schema` (a closed subset of an
+/// OpenAPI 3.0 schema object). The Vertex endpoint rejects any unknown key with
+/// `Invalid JSON payload received. Unknown name "<key>"`, so we filter tool
+/// `parameters` down to this allowlist rather than chasing an ever-growing
+/// denylist: every JSON Schema keyword Gemini doesn't model — metadata
+/// (`$schema`, `$id`, `$comment`), validation it can't express
+/// (`additionalProperties`, `patternProperties`, `const`, `exclusiveMinimum`,
+/// `contentEncoding`, `allOf`, `oneOf`, …) — simply isn't on the list and is
+/// dropped. Dropping a validation keyword only relaxes validation, which beats
+/// failing the request outright.
+///
+/// `additionalProperties` is deliberately excluded: it has been observed to
+/// trip the same `Unknown name` rejection, and removing it is harmless.
+///
+/// Tool `parameters` routinely originate from untrusted upstreams — e.g. a
+/// remote MCP server's `input_schema`, which Hadrian forwards verbatim when it
+/// rewrites MCP tools into function tools (see
+/// `services::mcp::preprocess::build_function_tool`). Schemas generated from
+/// Pydantic/Zod models carry exactly these unsupported keywords, plus `$ref`/
+/// `$defs`, which [`inline_schema_refs`] resolves before this allowlist runs.
+const GEMINI_SUPPORTED_SCHEMA_KEYS: &[&str] = &[
+    "type",
+    "format",
+    "title",
+    "description",
+    "nullable",
+    "default",
+    "example",
+    "enum",
+    "properties",
+    "required",
+    "propertyOrdering",
+    "items",
+    "minItems",
+    "maxItems",
+    "minProperties",
+    "maxProperties",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minimum",
+    "maximum",
+    "anyOf",
+];
+
+/// Sanitize a tool `parameters` schema for Vertex: first inline any `$ref`/
+/// `$defs` (Gemini cannot follow references), then drop every keyword outside
+/// [`GEMINI_SUPPORTED_SCHEMA_KEYS`]. Order matters — inlining pulls referenced
+/// type information into place before the allowlist removes the now-orphaned
+/// `$defs` block.
+fn sanitized_parameters(mut parameters: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    if let Some(schema) = parameters.as_mut() {
+        inline_schema_refs(schema);
+        retain_supported_keys(schema);
+    }
+    parameters
+}
+
+/// Parse a local `$ref` of the form `#/$defs/<name>` or `#/definitions/<name>`
+/// and return `<name>`. Returns `None` for non-local refs or multi-segment
+/// pointers, which we can't resolve against a flat `$defs` map.
+fn ref_target_name(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/$defs/")
+        .or_else(|| reference.strip_prefix("#/definitions/"))
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+}
+
+/// Replace `$ref` pointers in a tool parameter schema with the referenced
+/// subschema. `$defs`/`definitions` are lifted off the root and used as the
+/// lookup table; the allowlist pass later removes any that remain.
+fn inline_schema_refs(schema: &mut serde_json::Value) {
+    let defs = {
+        let serde_json::Value::Object(root) = schema else {
+            return;
+        };
+        let mut defs = serde_json::Map::new();
+        if let Some(serde_json::Value::Object(d)) = root.remove("$defs") {
+            defs.extend(d);
+        }
+        if let Some(serde_json::Value::Object(d)) = root.remove("definitions") {
+            defs.extend(d);
+        }
+        defs
+    };
+    let mut active: Vec<String> = Vec::new();
+    resolve_refs(schema, &defs, &mut active);
+}
+
+/// Recursive worker for [`inline_schema_refs`]. `active` holds the `$ref`
+/// targets currently being expanded on this path; re-entering one means the
+/// schema is recursive. Gemini's schema can't express a cycle and the genai
+/// proto rejects raw `$ref`, so a recursive or unresolvable reference collapses
+/// to a permissive `{"type": "object"}` rather than looping forever.
+fn resolve_refs(
+    value: &mut serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    active: &mut Vec<String>,
+) {
+    let serde_json::Value::Object(map) = value else {
+        if let serde_json::Value::Array(items) = value {
+            for item in items {
+                resolve_refs(item, defs, active);
+            }
+        }
+        return;
+    };
+
+    let reference = match map.get("$ref") {
+        Some(serde_json::Value::String(reference)) => reference.clone(),
+        _ => {
+            for child in map.values_mut() {
+                resolve_refs(child, defs, active);
+            }
+            return;
+        }
+    };
+
+    // Keywords sitting beside `$ref` (draft 2020-12 applies both); preserve them
+    // so an inlined field keeps its own `description`/`default`/etc. A sibling can
+    // itself be a subschema carrying a nested `$ref` (e.g. `anyOf` next to a
+    // `$ref`), so each is resolved below before being merged — otherwise the
+    // allowlist pass would later strip the orphaned `$ref` to an empty object.
+    let siblings: Vec<(String, serde_json::Value)> = map
+        .iter()
+        .filter(|(k, _)| k.as_str() != "$ref")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    let mut replacement = match ref_target_name(&reference) {
+        Some(name) if active.iter().any(|n| n == name) => {
+            tracing::debug!(
+                reference = %reference,
+                "recursive $ref in tool schema; substituting a permissive object for Gemini"
+            );
+            serde_json::json!({ "type": "object" })
+        }
+        Some(name) => match defs.get(name) {
+            Some(target) => {
+                let mut resolved = target.clone();
+                active.push(name.to_string());
+                resolve_refs(&mut resolved, defs, active);
+                active.pop();
+                resolved
+            }
+            None => {
+                tracing::debug!(
+                    reference = %reference,
+                    "unresolved $ref in tool schema; substituting a permissive object for Gemini"
+                );
+                serde_json::json!({ "type": "object" })
+            }
+        },
+        None => {
+            tracing::debug!(
+                reference = %reference,
+                "non-local $ref in tool schema; substituting a permissive object for Gemini"
+            );
+            serde_json::json!({ "type": "object" })
+        }
+    };
+
+    if let serde_json::Value::Object(resolved) = &mut replacement {
+        for (k, mut v) in siblings {
+            resolve_refs(&mut v, defs, active);
+            resolved.entry(k).or_insert(v);
+        }
+    }
+    *value = replacement;
+}
+
+/// Drop every keyword outside [`GEMINI_SUPPORTED_SCHEMA_KEYS`] from a schema,
+/// recursing only into positions that actually hold subschemas. This is
+/// deliberately structure-aware: it must not touch the *keys* of a `properties`
+/// map (those are caller-defined property names, e.g. a parameter literally
+/// named `additionalProperties`) nor the entries of `enum`/`default`/`example`
+/// values, which are data rather than schema.
+fn retain_supported_keys(value: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = value else {
+        return;
+    };
+    map.retain(|k, _| GEMINI_SUPPORTED_SCHEMA_KEYS.contains(&k.as_str()));
+
+    if let Some(serde_json::Value::Object(properties)) = map.get_mut("properties") {
+        for subschema in properties.values_mut() {
+            retain_supported_keys(subschema);
+        }
+    }
+    if let Some(items) = map.get_mut("items") {
+        match items {
+            serde_json::Value::Object(_) => retain_supported_keys(items),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(retain_supported_keys),
+            _ => {}
+        }
+    }
+    if let Some(serde_json::Value::Array(variants)) = map.get_mut("anyOf") {
+        for variant in variants {
+            retain_supported_keys(variant);
+        }
+    }
+}
+
 /// Convert OpenAI tools to Vertex format
 pub(super) fn convert_tools(tools: Option<Vec<ToolDefinition>>) -> Option<Vec<VertexTool>> {
     tools.map(|tools| {
@@ -119,7 +321,7 @@ pub(super) fn convert_tools(tools: Option<Vec<ToolDefinition>>) -> Option<Vec<Ve
                 .map(|tool| VertexFunctionDeclaration {
                     name: tool.function.name,
                     description: tool.function.description,
-                    parameters: tool.function.parameters,
+                    parameters: sanitized_parameters(tool.function.parameters),
                 })
                 .collect(),
         }]
@@ -795,7 +997,7 @@ pub(super) fn convert_responses_tools_to_vertex(
                 function_declarations.push(VertexFunctionDeclaration {
                     name: func.name,
                     description: func.description,
-                    parameters: func.parameters,
+                    parameters: sanitized_parameters(func.parameters),
                 });
             }
             ResponsesToolDefinition::WebSearchPreview(_)
@@ -1435,6 +1637,240 @@ mod responses_api_tests {
             Some("Get weather for a location".to_string())
         );
         assert!(fd.parameters.is_some());
+    }
+
+    #[test]
+    fn test_convert_responses_tools_strips_gemini_unsupported_schema_keys() {
+        // Mirrors the failing payload: an MCP tool whose `input_schema` (forwarded
+        // verbatim as `parameters`) carries `$schema`, `additionalProperties`, and a
+        // nested `$schema` — all of which Gemini rejects with
+        // `Invalid JSON payload received. Unknown name "$schema"`.
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "platter_query",
+                "description": "Run a query",
+                "parameters": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "filter": {
+                            "$schema": "http://json-schema.org/draft-07/schema#",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {"name": {"type": "string"}}
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"key": {"type": "string"}}
+                            }
+                        }
+                    },
+                    "required": ["filter"]
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let vertex_tools = convert_responses_tools_to_vertex(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        // No unsupported keys remain anywhere in the tree...
+        let serialized = serde_json::to_string(params).unwrap();
+        assert!(
+            !serialized.contains("$schema"),
+            "$schema should be stripped: {serialized}"
+        );
+        assert!(
+            !serialized.contains("additionalProperties"),
+            "additionalProperties should be stripped: {serialized}"
+        );
+        // ...while the meaningful schema (types, properties, required, nesting)
+        // survives intact.
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["required"][0], "filter");
+        assert_eq!(
+            params["properties"]["filter"]["properties"]["name"]["type"],
+            "string"
+        );
+        assert_eq!(
+            params["properties"]["tags"]["items"]["properties"]["key"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn test_convert_responses_tools_inlines_ref_and_defs() {
+        // Pydantic/Zod-style schema: a nested model is hoisted into `$defs` and
+        // referenced via `$ref`. Gemini can't follow references, so the def must
+        // be inlined in place and the orphaned `$defs` block dropped.
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "create_user",
+                "description": "Create a user",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "primary": {"$ref": "#/$defs/Address"},
+                        "billing": {
+                            "$ref": "#/$defs/Address",
+                            "description": "Billing address"
+                        }
+                    },
+                    "required": ["primary"],
+                    "$defs": {
+                        "Address": {
+                            "type": "object",
+                            "properties": {
+                                "street": {"type": "string"},
+                                "zip": {"type": "string"}
+                            },
+                            "required": ["street"]
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let vertex_tools = convert_responses_tools_to_vertex(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        // No reference machinery survives for Gemini to choke on.
+        let serialized = serde_json::to_string(params).unwrap();
+        assert!(
+            !serialized.contains("$ref"),
+            "$ref should be inlined: {serialized}"
+        );
+        assert!(
+            !serialized.contains("$defs"),
+            "$defs should be dropped: {serialized}"
+        );
+
+        // The referenced type is materialized at both use sites...
+        assert_eq!(
+            params["properties"]["primary"]["properties"]["street"]["type"],
+            "string"
+        );
+        assert_eq!(
+            params["properties"]["billing"]["properties"]["zip"]["type"],
+            "string"
+        );
+        // ...and a keyword sitting beside the `$ref` is preserved on inline.
+        assert_eq!(
+            params["properties"]["billing"]["description"],
+            "Billing address"
+        );
+    }
+
+    #[test]
+    fn test_convert_responses_tools_recursive_ref_degrades_to_object() {
+        // A self-referential def (e.g. a tree node) cannot be inlined without
+        // looping forever and Gemini can't express the cycle, so the recursive
+        // edge collapses to a permissive object instead of hanging.
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "build_tree",
+                "description": "Build a tree",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"root": {"$ref": "#/$defs/Node"}},
+                    "$defs": {
+                        "Node": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"},
+                                "child": {"$ref": "#/$defs/Node"}
+                            }
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let vertex_tools = convert_responses_tools_to_vertex(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        let serialized = serde_json::to_string(params).unwrap();
+        assert!(
+            !serialized.contains("$ref"),
+            "no $ref should remain: {serialized}"
+        );
+        // First expansion of Node survives; the recursive `child` edge is the
+        // permissive object with no further properties.
+        assert_eq!(
+            params["properties"]["root"]["properties"]["value"]["type"],
+            "string"
+        );
+        assert_eq!(
+            params["properties"]["root"]["properties"]["child"]["type"],
+            "object"
+        );
+        assert!(
+            params["properties"]["root"]["properties"]["child"]
+                .get("properties")
+                .is_none(),
+            "recursive edge should be a bare object: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_convert_responses_tools_preserves_property_names_and_enum_values() {
+        // The allowlist filter is keyword-position-only: a parameter literally
+        // named `additionalProperties` and a string `enum` containing reserved
+        // keywords are data, not schema, and must survive untouched.
+        let tools = Some(vec![ResponsesToolDefinition::Function(
+            FunctionTool::from_json(serde_json::json!({
+                "type": "function",
+                "name": "configure",
+                "description": "Configure",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "additionalProperties": {"type": "boolean"},
+                        "mode": {"type": "string", "enum": ["$schema", "additionalProperties"]}
+                    }
+                }
+            }))
+            .unwrap(),
+        )]);
+
+        let vertex_tools = convert_responses_tools_to_vertex(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        // The schema-level `additionalProperties` keyword is gone...
+        assert!(params.get("additionalProperties").is_none());
+        // ...but the equally-named *property* and its schema survive.
+        assert_eq!(
+            params["properties"]["additionalProperties"]["type"],
+            "boolean"
+        );
+        // Enum values are data — reserved keyword strings are not stripped.
+        assert_eq!(params["properties"]["mode"]["enum"][0], "$schema");
+        assert_eq!(
+            params["properties"]["mode"]["enum"][1],
+            "additionalProperties"
+        );
     }
 
     #[test]
@@ -2168,5 +2604,121 @@ mod responses_api_tests {
         }
 
         assert_eq!(response.output_text, Some("Final answer.".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tool_conversion_tests {
+    use super::*;
+    use crate::api_types::chat_completion::{ToolDefinitionFunction, ToolType};
+
+    fn function_tool(parameters: serde_json::Value) -> ToolDefinition {
+        ToolDefinition {
+            type_: ToolType::Function,
+            function: ToolDefinitionFunction {
+                name: "platter_query".to_string(),
+                description: Some("Run a query".to_string()),
+                parameters: Some(parameters),
+                strict: None,
+            },
+            cache_control: None,
+        }
+    }
+
+    #[test]
+    fn test_convert_tools_sanitizes_chat_completion_parameters() {
+        // Parallel to `test_convert_responses_tools_strips_gemini_unsupported_schema_keys`,
+        // but for the chat-completions path: confirms `convert_tools` actually
+        // forwards `function.parameters` through `sanitized_parameters` — unsupported
+        // keys are stripped and `$ref`/`$defs` are inlined before reaching Vertex.
+        let tools = Some(vec![function_tool(serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "filter": {"$ref": "#/$defs/Filter"},
+                "tags": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["filter"],
+            "$defs": {
+                "Filter": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"name": {"type": "string"}}
+                }
+            }
+        }))]);
+
+        let vertex_tools = convert_tools(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        let serialized = serde_json::to_string(params).unwrap();
+        assert!(
+            !serialized.contains("$schema"),
+            "$schema should be stripped: {serialized}"
+        );
+        assert!(
+            !serialized.contains("additionalProperties"),
+            "additionalProperties should be stripped: {serialized}"
+        );
+        assert!(
+            !serialized.contains("$ref") && !serialized.contains("$defs"),
+            "references should be inlined: {serialized}"
+        );
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["required"][0], "filter");
+        assert_eq!(
+            params["properties"]["filter"]["properties"]["name"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn test_convert_tools_resolves_ref_in_sibling_keyword() {
+        // A `$ref` co-located with a schema-valued sibling (`anyOf`) that itself
+        // holds a nested `$ref`. The sibling must be resolved too — otherwise the
+        // allowlist pass strips the bare `$ref` and the variant collapses to `{}`.
+        let tools = Some(vec![function_tool(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "node": {
+                    "$ref": "#/$defs/A",
+                    "anyOf": [
+                        {"$ref": "#/$defs/B"},
+                        {"type": "null"}
+                    ]
+                }
+            },
+            "$defs": {
+                "A": {"type": "object", "properties": {"a": {"type": "string"}}},
+                "B": {"type": "object", "properties": {"b": {"type": "string"}}}
+            }
+        }))]);
+
+        let vertex_tools = convert_tools(tools).unwrap();
+        let params = vertex_tools[0].function_declarations[0]
+            .parameters
+            .as_ref()
+            .unwrap();
+
+        let serialized = serde_json::to_string(params).unwrap();
+        assert!(
+            !serialized.contains("$ref"),
+            "no $ref should survive, including inside siblings: {serialized}"
+        );
+        // The primary `$ref` resolved to A...
+        assert_eq!(
+            params["properties"]["node"]["properties"]["a"]["type"],
+            "string"
+        );
+        // ...and the nested `$ref` inside the `anyOf` sibling resolved to B rather
+        // than collapsing to an empty variant.
+        assert_eq!(
+            params["properties"]["node"]["anyOf"][0]["properties"]["b"]["type"],
+            "string"
+        );
     }
 }
