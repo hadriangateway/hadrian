@@ -98,6 +98,14 @@ impl EmbeddingService {
                     circuit_breakers,
                 ),
             ),
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(cfg) => Box::new(
+                crate::providers::vertex::VertexProvider::from_gemini_config_with_registry(
+                    cfg,
+                    &config.provider,
+                    circuit_breakers,
+                ),
+            ),
             #[cfg(feature = "provider-bedrock")]
             ProviderConfig::Bedrock(cfg) => Box::new(
                 crate::providers::bedrock::BedrockProvider::from_config_with_registry(

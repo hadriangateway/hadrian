@@ -740,89 +740,85 @@ pub async fn dynamic_provider_to_config(
         }
         #[cfg(feature = "provider-vertex")]
         "vertex" => {
+            // Google Cloud / Vertex AI — OAuth/ADC, requires project + region.
+            // For API-key access to the Gemini Developer API, use the "gemini" type.
             let config = provider.config.as_ref();
-            if api_key.is_some() {
-                // API key mode — simple Gemini access
-                let publisher =
-                    config_str(config, "publisher").unwrap_or_else(|| "google".to_string());
-                let base_url = config_str(config, "base_url");
+            let project = config_str_required(config, "project", "Vertex")?;
+            let region = config_str_required(config, "region", "Vertex")?;
+            let publisher = config_str(config, "publisher").unwrap_or_else(|| "google".to_string());
+            let base_url = config_str(config, "base_url");
 
-                Ok(ProviderConfig::Vertex(
-                    crate::config::VertexProviderConfig {
-                        api_key,
-                        project: None,
-                        region: None,
-                        publisher,
-                        base_url,
-                        credentials: crate::config::GcpCredentials::Default,
-                        timeout_secs: 60,
-                        allowed_models: provider.models.clone(),
-                        model_aliases: std::collections::HashMap::new(),
-                        models: std::collections::HashMap::new(),
-                        retry: Default::default(),
-                        circuit_breaker: Default::default(),
-                        streaming_buffer: Default::default(),
-                        fallback_providers: Vec::new(),
-                        model_fallbacks: std::collections::HashMap::new(),
-                        health_check: Default::default(),
-                        catalog_provider: None,
-                        sovereignty: provider.sovereignty.clone(),
-                    },
-                ))
-            } else {
-                // OAuth/ADC mode — requires project + region
-                let project = config_str_required(config, "project", "Vertex")?;
-                let region = config_str_required(config, "region", "Vertex")?;
-                let publisher =
-                    config_str(config, "publisher").unwrap_or_else(|| "google".to_string());
-                let base_url = config_str(config, "base_url");
-
-                // Resolve secrets within credentials
-                let mut resolved_config = config.cloned();
-                if let Some(ref mut cfg) = resolved_config
-                    && let Some(creds) = cfg.get("credentials").cloned()
-                {
-                    let cred_type = creds
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("default");
-                    if cred_type == "service_account_json" {
-                        let mut creds_obj = creds.as_object().cloned().unwrap_or_default();
-                        if let Some(ref_val) = creds.get("json_ref").and_then(|v| v.as_str())
-                            && let Ok(Some(resolved)) = resolve_secret(Some(ref_val), secrets).await
-                        {
-                            creds_obj
-                                .insert("json".to_string(), serde_json::Value::String(resolved));
-                        }
-                        cfg["credentials"] = serde_json::Value::Object(creds_obj);
+            // Resolve secrets within credentials
+            let mut resolved_config = config.cloned();
+            if let Some(ref mut cfg) = resolved_config
+                && let Some(creds) = cfg.get("credentials").cloned()
+            {
+                let cred_type = creds
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                if cred_type == "service_account_json" {
+                    let mut creds_obj = creds.as_object().cloned().unwrap_or_default();
+                    if let Some(ref_val) = creds.get("json_ref").and_then(|v| v.as_str())
+                        && let Ok(Some(resolved)) = resolve_secret(Some(ref_val), secrets).await
+                    {
+                        creds_obj.insert("json".to_string(), serde_json::Value::String(resolved));
                     }
+                    cfg["credentials"] = serde_json::Value::Object(creds_obj);
                 }
-
-                let credentials = parse_gcp_credentials(resolved_config.as_ref())?;
-
-                Ok(ProviderConfig::Vertex(
-                    crate::config::VertexProviderConfig {
-                        api_key: None,
-                        project: Some(project),
-                        region: Some(region),
-                        publisher,
-                        base_url,
-                        credentials,
-                        timeout_secs: 60,
-                        allowed_models: provider.models.clone(),
-                        model_aliases: std::collections::HashMap::new(),
-                        models: std::collections::HashMap::new(),
-                        retry: Default::default(),
-                        circuit_breaker: Default::default(),
-                        streaming_buffer: Default::default(),
-                        fallback_providers: Vec::new(),
-                        model_fallbacks: std::collections::HashMap::new(),
-                        health_check: Default::default(),
-                        catalog_provider: None,
-                        sovereignty: provider.sovereignty.clone(),
-                    },
-                ))
             }
+
+            let credentials = parse_gcp_credentials(resolved_config.as_ref())?;
+
+            Ok(ProviderConfig::Vertex(
+                crate::config::VertexProviderConfig {
+                    project: Some(project),
+                    region: Some(region),
+                    publisher,
+                    base_url,
+                    credentials,
+                    timeout_secs: 60,
+                    allowed_models: provider.models.clone(),
+                    model_aliases: std::collections::HashMap::new(),
+                    models: std::collections::HashMap::new(),
+                    retry: Default::default(),
+                    circuit_breaker: Default::default(),
+                    streaming_buffer: Default::default(),
+                    fallback_providers: Vec::new(),
+                    model_fallbacks: std::collections::HashMap::new(),
+                    health_check: Default::default(),
+                    catalog_provider: None,
+                    sovereignty: provider.sovereignty.clone(),
+                },
+            ))
+        }
+        #[cfg(feature = "provider-vertex")]
+        "gemini" => {
+            // Google Gemini Developer API — API-key auth only.
+            let config = provider.config.as_ref();
+            let api_key = api_key.ok_or_else(|| {
+                RoutingError::Config("gemini provider requires an api_key".to_string())
+            })?;
+            let base_url = config_str(config, "base_url");
+
+            Ok(ProviderConfig::Gemini(
+                crate::config::GeminiProviderConfig {
+                    api_key,
+                    base_url,
+                    timeout_secs: 60,
+                    allowed_models: provider.models.clone(),
+                    model_aliases: std::collections::HashMap::new(),
+                    models: std::collections::HashMap::new(),
+                    retry: Default::default(),
+                    circuit_breaker: Default::default(),
+                    streaming_buffer: Default::default(),
+                    fallback_providers: Vec::new(),
+                    model_fallbacks: std::collections::HashMap::new(),
+                    health_check: Default::default(),
+                    catalog_provider: None,
+                    sovereignty: provider.sovereignty.clone(),
+                },
+            ))
         }
         "test" => Ok(ProviderConfig::Test(crate::config::TestProviderConfig {
             model_name: "test-model".to_string(),

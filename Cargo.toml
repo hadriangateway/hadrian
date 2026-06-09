@@ -189,6 +189,9 @@ provider-openai = []
 provider-anthropic = []
 provider-test = []
 provider-bedrock = ["aws-sdk"]
+# Also enables the `gemini` provider (Gemini Developer API, api-key auth), which
+# reuses the Vertex runtime. A future `provider-gemini` could drop the gcp-sdk
+# dependency once the OAuth token source is #[cfg]-isolated from the api-key path.
 provider-vertex = ["gcp-sdk"]
 provider-azure = ["azure-sdk"]
 

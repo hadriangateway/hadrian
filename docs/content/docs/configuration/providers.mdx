@@ -14,7 +14,8 @@ Providers define how Hadrian connects to LLM services. Each provider has a uniqu
 | `open_ai`       | OpenAI API and compatible services | Yes       | Yes         | Yes   |
 | `anthropic`     | Anthropic Claude API               | Yes       | No          | Yes   |
 | `bedrock`       | AWS Bedrock                        | Yes       | Yes (Titan) | Yes   |
-| `vertex`        | Google Vertex AI / Gemini          | Yes       | Yes         | Yes   |
+| `vertex`        | Google Vertex AI (OAuth, regional) | Yes       | Yes         | Yes   |
+| `gemini`        | Google Gemini Developer API (key)  | Yes       | Yes         | Yes   |
 | `azure_open_ai` | Azure OpenAI Service               | Yes       | Yes         | Yes   |
 | `test`          | Mock provider for testing          | Yes       | No          | No    |
 
@@ -180,23 +181,26 @@ region = "us-east-1"
 inference_profile_arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/my-profile"
 ```
 
-## Google Vertex AI
+## Google Gemini
 
-Access Gemini and other models through Google Cloud. Supports two authentication modes.
-
-### API Key Mode (Simple)
-
-Best for getting started with Gemini:
+Access Google's Gemini models through the Gemini Developer API using a simple API key.
+This is the quickest way to get started.
 
 ```toml
 [providers.gemini]
-type = "vertex"
-api_key = "${GOOGLE_API_KEY}"
+type = "gemini"
+api_key = "${GEMINI_API_KEY}"  # or ${GOOGLE_API_KEY}
 ```
 
-### OAuth / ADC Mode (Full Features)
+<Callout>
+  For enterprise Google Cloud features — service-account auth, regional endpoints, VPC, or running
+  Claude/Llama through Vertex — use the [`vertex`](#google-vertex-ai) provider instead.
+</Callout>
 
-Required for Vertex AI features like Claude on Vertex or custom endpoints:
+## Google Vertex AI
+
+Access Gemini and other models through Google Cloud using OAuth/ADC (service-account)
+authentication against regional endpoints. Requires a `project` and `region`.
 
 ```toml
 [providers.vertex]

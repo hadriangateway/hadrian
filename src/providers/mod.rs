@@ -584,6 +584,16 @@ pub async fn list_models_for_config(
                 .list_models(http_client)
                 .await
         }
+        #[cfg(feature = "provider-vertex")]
+        ProviderConfig::Gemini(c) => {
+            vertex::VertexProvider::from_gemini_config_with_registry(
+                c,
+                provider_name,
+                circuit_breakers,
+            )
+            .list_models(http_client)
+            .await
+        }
         ProviderConfig::Test(c) => {
             test::TestProvider::new(&c.model_name)
                 .list_models(http_client)

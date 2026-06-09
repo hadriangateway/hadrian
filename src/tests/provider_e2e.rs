@@ -407,14 +407,15 @@ pub static BEDROCK_SPEC: ProviderTestSpec = ProviderTestSpec {
     validate_against_schema: true,
 };
 
-/// Vertex AI provider specification.
+/// Gemini Developer API provider specification.
 /// Uses Google Gemini API format (converted to OpenAI) for Chat Completions.
 /// Uses generateContent API for all endpoints including Responses API.
+/// The `gemini` provider reuses the Vertex runtime, so the same wire fixtures apply.
 #[cfg(feature = "provider-vertex")]
-pub static VERTEX_SPEC: ProviderTestSpec = ProviderTestSpec {
-    name: "vertex",
-    provider_type: "vertex",
-    // Use Gemini 2.0 Flash for Vertex tests
+pub static GEMINI_SPEC: ProviderTestSpec = ProviderTestSpec {
+    name: "gemini",
+    provider_type: "gemini",
+    // Use Gemini 2.0 Flash for tests
     default_model: "gemini-2.0-flash",
     responses_model: None,
     extra_config: "",
@@ -808,16 +809,15 @@ output_per_1m_tokens = 15000000
 "#,
             mock_server.uri()
         )
-    } else if spec.provider_type == "vertex" {
-        // Vertex AI provider uses API key mode with base_url override
-        // Fixture paths are /{model}:generateContent, so base_url is just the mock server
+    } else if spec.provider_type == "gemini" {
+        // Gemini Developer API uses API key mode with base_url override.
+        // Fixture paths are /{model}:generateContent, so base_url is just the mock server.
         format!(
             r#"
 [providers.mock-provider]
-type = "vertex"
+type = "gemini"
 api_key = "test-api-key"
 base_url = "{}"
-publisher = "google"
 timeout_secs = 30
 
 # Disable retries for predictable test behavior
@@ -926,7 +926,7 @@ default_provider = "mock-provider"
 #[case::openrouter(&OPENROUTER_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_chat_completion_success(#[case] spec: &'static ProviderTestSpec) {
@@ -958,7 +958,7 @@ async fn test_chat_completion_success(#[case] spec: &'static ProviderTestSpec) {
 #[case::openrouter(&OPENROUTER_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_chat_completion_streaming(#[case] spec: &'static ProviderTestSpec) {
@@ -996,7 +996,7 @@ async fn test_chat_completion_streaming(#[case] spec: &'static ProviderTestSpec)
 #[case::openrouter(&OPENROUTER_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_responses_success(#[case] spec: &'static ProviderTestSpec) {
@@ -1029,7 +1029,7 @@ async fn test_responses_success(#[case] spec: &'static ProviderTestSpec) {
 #[case::openrouter(&OPENROUTER_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_responses_streaming(#[case] spec: &'static ProviderTestSpec) {
@@ -1159,7 +1159,7 @@ async fn test_completion_streaming(#[case] spec: &'static ProviderTestSpec) {
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_tool_call_success(#[case] spec: &'static ProviderTestSpec) {
@@ -1195,7 +1195,7 @@ async fn test_tool_call_success(#[case] spec: &'static ProviderTestSpec) {
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_tool_call_streaming(#[case] spec: &'static ProviderTestSpec) {
@@ -1236,7 +1236,7 @@ async fn test_tool_call_streaming(#[case] spec: &'static ProviderTestSpec) {
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_tool_call_parallel(#[case] spec: &'static ProviderTestSpec) {
@@ -1358,7 +1358,7 @@ const TINY_RED_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_vision_base64_success(#[case] spec: &'static ProviderTestSpec) {
@@ -1767,7 +1767,7 @@ async fn test_server_error(#[case] spec: &'static ProviderTestSpec) {
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_bad_request_error(#[case] spec: &'static ProviderTestSpec) {
@@ -1804,7 +1804,7 @@ async fn test_bad_request_error(#[case] spec: &'static ProviderTestSpec) {
 #[case::openai(&OPENAI_SPEC)]
 #[case::anthropic(&ANTHROPIC_SPEC)]
 #[cfg_attr(feature = "provider-bedrock", case::bedrock(&BEDROCK_SPEC))]
-#[cfg_attr(feature = "provider-vertex", case::vertex(&VERTEX_SPEC))]
+#[cfg_attr(feature = "provider-vertex", case::gemini(&GEMINI_SPEC))]
 #[case::ollama(&OLLAMA_SPEC)]
 #[tokio::test]
 async fn test_unauthorized_error(#[case] spec: &'static ProviderTestSpec) {

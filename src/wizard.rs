@@ -100,6 +100,7 @@ enum ProviderType {
     Anthropic,
     Bedrock,
     Vertex,
+    Gemini,
     AzureOpenAi,
     OpenRouter,
     Ollama,
@@ -112,6 +113,7 @@ impl std::fmt::Display for ProviderType {
             Self::Anthropic => write!(f, "Anthropic (Claude)"),
             Self::Bedrock => write!(f, "AWS Bedrock"),
             Self::Vertex => write!(f, "Google Vertex AI"),
+            Self::Gemini => write!(f, "Google Gemini (API key)"),
             Self::AzureOpenAi => write!(f, "Azure OpenAI"),
             Self::OpenRouter => write!(f, "OpenRouter (200+ models)"),
             Self::Ollama => write!(f, "Ollama (local models)"),
@@ -126,6 +128,7 @@ impl ProviderType {
             Self::Anthropic => "anthropic",
             Self::Bedrock => "bedrock",
             Self::Vertex => "vertex",
+            Self::Gemini => "gemini",
             Self::AzureOpenAi => "azure_open_ai",
         }
     }
@@ -136,6 +139,7 @@ impl ProviderType {
             Self::Anthropic => "anthropic",
             Self::Bedrock => "bedrock",
             Self::Vertex => "vertex",
+            Self::Gemini => "gemini",
             Self::AzureOpenAi => "azure",
             Self::OpenRouter => "openrouter",
             Self::Ollama => "ollama",
@@ -152,6 +156,7 @@ impl ProviderType {
             Self::Anthropic => "ANTHROPIC_API_KEY",
             Self::Bedrock => "",
             Self::Vertex => "",
+            Self::Gemini => "GEMINI_API_KEY",
             Self::AzureOpenAi => "AZURE_OPENAI_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
             Self::Ollama => "",
@@ -835,6 +840,7 @@ fn configure_single_provider(theme: &ColorfulTheme) -> Result<ProviderConfig, Wi
         ProviderType::OpenRouter,
         ProviderType::Bedrock,
         ProviderType::Vertex,
+        ProviderType::Gemini,
         ProviderType::AzureOpenAi,
         ProviderType::Ollama,
     ];

@@ -93,7 +93,7 @@ mode = "blocking"
 [features.guardrails.input.provider]
 type = "openai_moderation"
 
-# Image Fetching (for Anthropic/Bedrock/Vertex)
+# Image Fetching (for Anthropic/Bedrock/Vertex/Gemini)
 [features.image_fetching]
 enabled = true
 max_size_mb = 20
@@ -165,6 +165,7 @@ The gateway automatically maps Hadrian provider types to models.dev provider IDs
 | `anthropic`      | `anthropic`                 |
 | `bedrock`        | `amazon-bedrock`            |
 | `vertex`         | `google-vertex`             |
+| `gemini`         | `google-vertex`             |
 | `azure_open_ai`  | `azure`                     |
 | `open_ai`        | Auto-detected from base URL |
 

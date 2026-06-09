@@ -19,6 +19,7 @@ export const PROVIDER_TYPES = [
   },
   { value: "bedrock", label: "AWS Bedrock", baseUrl: "", needsBaseUrl: false },
   { value: "vertex", label: "Google Vertex AI", baseUrl: "", needsBaseUrl: false },
+  { value: "gemini", label: "Google Gemini", baseUrl: "", needsBaseUrl: false },
 ] as const;
 
 export type ProviderTypeValue = (typeof PROVIDER_TYPES)[number]["value"];
@@ -29,7 +30,8 @@ export function providerNeedsBaseUrl(type: string): boolean {
 }
 
 export function providerNeedsApiKey(type: string): boolean {
-  return type !== "bedrock";
+  // Bedrock uses AWS credentials; Vertex uses OAuth/ADC service-account auth.
+  return type !== "bedrock" && type !== "vertex";
 }
 
 export function getProviderTypeLabel(providerType: string): string {
@@ -39,6 +41,7 @@ export function getProviderTypeLabel(providerType: string): string {
   if (providerType === "azure_openai") return "Azure OpenAI";
   if (providerType === "bedrock") return "AWS Bedrock";
   if (providerType === "vertex") return "Google Vertex AI";
+  if (providerType === "gemini") return "Google Gemini";
   return providerType;
 }
 
@@ -93,7 +96,6 @@ export const createProviderSchema = z
     aws_region: z.string().optional(),
     aws_access_key_id: z.string().optional(),
     aws_secret_access_key: z.string().optional(),
-    vertex_auth_mode: z.string().default("api_key"),
     gcp_project: z.string().optional(),
     gcp_region: z.string().optional(),
     gcp_sa_json: z.string().optional(),
@@ -113,17 +115,17 @@ export const createProviderSchema = z
         path: ["aws_region"],
       });
     }
-    if (data.provider_type === "vertex" && data.vertex_auth_mode === "oauth" && !data.gcp_project) {
+    if (data.provider_type === "vertex" && !data.gcp_project) {
       ctx.addIssue({
         code: "custom",
-        message: "GCP project is required for OAuth mode",
+        message: "GCP project is required",
         path: ["gcp_project"],
       });
     }
-    if (data.provider_type === "vertex" && data.vertex_auth_mode === "oauth" && !data.gcp_region) {
+    if (data.provider_type === "vertex" && !data.gcp_region) {
       ctx.addIssue({
         code: "custom",
-        message: "GCP region is required for OAuth mode",
+        message: "GCP region is required",
         path: ["gcp_region"],
       });
     }
@@ -141,7 +143,6 @@ export const defaultFormValues: ProviderFormValues = {
   aws_region: "",
   aws_access_key_id: "",
   aws_secret_access_key: "",
-  vertex_auth_mode: "api_key",
   gcp_project: "",
   gcp_region: "",
   gcp_sa_json: "",
@@ -155,7 +156,7 @@ export function buildConfigFromForm(data: ProviderFormValues): Record<string, un
     return { region: data.aws_region, credentials };
   }
 
-  if (data.provider_type === "vertex" && data.vertex_auth_mode === "oauth") {
+  if (data.provider_type === "vertex") {
     const credentials: Record<string, unknown> = { type: "service_account_json" };
     if (data.gcp_sa_json) credentials.json_ref = data.gcp_sa_json;
     return { project: data.gcp_project, region: data.gcp_region, credentials };
@@ -181,7 +182,6 @@ export function configToFormValues(
 
   if (providerType === "vertex") {
     return {
-      vertex_auth_mode: config.project ? "oauth" : "api_key",
       gcp_project: (config.project as string) ?? "",
       gcp_region: (config.region as string) ?? "",
       gcp_sa_json:

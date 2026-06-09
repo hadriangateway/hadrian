@@ -323,6 +323,19 @@ impl ProviderExecutor for ChatCompletionExecutor {
                 .create_chat_completion(&state.http_client, payload)
                 .await
             }
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(config) => {
+                // Get image fetch config from features configuration
+                let image_fetch_config = state.config.features.image_fetching.to_runtime_config();
+                vertex::VertexProvider::from_gemini_config_with_registry_and_image_config(
+                    config,
+                    provider_name,
+                    &state.circuit_breakers,
+                    image_fetch_config,
+                )
+                .create_chat_completion(&state.http_client, payload)
+                .await
+            }
             ProviderConfig::Test(config) => {
                 test::TestProvider::from_config(config)
                     .create_chat_completion(&state.http_client, payload)
@@ -480,6 +493,20 @@ impl ProviderExecutor for ResponsesExecutor {
                 .create_responses(&state.http_client, payload)
                 .await
             }
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(config) => {
+                let mut payload = payload;
+                preprocess_web_search_tools(&mut payload);
+                #[cfg(feature = "server")]
+                preprocess_shell_tools(&mut payload, &shell_hint);
+                vertex::VertexProvider::from_gemini_config_with_registry(
+                    config,
+                    provider_name,
+                    &state.circuit_breakers,
+                )
+                .create_responses(&state.http_client, payload)
+                .await
+            }
             ProviderConfig::Test(config) => {
                 let mut payload = payload;
                 preprocess_file_search_tools(&mut payload);
@@ -549,6 +576,10 @@ impl ProviderExecutor for CompactExecutor {
             )),
             #[cfg(feature = "provider-vertex")]
             ProviderConfig::Vertex(_) => Err(ProviderError::Unsupported(
+                "compaction is only supported by OpenAI-compatible providers".to_string(),
+            )),
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(_) => Err(ProviderError::Unsupported(
                 "compaction is only supported by OpenAI-compatible providers".to_string(),
             )),
             ProviderConfig::Test(_) => Err(ProviderError::Unsupported(
@@ -623,6 +654,16 @@ impl ProviderExecutor for CompletionExecutor {
                 .create_completion(&state.http_client, payload)
                 .await
             }
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(config) => {
+                vertex::VertexProvider::from_gemini_config_with_registry(
+                    config,
+                    provider_name,
+                    &state.circuit_breakers,
+                )
+                .create_completion(&state.http_client, payload)
+                .await
+            }
             ProviderConfig::Test(config) => {
                 test::TestProvider::from_config(config)
                     .create_completion(&state.http_client, payload)
@@ -690,6 +731,16 @@ impl ProviderExecutor for EmbeddingExecutor {
             #[cfg(feature = "provider-vertex")]
             ProviderConfig::Vertex(config) => {
                 vertex::VertexProvider::from_config_with_registry(
+                    config,
+                    provider_name,
+                    &state.circuit_breakers,
+                )
+                .create_embedding(&state.http_client, payload)
+                .await
+            }
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(config) => {
+                vertex::VertexProvider::from_gemini_config_with_registry(
                     config,
                     provider_name,
                     &state.circuit_breakers,

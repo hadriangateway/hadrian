@@ -37,8 +37,8 @@ use crate::{
         },
     },
     config::{
-        CircuitBreakerConfig, GcpCredentials, RetryConfig, StreamingBufferConfig,
-        VertexProviderConfig,
+        CircuitBreakerConfig, GcpCredentials, GeminiProviderConfig, RetryConfig,
+        StreamingBufferConfig, VertexProviderConfig,
     },
     providers::{
         CircuitBreakerRegistry, ModelInfo, ModelsResponse, Provider, ProviderError,
@@ -107,19 +107,55 @@ impl VertexProvider {
     ) -> Self {
         let circuit_breaker = registry.get_or_create(provider_name, &config.circuit_breaker);
 
-        let auth_mode = if let Some(api_key) = &config.api_key {
-            AuthMode::ApiKey(api_key.clone())
-        } else {
-            AuthMode::OAuth {
-                project: config.project.clone().unwrap_or_default(),
-                region: config.region.clone().unwrap_or_default(),
-                credentials: config.credentials.clone(),
-            }
+        let auth_mode = AuthMode::OAuth {
+            project: config.project.clone().unwrap_or_default(),
+            region: config.region.clone().unwrap_or_default(),
+            credentials: config.credentials.clone(),
         };
 
         Self {
             auth_mode,
             publisher: config.publisher.clone(),
+            base_url_override: config.base_url.clone(),
+            token_source: Arc::new(RwLock::new(None)),
+            timeout: Duration::from_secs(config.timeout_secs),
+            retry: config.retry.clone(),
+            circuit_breaker_config: config.circuit_breaker.clone(),
+            circuit_breaker,
+            streaming_buffer: config.streaming_buffer.clone(),
+            image_fetch_config,
+        }
+    }
+
+    /// Create a Gemini Developer API provider (API-key auth) from configuration
+    /// with a shared circuit breaker.
+    pub fn from_gemini_config_with_registry(
+        config: &GeminiProviderConfig,
+        provider_name: &str,
+        registry: &CircuitBreakerRegistry,
+    ) -> Self {
+        Self::from_gemini_config_with_registry_and_image_config(
+            config,
+            provider_name,
+            registry,
+            ImageFetchConfig::default(),
+        )
+    }
+
+    /// Create a Gemini Developer API provider with a shared circuit breaker and
+    /// custom image fetch config. Always uses API-key auth against the global
+    /// `google` publisher endpoint.
+    pub fn from_gemini_config_with_registry_and_image_config(
+        config: &GeminiProviderConfig,
+        provider_name: &str,
+        registry: &CircuitBreakerRegistry,
+        image_fetch_config: ImageFetchConfig,
+    ) -> Self {
+        let circuit_breaker = registry.get_or_create(provider_name, &config.circuit_breaker);
+
+        Self {
+            auth_mode: AuthMode::ApiKey(config.api_key.clone()),
+            publisher: "google".to_string(),
             base_url_override: config.base_url.clone(),
             token_source: Arc::new(RwLock::new(None)),
             timeout: Duration::from_secs(config.timeout_secs),
@@ -738,6 +774,32 @@ mod streaming_tests {
     use bytes::Bytes;
 
     use super::*;
+
+    #[test]
+    fn test_from_gemini_config_uses_api_key_mode() {
+        let config: GeminiProviderConfig = toml::from_str(r#"api_key = "AIza-secret""#).unwrap();
+        let registry = CircuitBreakerRegistry::default();
+        let provider =
+            VertexProvider::from_gemini_config_with_registry(&config, "gemini", &registry);
+
+        assert!(matches!(provider.auth_mode, AuthMode::ApiKey(_)));
+        assert_eq!(provider.publisher, "google");
+        assert_eq!(
+            provider.base_url(),
+            "https://aiplatform.googleapis.com/v1/publishers/google/models"
+        );
+    }
+
+    #[test]
+    fn test_gemini_base_url_override_wins() {
+        let config: GeminiProviderConfig =
+            toml::from_str("api_key = \"AIza\"\nbase_url = \"https://example.test\"").unwrap();
+        let registry = CircuitBreakerRegistry::default();
+        let provider =
+            VertexProvider::from_gemini_config_with_registry(&config, "gemini", &registry);
+
+        assert_eq!(provider.base_url(), "https://example.test");
+    }
 
     #[test]
     fn test_parse_vertex_text_response() {

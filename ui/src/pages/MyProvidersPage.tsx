@@ -251,7 +251,6 @@ function SelfServiceProviderFormModal({
   });
 
   const providerType = form.watch("provider_type") as ProviderTypeValue;
-  const vertexAuthMode = form.watch("vertex_auth_mode");
 
   // Auto-fill base URL when provider type changes (only for new providers)
   const handleProviderTypeChange = (newType: string) => {
@@ -261,7 +260,6 @@ function SelfServiceProviderFormModal({
     }
     // Reset provider-specific fields
     form.setValue("aws_region", "");
-    form.setValue("vertex_auth_mode", "api_key");
     form.setValue("gcp_project", "");
     form.setValue("gcp_region", "");
     setCredTestResult(null);
@@ -408,11 +406,7 @@ function SelfServiceProviderFormModal({
                 label="API Key"
                 htmlFor="provider-api-key"
                 helpText={
-                  isEditing
-                    ? "Leave empty to keep the existing key"
-                    : showVertexFields
-                      ? "API key for Gemini API access (leave empty for OAuth/ADC)"
-                      : "Your provider API key"
+                  isEditing ? "Leave empty to keep the existing key" : "Your provider API key"
                 }
                 error={form.formState.errors.api_key?.message}
               >
@@ -467,63 +461,48 @@ function SelfServiceProviderFormModal({
               </>
             )}
 
-            {/* Vertex-specific fields (API key or service account JSON only) */}
+            {/* Vertex-specific fields (OAuth/ADC service-account auth) */}
             {showVertexFields && (
               <>
-                <FormField label="Auth Mode" htmlFor="vertex-auth-mode">
-                  <select
-                    id="vertex-auth-mode"
-                    {...form.register("vertex_auth_mode")}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="api_key">API Key</option>
-                    <option value="oauth">Service Account JSON</option>
-                  </select>
+                <FormField
+                  label="GCP Project"
+                  htmlFor="gcp-project"
+                  required
+                  error={form.formState.errors.gcp_project?.message}
+                >
+                  <Input
+                    id="gcp-project"
+                    {...form.register("gcp_project")}
+                    placeholder="my-gcp-project"
+                  />
                 </FormField>
 
-                {vertexAuthMode === "oauth" && (
-                  <>
-                    <FormField
-                      label="GCP Project"
-                      htmlFor="gcp-project"
-                      required
-                      error={form.formState.errors.gcp_project?.message}
-                    >
-                      <Input
-                        id="gcp-project"
-                        {...form.register("gcp_project")}
-                        placeholder="my-gcp-project"
-                      />
-                    </FormField>
+                <FormField
+                  label="GCP Region"
+                  htmlFor="gcp-region"
+                  required
+                  error={form.formState.errors.gcp_region?.message}
+                >
+                  <Input
+                    id="gcp-region"
+                    {...form.register("gcp_region")}
+                    placeholder="us-central1"
+                  />
+                </FormField>
 
-                    <FormField
-                      label="GCP Region"
-                      htmlFor="gcp-region"
-                      required
-                      error={form.formState.errors.gcp_region?.message}
-                    >
-                      <Input
-                        id="gcp-region"
-                        {...form.register("gcp_region")}
-                        placeholder="us-central1"
-                      />
-                    </FormField>
-
-                    <FormField
-                      label="Service Account JSON"
-                      htmlFor="gcp-sa-json"
-                      helpText="Secret reference to service account JSON (e.g., secret:gcp-sa)"
-                    >
-                      <Input
-                        id="gcp-sa-json"
-                        type="password"
-                        autoComplete="off"
-                        {...form.register("gcp_sa_json")}
-                        placeholder="secret:gcp-sa"
-                      />
-                    </FormField>
-                  </>
-                )}
+                <FormField
+                  label="Service Account JSON"
+                  htmlFor="gcp-sa-json"
+                  helpText="Secret reference to service account JSON (e.g., secret:gcp-sa)"
+                >
+                  <Input
+                    id="gcp-sa-json"
+                    type="password"
+                    autoComplete="off"
+                    {...form.register("gcp_sa_json")}
+                    placeholder="secret:gcp-sa"
+                  />
+                </FormField>
               </>
             )}
 

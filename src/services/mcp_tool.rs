@@ -130,6 +130,9 @@ impl McpProviderKind {
             ProviderConfig::Bedrock(_) => Self::Bedrock,
             #[cfg(feature = "provider-vertex")]
             ProviderConfig::Vertex(_) => Self::Vertex,
+            // Gemini shares the Vertex runtime, so it maps to the same kind.
+            #[cfg(feature = "provider-vertex")]
+            ProviderConfig::Gemini(_) => Self::Vertex,
             ProviderConfig::Test(_) => Self::Test,
         }
     }

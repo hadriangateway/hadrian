@@ -241,7 +241,6 @@ function ProviderFormModal({
   });
 
   const providerType = form.watch("provider_type") as ProviderTypeValue;
-  const vertexAuthMode = form.watch("vertex_auth_mode");
 
   const handleProviderTypeChange = (newType: string) => {
     const match = PROVIDER_TYPES.find((p) => p.value === newType);
@@ -249,7 +248,6 @@ function ProviderFormModal({
       form.setValue("base_url", match.baseUrl, { shouldValidate: false });
     }
     form.setValue("aws_region", "");
-    form.setValue("vertex_auth_mode", "api_key");
     form.setValue("gcp_project", "");
     form.setValue("gcp_region", "");
     setCredTestResult(null);
@@ -458,57 +456,43 @@ function ProviderFormModal({
 
             {showVertexFields && (
               <>
-                <FormField label="Auth Mode" htmlFor="vertex-auth-mode">
-                  <select
-                    id="vertex-auth-mode"
-                    {...form.register("vertex_auth_mode")}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="api_key">API Key</option>
-                    <option value="oauth">Service Account JSON</option>
-                  </select>
+                <FormField
+                  label="GCP Project"
+                  htmlFor="gcp-project"
+                  required
+                  error={form.formState.errors.gcp_project?.message}
+                >
+                  <Input
+                    id="gcp-project"
+                    {...form.register("gcp_project")}
+                    placeholder="my-gcp-project"
+                  />
                 </FormField>
-                {vertexAuthMode === "oauth" && (
-                  <>
-                    <FormField
-                      label="GCP Project"
-                      htmlFor="gcp-project"
-                      required
-                      error={form.formState.errors.gcp_project?.message}
-                    >
-                      <Input
-                        id="gcp-project"
-                        {...form.register("gcp_project")}
-                        placeholder="my-gcp-project"
-                      />
-                    </FormField>
-                    <FormField
-                      label="GCP Region"
-                      htmlFor="gcp-region"
-                      required
-                      error={form.formState.errors.gcp_region?.message}
-                    >
-                      <Input
-                        id="gcp-region"
-                        {...form.register("gcp_region")}
-                        placeholder="us-central1"
-                      />
-                    </FormField>
-                    <FormField
-                      label="Service Account JSON"
-                      htmlFor="gcp-sa-json"
-                      helpText="Secret reference to service account JSON"
-                    >
-                      <Input
-                        id="gcp-sa-json"
-                        type="password"
-                        autoComplete="off"
-                        {...form.register("gcp_sa_json")}
-                        placeholder="secret:gcp-sa"
-                      />
-                    </FormField>
-                  </>
-                )}
+                <FormField
+                  label="GCP Region"
+                  htmlFor="gcp-region"
+                  required
+                  error={form.formState.errors.gcp_region?.message}
+                >
+                  <Input
+                    id="gcp-region"
+                    {...form.register("gcp_region")}
+                    placeholder="us-central1"
+                  />
+                </FormField>
+                <FormField
+                  label="Service Account JSON"
+                  htmlFor="gcp-sa-json"
+                  helpText="Secret reference to service account JSON"
+                >
+                  <Input
+                    id="gcp-sa-json"
+                    type="password"
+                    autoComplete="off"
+                    {...form.register("gcp_sa_json")}
+                    placeholder="secret:gcp-sa"
+                  />
+                </FormField>
               </>
             )}
 

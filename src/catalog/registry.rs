@@ -269,6 +269,9 @@ pub fn resolve_catalog_provider_id(
         "anthropic" => Some("anthropic".to_string()),
         "bedrock" => Some("amazon-bedrock".to_string()),
         "vertex" => Some("google-vertex".to_string()),
+        // Gemini Developer API serves the same Google models; reuse the
+        // google-vertex catalog id for pricing/enrichment.
+        "gemini" => Some("google-vertex".to_string()),
         "azure_openai" => Some("azure".to_string()),
         "test" => None,
         "openai" => {
@@ -417,6 +420,16 @@ mod tests {
         assert_eq!(
             resolve_catalog_provider_id("vertex", None, None),
             Some("google-vertex".to_string())
+        );
+        // Gemini reuses the google-vertex catalog id (shared model pricing).
+        assert_eq!(
+            resolve_catalog_provider_id("gemini", None, None),
+            Some("google-vertex".to_string())
+        );
+        // ...but a per-provider override still wins.
+        assert_eq!(
+            resolve_catalog_provider_id("gemini", None, Some("google-ai")),
+            Some("google-ai".to_string())
         );
         assert_eq!(
             resolve_catalog_provider_id("azure_openai", None, None),

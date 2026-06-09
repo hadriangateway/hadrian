@@ -233,6 +233,7 @@ pub enum ProviderType {
     Anthropic,
     Bedrock,
     Vertex,
+    Gemini,
     AzureOpenAi,
     Test,
 }
@@ -259,9 +260,13 @@ pub enum ProviderConfig {
     #[cfg(feature = "provider-bedrock")]
     Bedrock(BedrockProviderConfig),
 
-    /// Google Vertex AI. Requires the `provider-vertex` feature.
+    /// Google Vertex AI (OAuth/ADC). Requires the `provider-vertex` feature.
     #[cfg(feature = "provider-vertex")]
     Vertex(VertexProviderConfig),
+
+    /// Google Gemini Developer API (API key). Requires the `provider-vertex` feature.
+    #[cfg(feature = "provider-vertex")]
+    Gemini(GeminiProviderConfig),
 
     /// Azure OpenAI. Requires the `provider-azure` feature.
     #[cfg(feature = "provider-azure")]
@@ -281,6 +286,8 @@ impl ProviderConfig {
             Self::Bedrock(_) => ProviderType::Bedrock,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(_) => ProviderType::Vertex,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(_) => ProviderType::Gemini,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(_) => ProviderType::AzureOpenAi,
             Self::Test(_) => ProviderType::Test,
@@ -295,6 +302,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => c.validate(),
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => c.validate(),
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => c.validate(),
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => c.validate(),
             Self::Test(c) => c.validate(),
@@ -310,6 +319,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => c.timeout_secs,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => c.timeout_secs,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => c.timeout_secs,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => c.timeout_secs,
             Self::Test(c) => c.timeout_secs,
@@ -325,6 +336,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.allowed_models,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.allowed_models,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.allowed_models,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.allowed_models,
             Self::Test(c) => &c.allowed_models,
@@ -340,6 +353,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.model_aliases,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.model_aliases,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.model_aliases,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.model_aliases,
             Self::Test(c) => &c.model_aliases,
@@ -373,6 +388,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.models,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.models,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.models,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.models,
             Self::Test(c) => &c.models,
@@ -398,6 +415,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.retry,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.retry,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.retry,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.retry,
             Self::Test(c) => &c.retry,
@@ -413,6 +432,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.circuit_breaker,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.circuit_breaker,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.circuit_breaker,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.circuit_breaker,
             Self::Test(c) => &c.circuit_breaker,
@@ -431,6 +452,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.fallback_providers,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.fallback_providers,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.fallback_providers,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.fallback_providers,
             Self::Test(c) => &c.fallback_providers,
@@ -449,6 +472,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.model_fallbacks,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.model_fallbacks,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.model_fallbacks,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.model_fallbacks,
             Self::Test(c) => &c.model_fallbacks,
@@ -475,6 +500,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => Some(&c.streaming_buffer),
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => Some(&c.streaming_buffer),
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => Some(&c.streaming_buffer),
             // OpenAI-compatible providers pass through streams without transformation
             #[cfg(feature = "provider-azure")]
             Self::OpenAi(_) | Self::AzureOpenAi(_) | Self::Test(_) => None,
@@ -495,6 +522,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => &c.health_check,
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => &c.health_check,
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => &c.health_check,
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => &c.health_check,
             Self::Test(c) => &c.health_check,
@@ -510,6 +539,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => c.sovereignty.as_ref(),
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => c.sovereignty.as_ref(),
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => c.sovereignty.as_ref(),
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => c.sovereignty.as_ref(),
             Self::Test(c) => c.sovereignty.as_ref(),
@@ -525,6 +556,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => c.catalog_provider.as_deref(),
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => c.catalog_provider.as_deref(),
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => c.catalog_provider.as_deref(),
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(c) => c.catalog_provider.as_deref(),
             Self::Test(c) => c.catalog_provider.as_deref(),
@@ -541,6 +574,8 @@ impl ProviderConfig {
             Self::Bedrock(c) => c.converse_base_url.as_deref(),
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(c) => c.base_url.as_deref(),
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(c) => c.base_url.as_deref(),
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(_) => None,
             Self::Test(_) => None,
@@ -556,6 +591,8 @@ impl ProviderConfig {
             Self::Bedrock(_) => "bedrock",
             #[cfg(feature = "provider-vertex")]
             Self::Vertex(_) => "vertex",
+            #[cfg(feature = "provider-vertex")]
+            Self::Gemini(_) => "gemini",
             #[cfg(feature = "provider-azure")]
             Self::AzureOpenAi(_) => "azure_openai",
             Self::Test(_) => "test",
@@ -1033,16 +1070,10 @@ impl std::fmt::Debug for AwsCredentials {
 #[cfg(feature = "provider-vertex")]
 /// Google Vertex AI provider configuration.
 ///
-/// Supports two authentication modes:
+/// Uses OAuth/ADC (service-account) authentication against the regional
+/// `aiplatform.googleapis.com` endpoint. For simple API-key access to the
+/// Gemini Developer API, use the [`GeminiProviderConfig`] (`type = "gemini"`) provider instead.
 ///
-/// **1. API Key mode** (simple, recommended for getting started):
-/// ```toml
-/// [providers.gemini]
-/// type = "vertex"
-/// api_key = "${GOOGLE_API_KEY}"
-/// ```
-///
-/// **2. OAuth/ADC mode** (for full Vertex AI features):
 /// ```toml
 /// [providers.vertex]
 /// type = "vertex"
@@ -1054,18 +1085,11 @@ impl std::fmt::Debug for AwsCredentials {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct VertexProviderConfig {
-    /// API key for simple Gemini API access.
-    /// When set, uses `https://aiplatform.googleapis.com/v1/publishers/{publisher}/models`
-    /// with `?key=` query parameter authentication.
-    /// Mutually exclusive with project/region/credentials.
-    #[serde(default)]
-    pub api_key: Option<String>,
-
-    /// GCP project ID. Required for OAuth/ADC mode, ignored with api_key.
+    /// GCP project ID. Required.
     #[serde(default)]
     pub project: Option<String>,
 
-    /// GCP region. Required for OAuth/ADC mode, ignored with api_key.
+    /// GCP region. Required.
     #[serde(default)]
     pub region: Option<String>,
 
@@ -1076,13 +1100,11 @@ pub struct VertexProviderConfig {
 
     /// Custom base URL override.
     /// Useful for VPC endpoints, testing, or custom deployments.
-    /// If not specified, defaults based on auth mode:
-    /// - API key: `https://aiplatform.googleapis.com`
-    /// - OAuth: `https://{region}-aiplatform.googleapis.com`
+    /// If not specified, defaults to `https://{region}-aiplatform.googleapis.com`.
     #[serde(default)]
     pub base_url: Option<String>,
 
-    /// Credential source for OAuth/ADC mode. Ignored with api_key.
+    /// Credential source for OAuth/ADC authentication.
     #[serde(default)]
     pub credentials: GcpCredentials,
 
@@ -1139,24 +1161,14 @@ pub struct VertexProviderConfig {
 #[cfg(feature = "provider-vertex")]
 impl VertexProviderConfig {
     fn validate(&self) -> Result<(), String> {
-        // Either api_key OR (project + region) must be provided
-        if self.api_key.is_some() {
-            // API key mode - project/region are optional (ignored)
-            Ok(())
-        } else {
-            // OAuth/ADC mode - project and region are required
-            match (&self.project, &self.region) {
-                (Some(p), Some(r)) if !p.is_empty() && !r.is_empty() => Ok(()),
-                (Some(p), _) if p.is_empty() => Err("project cannot be empty".into()),
-                (_, Some(r)) if r.is_empty() => Err("region cannot be empty".into()),
-                _ => Err("either api_key or both project and region must be provided".into()),
-            }
+        // OAuth/ADC mode - project and region are required.
+        // For API-key access to the Gemini Developer API, use the `gemini` provider.
+        match (&self.project, &self.region) {
+            (Some(p), Some(r)) if !p.is_empty() && !r.is_empty() => Ok(()),
+            (Some(p), _) if p.is_empty() => Err("project cannot be empty".into()),
+            (_, Some(r)) if r.is_empty() => Err("region cannot be empty".into()),
+            _ => Err("both project and region must be provided".into()),
         }
-    }
-
-    /// Check if using API key authentication mode.
-    pub fn uses_api_key(&self) -> bool {
-        self.api_key.is_some()
     }
 }
 
@@ -1164,7 +1176,6 @@ impl VertexProviderConfig {
 impl std::fmt::Debug for VertexProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VertexProviderConfig")
-            .field("api_key", &self.api_key.as_ref().map(|_| "****"))
             .field("project", &self.project)
             .field("region", &self.region)
             .field("publisher", &self.publisher)
@@ -1207,6 +1218,115 @@ pub enum GcpCredentials {
 
     /// Use a service account key from JSON string (useful with env vars).
     ServiceAccountJson { json: String },
+}
+
+#[cfg(feature = "provider-vertex")]
+/// Google Gemini Developer API provider configuration.
+///
+/// Uses simple API-key authentication against the global
+/// `https://aiplatform.googleapis.com/v1/publishers/google/models` endpoint
+/// (the `x-goog-api-key` header). Only Google's own Gemini models are available.
+/// For Google Cloud / Vertex AI (OAuth, regional endpoints, Claude/Llama via
+/// `publisher`), use the [`VertexProviderConfig`] (`type = "vertex"`) provider instead.
+///
+/// ```toml
+/// [providers.gemini]
+/// type = "gemini"
+/// api_key = "${GEMINI_API_KEY}"
+/// ```
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GeminiProviderConfig {
+    /// API key for the Gemini Developer API. Required.
+    pub api_key: String,
+
+    /// Custom base URL override.
+    /// Useful for testing or custom deployments. If not specified, defaults to
+    /// `https://aiplatform.googleapis.com`.
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// Request timeout in seconds.
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+
+    /// Models available through this provider.
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+
+    /// Model aliases.
+    #[serde(default)]
+    pub model_aliases: HashMap<String, String>,
+
+    /// Per-model configuration (pricing, modalities, tasks, metadata).
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
+
+    /// Retry configuration for transient failures.
+    #[serde(default)]
+    pub retry: RetryConfig,
+
+    /// Circuit breaker configuration for unhealthy provider protection.
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+
+    /// Streaming buffer limits for DoS protection.
+    #[serde(default)]
+    pub streaming_buffer: StreamingBufferConfig,
+
+    /// Fallback providers to try when this provider fails.
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
+
+    /// Model-specific fallback configurations.
+    #[serde(default)]
+    pub model_fallbacks: HashMap<String, Vec<ModelFallback>>,
+
+    /// Health check configuration for proactive provider monitoring.
+    #[serde(default)]
+    pub health_check: ProviderHealthCheckConfig,
+
+    /// Override the catalog provider ID for model enrichment.
+    /// Defaults to "google-vertex".
+    #[serde(default)]
+    pub catalog_provider: Option<String>,
+
+    /// Sovereignty and compliance metadata for this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sovereignty: Option<SovereigntyMetadata>,
+}
+
+#[cfg(feature = "provider-vertex")]
+impl GeminiProviderConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.api_key.is_empty() {
+            return Err("api_key cannot be empty".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "provider-vertex")]
+impl std::fmt::Debug for GeminiProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiProviderConfig")
+            .field("api_key", &"****")
+            .field("base_url", &self.base_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("allowed_models", &self.allowed_models)
+            .field("model_aliases", &self.model_aliases)
+            .field("models", &self.models)
+            .field("retry", &self.retry)
+            .field("circuit_breaker", &self.circuit_breaker)
+            .field("streaming_buffer", &self.streaming_buffer)
+            .field("fallback_providers", &self.fallback_providers)
+            .field("model_fallbacks", &self.model_fallbacks)
+            .field("health_check", &self.health_check)
+            .field("catalog_provider", &self.catalog_provider)
+            .field("sovereignty", &self.sovereignty)
+            .finish()
+    }
 }
 
 #[cfg(feature = "provider-azure")]
@@ -2845,7 +2965,8 @@ mod tests {
 
             [vertex]
             type = "vertex"
-            api_key = "test-key"
+            project = "my-project"
+            region = "us-central1"
         "#,
         )
         .unwrap();
@@ -3032,16 +3153,12 @@ mod tests {
 
     #[cfg(feature = "provider-vertex")]
     #[test]
-    fn test_vertex_config_debug_redacts_api_key() {
-        let config = VertexProviderConfig {
-            api_key: Some("AIzaSy-google-api-key-secret".to_string()),
-            project: Some("my-project".to_string()),
-            region: Some("us-central1".to_string()),
-            publisher: "google".to_string(),
+    fn test_gemini_config_debug_redacts_api_key() {
+        let config = GeminiProviderConfig {
+            api_key: "AIzaSy-google-api-key-secret".to_string(),
             base_url: None,
-            credentials: GcpCredentials::Default,
             timeout_secs: 300,
-            allowed_models: vec![],
+            allowed_models: vec!["gemini-2.0-flash".to_string()],
             model_aliases: HashMap::new(),
             models: HashMap::new(),
             retry: RetryConfig::default(),
@@ -3065,8 +3182,84 @@ mod tests {
         );
         // Non-sensitive fields should still be visible
         assert!(
-            debug_output.contains("my-project"),
-            "Project should be visible"
+            debug_output.contains("gemini-2.0-flash"),
+            "Allowed models should be visible"
+        );
+    }
+
+    #[cfg(feature = "provider-vertex")]
+    #[test]
+    fn test_gemini_provider_parses_and_maps_to_catalog() {
+        let config: ProvidersConfig = toml::from_str(
+            r#"
+            [gemini]
+            type = "gemini"
+            api_key = "AIzaSy-test"
+            allowed_models = ["gemini-2.0-flash"]
+        "#,
+        )
+        .unwrap();
+
+        let gemini = config.get("gemini").unwrap();
+        assert_eq!(gemini.provider_type_name(), "gemini");
+        assert_eq!(gemini.provider_type(), ProviderType::Gemini);
+        // Gemini transforms streams, so it needs streaming-buffer limits.
+        assert!(gemini.streaming_buffer_config().is_some());
+        match gemini {
+            ProviderConfig::Gemini(c) => {
+                assert_eq!(c.api_key, "AIzaSy-test");
+                assert!(c.base_url.is_none());
+            }
+            _ => panic!("Expected Gemini provider"),
+        }
+    }
+
+    #[cfg(feature = "provider-vertex")]
+    #[test]
+    fn test_gemini_rejects_unknown_vertex_fields() {
+        // `project`/`publisher` belong to the `vertex` provider, not `gemini`.
+        let result: Result<ProvidersConfig, _> = toml::from_str(
+            r#"
+            [gemini]
+            type = "gemini"
+            api_key = "AIzaSy-test"
+            project = "my-project"
+        "#,
+        );
+        assert!(result.is_err(), "gemini must reject vertex-only fields");
+    }
+
+    #[cfg(feature = "provider-vertex")]
+    #[test]
+    fn test_gemini_validation_rejects_empty_api_key() {
+        let config: ProvidersConfig = toml::from_str(
+            r#"
+            [gemini]
+            type = "gemini"
+            api_key = ""
+        "#,
+        )
+        .unwrap();
+        assert!(
+            config.validate().is_err(),
+            "empty api_key must fail validation"
+        );
+    }
+
+    #[cfg(feature = "provider-vertex")]
+    #[test]
+    fn test_vertex_requires_project_and_region() {
+        // Without project/region, validation must fail (vertex is OAuth-only).
+        let config: ProvidersConfig = toml::from_str(
+            r#"
+            [vertex]
+            type = "vertex"
+        "#,
+        )
+        .unwrap();
+        assert!(
+            config.validate().is_err(),
+            "vertex without project/region must fail validation"
         );
     }
 

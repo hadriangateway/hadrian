@@ -12,6 +12,7 @@ import {
   Cohere,
   DeepSeek,
   Fireworks,
+  Gemini,
   Groq,
   LmStudio,
   Mistral,
@@ -200,7 +201,7 @@ const providerCategories: {
   {
     name: "Native integrations",
     description: "Purpose-built clients with cloud-native auth and prompt caching",
-    cols: "sm:grid-cols-3 lg:grid-cols-5",
+    cols: "sm:grid-cols-3 lg:grid-cols-6",
     providers: [
       {
         name: "OpenAI",
@@ -221,6 +222,11 @@ const providerCategories: {
         name: "Google Vertex AI",
         Icon: VertexAI.Text,
         href: "/docs/configuration/providers#google-vertex-ai",
+      },
+      {
+        name: "Google Gemini",
+        Icon: Gemini.Text,
+        href: "/docs/configuration/providers#google-gemini",
       },
       {
         name: "Azure OpenAI",

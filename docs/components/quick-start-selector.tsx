@@ -70,6 +70,11 @@ const featureMatrix: { name: string; profiles: Profile[]; href?: string }[] = [
     href: "/docs/configuration/providers",
   },
   {
+    name: "Google Gemini",
+    profiles: ["minimal", "standard", "headless", "full"],
+    href: "/docs/configuration/providers",
+  },
+  {
     name: "Azure OpenAI",
     profiles: ["minimal", "standard", "headless", "full"],
     href: "/docs/configuration/providers",

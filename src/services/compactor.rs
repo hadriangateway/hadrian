@@ -186,6 +186,8 @@ fn provider_has_native_compaction(cfg: &ProviderConfig) -> bool {
         ProviderConfig::Bedrock(_) => false,
         #[cfg(feature = "provider-vertex")]
         ProviderConfig::Vertex(_) => false,
+        #[cfg(feature = "provider-vertex")]
+        ProviderConfig::Gemini(_) => false,
         ProviderConfig::Test(_) => false,
     }
 }
@@ -438,6 +440,8 @@ fn provider_config_name(cfg: &ProviderConfig) -> &str {
         ProviderConfig::Bedrock(_) => "bedrock",
         #[cfg(feature = "provider-vertex")]
         ProviderConfig::Vertex(_) => "vertex",
+        #[cfg(feature = "provider-vertex")]
+        ProviderConfig::Gemini(_) => "gemini",
         ProviderConfig::Test(_) => "test",
     }
 }

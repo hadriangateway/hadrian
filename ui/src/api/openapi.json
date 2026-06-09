@@ -22989,7 +22989,7 @@
           },
           "provider_type": {
             "type": "string",
-            "description": "Provider type (e.g., \"open_ai\", \"anthropic\", \"bedrock\", \"vertex\")"
+            "description": "Provider type (e.g., \"open_ai\", \"anthropic\", \"bedrock\", \"vertex\", \"gemini\")"
           },
           "sovereignty": {
             "oneOf": [
@@ -24220,7 +24220,7 @@
           },
           "provider_type": {
             "type": "string",
-            "description": "Provider type (e.g., \"openai\", \"anthropic\", \"bedrock\", \"vertex\")"
+            "description": "Provider type (e.g., \"openai\", \"anthropic\", \"bedrock\", \"vertex\", \"gemini\")"
           },
           "sovereignty": {
             "oneOf": [
@@ -26131,7 +26131,7 @@
           },
           "provider_type": {
             "type": "string",
-            "description": "Provider type (e.g., \"open_ai\", \"anthropic\", \"bedrock\", \"vertex\")"
+            "description": "Provider type (e.g., \"open_ai\", \"anthropic\", \"bedrock\", \"vertex\", \"gemini\")"
           },
           "sovereignty": {
             "oneOf": [

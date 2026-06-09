@@ -91,6 +91,20 @@ const mockVertexProvider = {
   updated_at: "2024-01-01T00:00:00Z",
 };
 
+const mockGeminiProvider = {
+  id: "prov_4",
+  name: "my-gemini",
+  provider_type: "gemini",
+  base_url: "",
+  has_api_key: true,
+  config: {},
+  models: ["gemini-2.0-flash", "gemini-2.5-pro"],
+  is_enabled: true,
+  owner: { type: "organization" as const, org_id: "org_1" },
+  created_at: "2024-01-01T00:00:00Z",
+  updated_at: "2024-01-01T00:00:00Z",
+};
+
 export const CreateMode: Story = {
   args: {
     isOpen: true,
@@ -162,6 +176,17 @@ export const EditVertex: Story = {
     onCreateSubmit: (data) => console.log("Create", data),
     onEditSubmit: (data) => console.log("Edit", data),
     editingProvider: mockVertexProvider,
+    organizations: mockOrganizations,
+  },
+};
+
+export const EditGemini: Story = {
+  args: {
+    isOpen: true,
+    onClose: () => console.log("Close"),
+    onCreateSubmit: (data) => console.log("Create", data),
+    onEditSubmit: (data) => console.log("Edit", data),
+    editingProvider: mockGeminiProvider,
     organizations: mockOrganizations,
   },
 };

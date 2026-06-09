@@ -5,7 +5,7 @@ description: Configure HTTP image URL fetching for non-OpenAI providers
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The `[features.image_fetching]` section controls how the gateway handles HTTP image URLs in chat requests. Non-OpenAI providers (Anthropic, Bedrock, Vertex) only accept base64 data URLs, so HTTP URLs must be fetched and converted.
+The `[features.image_fetching]` section controls how the gateway handles HTTP image URLs in chat requests. Non-OpenAI providers (Anthropic, Bedrock, Vertex, Gemini) only accept base64 data URLs, so HTTP URLs must be fetched and converted.
 
 ## Configuration Reference
 
@@ -40,7 +40,7 @@ Set to an empty array `[]` to allow all `image/*` types.
 ## How It Works
 
 1. Request contains `image_url` with HTTP URL
-2. Gateway detects non-OpenAI provider (Anthropic, Bedrock, Vertex)
+2. Gateway detects non-OpenAI provider (Anthropic, Bedrock, Vertex, Gemini)
 3. Gateway fetches image from URL
 4. Image converted to base64 data URL
 5. Modified request sent to provider
@@ -106,6 +106,7 @@ enabled = false
 | Anthropic    | Not supported | Supported |
 | Bedrock      | Not supported | Supported |
 | Vertex       | Not supported | Supported |
+| Gemini       | Not supported | Supported |
 | Azure OpenAI | Supported     | Supported |
 
 ## Error Handling

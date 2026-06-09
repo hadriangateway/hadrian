@@ -11,7 +11,7 @@ pub struct DynamicProvider {
     pub id: Uuid,
     pub name: String,
     pub owner: ProviderOwner,
-    /// Provider type (e.g., "open_ai", "anthropic", "bedrock", "vertex")
+    /// Provider type (e.g., "open_ai", "anthropic", "bedrock", "vertex", "gemini")
     pub provider_type: String,
     pub base_url: String,
     /// Reference to API key in secrets manager (or literal key if no SM configured)
@@ -142,7 +142,7 @@ pub struct CreateDynamicProvider {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
     pub owner: ProviderOwner,
-    /// Provider type (e.g., "open_ai", "anthropic", "bedrock", "vertex")
+    /// Provider type (e.g., "open_ai", "anthropic", "bedrock", "vertex", "gemini")
     #[validate(length(min = 1, max = 64))]
     pub provider_type: String,
     /// Base URL for the provider (required for OpenAI/Anthropic/Azure, optional for Bedrock/Vertex)
@@ -164,7 +164,7 @@ pub struct CreateDynamicProvider {
 pub struct CreateSelfServiceProvider {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
-    /// Provider type (e.g., "openai", "anthropic", "bedrock", "vertex")
+    /// Provider type (e.g., "openai", "anthropic", "bedrock", "vertex", "gemini")
     #[validate(length(min = 1, max = 64))]
     pub provider_type: String,
     /// Base URL for the provider (required for OpenAI/Anthropic/Azure, optional for Bedrock/Vertex)

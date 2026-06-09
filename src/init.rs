@@ -45,6 +45,14 @@ pub(crate) fn create_provider_instance(
                 circuit_breakers,
             ),
         ),
+        #[cfg(feature = "provider-vertex")]
+        config::ProviderConfig::Gemini(cfg) => Arc::new(
+            providers::vertex::VertexProvider::from_gemini_config_with_registry(
+                cfg,
+                provider_name,
+                circuit_breakers,
+            ),
+        ),
         #[cfg(feature = "provider-bedrock")]
         config::ProviderConfig::Bedrock(cfg) => Arc::new(
             providers::bedrock::BedrockProvider::from_config_with_registry(
