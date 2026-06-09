@@ -5,8 +5,9 @@
 use super::types::{
     AnthropicCacheControl, AnthropicCacheControlType, AnthropicContent, AnthropicEffort,
     AnthropicMessage, AnthropicOutputConfig, AnthropicResponse, AnthropicThinkingConfig,
-    AnthropicTool, AnthropicToolChoice, ContentBlock, ImageSource, OpenAIChoice, OpenAIMessage,
-    OpenAIResponse, OpenAIToolCall, OpenAIToolCallFunction, OpenAIUsage, PromptTokensDetails,
+    AnthropicThinkingDisplay, AnthropicTool, AnthropicToolChoice, ContentBlock, ImageSource,
+    OpenAIChoice, OpenAIMessage, OpenAIResponse, OpenAIToolCall, OpenAIToolCallFunction,
+    OpenAIUsage, PromptTokensDetails,
 };
 use crate::{
     api_types::{
@@ -198,7 +199,28 @@ pub fn convert_messages(openai_messages: Vec<Message>) -> (Option<String>, Vec<A
             Message::System { content, .. } | Message::Developer { content, .. } => {
                 let text = extract_text(&content);
                 if !text.is_empty() {
-                    system_parts.push(text);
+                    if messages.is_empty() && pending_tool_results.is_empty() {
+                        // Leading system/developer messages fold into the
+                        // top-level `system` prompt.
+                        system_parts.push(text);
+                    } else {
+                        // Once a turn has started, emit the message inline as a
+                        // `role:"system"` message (mid-conversation system,
+                        // beta `mid-conversation-system-2026-04-07`) so it isn't
+                        // hoisted ahead of the cached conversation prefix.
+                        if !pending_tool_results.is_empty() {
+                            messages.push(AnthropicMessage {
+                                role: "user".to_string(),
+                                content: AnthropicContent::Blocks(std::mem::take(
+                                    &mut pending_tool_results,
+                                )),
+                            });
+                        }
+                        messages.push(AnthropicMessage {
+                            role: "system".to_string(),
+                            content: AnthropicContent::Text(text),
+                        });
+                    }
                 }
             }
             Message::User { content, .. } => {
@@ -457,11 +479,21 @@ pub fn convert_responses_input_to_messages(
                             EasyInputMessageRole::User => "user",
                             EasyInputMessageRole::Assistant => "assistant",
                             EasyInputMessageRole::System | EasyInputMessageRole::Developer => {
-                                // Anthropic has no system role: fold system/developer
-                                // input messages into the system prompt.
                                 let text = easy_content_text(&msg.content);
                                 if !text.is_empty() {
-                                    system_parts.push(text);
+                                    if messages.is_empty() {
+                                        // Leading system/developer input folds
+                                        // into the top-level system prompt.
+                                        system_parts.push(text);
+                                    } else {
+                                        // Mid-conversation system message (beta
+                                        // `mid-conversation-system-2026-04-07`):
+                                        // keep it inline so it follows the turn.
+                                        messages.push(AnthropicMessage {
+                                            role: "system".to_string(),
+                                            content: AnthropicContent::Text(text),
+                                        });
+                                    }
                                 }
                                 continue;
                             }
@@ -494,10 +526,20 @@ pub fn convert_responses_input_to_messages(
                         let role = match msg.role {
                             InputMessageItemRole::User => "user",
                             InputMessageItemRole::System | InputMessageItemRole::Developer => {
-                                // Fold system/developer input messages into the system prompt.
                                 let text = input_content_text(&msg.content);
                                 if !text.is_empty() {
-                                    system_parts.push(text);
+                                    if messages.is_empty() {
+                                        // Leading system/developer input folds
+                                        // into the top-level system prompt.
+                                        system_parts.push(text);
+                                    } else {
+                                        // Mid-conversation system message (beta
+                                        // `mid-conversation-system-2026-04-07`).
+                                        messages.push(AnthropicMessage {
+                                            role: "system".to_string(),
+                                            content: AnthropicContent::Text(text),
+                                        });
+                                    }
                                 }
                                 continue;
                             }
@@ -844,15 +886,51 @@ pub fn convert_responses_tool_choice(
     })
 }
 
-/// Convert Responses API reasoning config to Anthropic thinking config.
-/// Check if a model supports adaptive thinking (Opus 4.6+).
-pub(super) fn supports_adaptive_thinking(model: &str) -> bool {
-    model.contains("opus-4-6") || model.contains("opus-4.6")
+/// Whether `model` should use adaptive thinking (Claude Opus 4.6+ / Sonnet 4.6).
+/// Substring match against the configured `adaptive_thinking_models` list.
+pub(super) fn supports_adaptive_thinking(model: &str, adaptive_models: &[String]) -> bool {
+    model_matches_any(model, adaptive_models)
+}
+
+/// Whether `model` is in the strict set (Claude Opus 4.7/4.8): it forbids
+/// `budget_tokens` and sampling params and supports `thinking.display`. Strict
+/// models always use adaptive thinking — the legacy budget path is never taken.
+pub(super) fn requires_strict_thinking(model: &str, strict_models: &[String]) -> bool {
+    model_matches_any(model, strict_models)
+}
+
+fn model_matches_any(model: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pat| !pat.is_empty() && model.contains(pat.as_str()))
+}
+
+/// Build the adaptive thinking config, opting strict models (Opus 4.7/4.8) into
+/// summarized reasoning so their thinking summaries aren't omitted by default.
+fn adaptive_thinking_config(strict: bool) -> AnthropicThinkingConfig {
+    AnthropicThinkingConfig::Adaptive {
+        display: strict.then_some(AnthropicThinkingDisplay::Summarized),
+    }
+}
+
+/// Clamp an effort level the target model doesn't support. `XHigh` is Opus 4.7+
+/// only (the strict set); `Max` is Opus-tier only. Unsupported levels clamp down
+/// to `High` rather than erroring upstream.
+fn clamp_effort(effort: AnthropicEffort, model: &str, strict_models: &[String]) -> AnthropicEffort {
+    match effort {
+        AnthropicEffort::XHigh if !requires_strict_thinking(model, strict_models) => {
+            AnthropicEffort::High
+        }
+        AnthropicEffort::Max if !model.contains("opus") => AnthropicEffort::High,
+        other => other,
+    }
 }
 
 pub fn convert_reasoning_config(
     reasoning: Option<&ResponsesReasoningConfig>,
     model: &str,
+    adaptive_models: &[String],
+    strict_models: &[String],
 ) -> (
     Option<AnthropicThinkingConfig>,
     Option<AnthropicOutputConfig>,
@@ -871,21 +949,27 @@ pub fn convert_reasoning_config(
         || reasoning.effort.is_some()
         || reasoning.max_tokens.is_some()
     {
-        // For adaptive-capable models, use adaptive thinking with effort-based output config
-        if supports_adaptive_thinking(model) && reasoning.max_tokens.is_none() {
+        let strict = requires_strict_thinking(model, strict_models);
+        let adaptive = strict || supports_adaptive_thinking(model, adaptive_models);
+
+        // Adaptive path. Strict models (Opus 4.7/4.8) ALWAYS take this path and
+        // ignore any `max_tokens` budget — `budget_tokens` is rejected upstream.
+        // Other adaptive models keep the legacy budget escape hatch when an
+        // explicit `max_tokens` is supplied.
+        if adaptive && (strict || reasoning.max_tokens.is_none()) {
             let effort = match reasoning.effort {
                 Some(ResponsesReasoningEffort::None) => {
                     return (Some(AnthropicThinkingConfig::Disabled), None);
                 }
-                Some(ResponsesReasoningEffort::Minimal) | Some(ResponsesReasoningEffort::Low) => {
-                    AnthropicEffort::Low
-                }
-                Some(ResponsesReasoningEffort::Medium) | None => AnthropicEffort::Medium,
-                Some(ResponsesReasoningEffort::High) => AnthropicEffort::High,
+                Some(e) => clamp_effort(responses_effort_to_anthropic(e), model, strict_models),
+                None => AnthropicEffort::Medium,
             };
             return (
-                Some(AnthropicThinkingConfig::Adaptive),
-                Some(AnthropicOutputConfig { effort }),
+                Some(adaptive_thinking_config(strict)),
+                Some(AnthropicOutputConfig {
+                    effort: Some(effort),
+                    task_budget: None,
+                }),
             );
         }
 
@@ -894,7 +978,9 @@ pub fn convert_reasoning_config(
             max as u32
         } else {
             match reasoning.effort {
-                Some(ResponsesReasoningEffort::High) => 32000,
+                Some(ResponsesReasoningEffort::High)
+                | Some(ResponsesReasoningEffort::XHigh)
+                | Some(ResponsesReasoningEffort::Max) => 32000,
                 Some(ResponsesReasoningEffort::Medium) => 16000,
                 Some(ResponsesReasoningEffort::Low) => 8000,
                 Some(ResponsesReasoningEffort::Minimal) => 2048,
@@ -917,6 +1003,18 @@ pub fn convert_reasoning_config(
     (None, None)
 }
 
+fn responses_effort_to_anthropic(effort: ResponsesReasoningEffort) -> AnthropicEffort {
+    match effort {
+        ResponsesReasoningEffort::None
+        | ResponsesReasoningEffort::Minimal
+        | ResponsesReasoningEffort::Low => AnthropicEffort::Low,
+        ResponsesReasoningEffort::Medium => AnthropicEffort::Medium,
+        ResponsesReasoningEffort::High => AnthropicEffort::High,
+        ResponsesReasoningEffort::XHigh => AnthropicEffort::XHigh,
+        ResponsesReasoningEffort::Max => AnthropicEffort::Max,
+    }
+}
+
 /// Convert Chat Completion API reasoning config to Anthropic thinking config.
 ///
 /// This is similar to `convert_reasoning_config` but works with the simpler
@@ -924,6 +1022,8 @@ pub fn convert_reasoning_config(
 pub fn convert_chat_completion_reasoning_config(
     reasoning: Option<&CreateChatCompletionReasoning>,
     model: &str,
+    adaptive_models: &[String],
+    strict_models: &[String],
 ) -> (
     Option<AnthropicThinkingConfig>,
     Option<AnthropicOutputConfig>,
@@ -932,46 +1032,56 @@ pub fn convert_chat_completion_reasoning_config(
         return (None, None);
     };
 
-    if let Some(effort) = reasoning.effort {
-        // For adaptive-capable models, use adaptive thinking with effort-based output config
-        if supports_adaptive_thinking(model) {
-            let anthropic_effort = match effort {
-                ReasoningEffort::None => {
-                    return (Some(AnthropicThinkingConfig::Disabled), None);
-                }
-                ReasoningEffort::Minimal | ReasoningEffort::Low => AnthropicEffort::Low,
-                ReasoningEffort::Medium => AnthropicEffort::Medium,
-                ReasoningEffort::High => AnthropicEffort::High,
-            };
-            return (
-                Some(AnthropicThinkingConfig::Adaptive),
-                Some(AnthropicOutputConfig {
-                    effort: anthropic_effort,
-                }),
-            );
-        }
+    let Some(effort) = reasoning.effort else {
+        return (None, None);
+    };
 
-        // Non-adaptive models: use fixed budget tokens
-        let budget_tokens = match effort {
-            ReasoningEffort::High => 32000,
-            ReasoningEffort::Medium => 16000,
-            ReasoningEffort::Low => 8000,
-            ReasoningEffort::Minimal => 2048,
-            ReasoningEffort::None => {
-                return (Some(AnthropicThinkingConfig::Disabled), None);
-            }
-        };
+    if matches!(effort, ReasoningEffort::None) {
+        return (Some(AnthropicThinkingConfig::Disabled), None);
+    }
 
-        // Minimum budget is 1024 tokens per Anthropic API requirements
-        let budget_tokens = budget_tokens.max(1024);
-
+    let strict = requires_strict_thinking(model, strict_models);
+    if strict || supports_adaptive_thinking(model, adaptive_models) {
+        let anthropic_effort = clamp_effort(chat_effort_to_anthropic(effort), model, strict_models);
         return (
-            Some(AnthropicThinkingConfig::Enabled { budget_tokens }),
-            None,
+            Some(adaptive_thinking_config(strict)),
+            Some(AnthropicOutputConfig {
+                effort: Some(anthropic_effort),
+                task_budget: None,
+            }),
         );
     }
 
-    (None, None)
+    // Non-adaptive models: use fixed budget tokens
+    let budget_tokens = match effort {
+        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => 32000,
+        ReasoningEffort::Medium => 16000,
+        ReasoningEffort::Low => 8000,
+        ReasoningEffort::Minimal => 2048,
+        ReasoningEffort::None => {
+            return (Some(AnthropicThinkingConfig::Disabled), None);
+        }
+    };
+
+    // Minimum budget is 1024 tokens per Anthropic API requirements
+    let budget_tokens = budget_tokens.max(1024);
+
+    (
+        Some(AnthropicThinkingConfig::Enabled { budget_tokens }),
+        None,
+    )
+}
+
+fn chat_effort_to_anthropic(effort: ReasoningEffort) -> AnthropicEffort {
+    match effort {
+        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => {
+            AnthropicEffort::Low
+        }
+        ReasoningEffort::Medium => AnthropicEffort::Medium,
+        ReasoningEffort::High => AnthropicEffort::High,
+        ReasoningEffort::XHigh => AnthropicEffort::XHigh,
+        ReasoningEffort::Max => AnthropicEffort::Max,
+    }
 }
 
 /// Convert Anthropic response to OpenAI Responses API format.
@@ -1073,6 +1183,7 @@ pub fn convert_anthropic_to_responses_response(
                 role: "assistant".to_string(),
                 content: message_content,
                 status: Some(OutputMessageStatus::Completed),
+                phase: None,
             }),
         );
     }
@@ -1148,6 +1259,17 @@ pub fn convert_anthropic_to_responses_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Default adaptive-thinking model list (Opus 4.6+/Sonnet 4.6) for tests.
+    fn adaptive_models() -> Vec<String> {
+        crate::config::default_adaptive_thinking_models()
+    }
+
+    /// Default strict-thinking model list (Opus 4.7/4.8) for tests.
+    fn strict_models() -> Vec<String> {
+        crate::config::default_strict_thinking_models()
+    }
+
     use crate::api_types::{
         chat_completion::{
             ContentPart, NamedToolChoice, NamedToolChoiceFunction, ToolCall, ToolCallFunction,
@@ -2072,8 +2194,12 @@ mod tests {
             enabled: Some(true),
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-sonnet-4-5-20250929");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(output_config.is_none());
         match thinking {
@@ -2093,8 +2219,12 @@ mod tests {
             enabled: None,
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-sonnet-4-5-20250929");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
+        );
         assert!(output_config.is_none());
         assert!(matches!(thinking, Some(AnthropicThinkingConfig::Disabled)));
     }
@@ -2108,8 +2238,12 @@ mod tests {
             enabled: Some(true),
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-sonnet-4-5-20250929");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(output_config.is_none());
         match thinking {
@@ -2129,8 +2263,12 @@ mod tests {
             enabled: Some(true),
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-sonnet-4-5-20250929");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(output_config.is_none());
         match thinking {
@@ -2590,6 +2728,8 @@ mod tests {
         let (thinking, output_config) = convert_chat_completion_reasoning_config(
             Some(&reasoning),
             "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
         );
 
         assert!(output_config.is_none());
@@ -2614,6 +2754,8 @@ mod tests {
         let (thinking, output_config) = convert_chat_completion_reasoning_config(
             Some(&reasoning),
             "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
         );
 
         assert!(output_config.is_none());
@@ -2633,6 +2775,8 @@ mod tests {
         let (thinking, output_config) = convert_chat_completion_reasoning_config(
             Some(&reasoning),
             "claude-sonnet-4-5-20250929",
+            &adaptive_models(),
+            &strict_models(),
         );
         assert!(thinking.is_none());
         assert!(output_config.is_none());
@@ -2644,12 +2788,28 @@ mod tests {
 
     #[test]
     fn test_supports_adaptive_thinking() {
-        assert!(supports_adaptive_thinking("claude-opus-4-6-20260525"));
-        assert!(supports_adaptive_thinking("claude-opus-4.6-20260525"));
-        assert!(supports_adaptive_thinking("some-prefix-opus-4-6-suffix"));
-        assert!(!supports_adaptive_thinking("claude-sonnet-4-5-20250929"));
-        assert!(!supports_adaptive_thinking("claude-opus-4-5-20251101"));
-        assert!(!supports_adaptive_thinking("gpt-4"));
+        let a = adaptive_models();
+        assert!(supports_adaptive_thinking("claude-opus-4-6-20260525", &a));
+        assert!(supports_adaptive_thinking("claude-opus-4.6-20260525", &a));
+        assert!(supports_adaptive_thinking(
+            "some-prefix-opus-4-6-suffix",
+            &a
+        ));
+        assert!(supports_adaptive_thinking("claude-opus-4-7-20260101", &a));
+        assert!(supports_adaptive_thinking("claude-opus-4-8-20260101", &a));
+        assert!(supports_adaptive_thinking("claude-sonnet-4-6-20260101", &a));
+        assert!(!supports_adaptive_thinking(
+            "claude-sonnet-4-5-20250929",
+            &a
+        ));
+        assert!(!supports_adaptive_thinking("claude-opus-4-5-20251101", &a));
+        assert!(!supports_adaptive_thinking("gpt-4", &a));
+
+        let s = strict_models();
+        assert!(requires_strict_thinking("claude-opus-4-7-20260101", &s));
+        assert!(requires_strict_thinking("claude-opus-4-8-20260101", &s));
+        assert!(!requires_strict_thinking("claude-opus-4-6-20260525", &s));
+        assert!(!requires_strict_thinking("claude-sonnet-4-6-20260101", &s));
     }
 
     #[test]
@@ -2663,15 +2823,19 @@ mod tests {
             enabled: Some(true),
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-opus-4-6-20260525");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-opus-4-6-20260525",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(
-            matches!(thinking, Some(AnthropicThinkingConfig::Adaptive)),
+            matches!(thinking, Some(AnthropicThinkingConfig::Adaptive { .. })),
             "Expected Adaptive thinking config for opus-4-6"
         );
         let output = output_config.expect("Expected output config for adaptive thinking");
-        assert!(matches!(output.effort, AnthropicEffort::High));
+        assert!(matches!(output.effort, Some(AnthropicEffort::High)));
     }
 
     #[test]
@@ -2683,8 +2847,12 @@ mod tests {
             enabled: Some(true),
         };
 
-        let (thinking, output_config) =
-            convert_reasoning_config(Some(&config), "claude-opus-4-6-20260525");
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-opus-4-6-20260525",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(output_config.is_none());
         match thinking {
@@ -2705,20 +2873,138 @@ mod tests {
             summary: None,
         };
 
-        let (thinking, output_config) =
-            convert_chat_completion_reasoning_config(Some(&reasoning), "claude-opus-4-6-20260525");
+        let (thinking, output_config) = convert_chat_completion_reasoning_config(
+            Some(&reasoning),
+            "claude-opus-4-6-20260525",
+            &adaptive_models(),
+            &strict_models(),
+        );
 
         assert!(
-            matches!(thinking, Some(AnthropicThinkingConfig::Adaptive)),
+            matches!(thinking, Some(AnthropicThinkingConfig::Adaptive { .. })),
             "Expected Adaptive thinking config for opus-4-6"
         );
         let output = output_config.expect("Expected output config for adaptive thinking");
-        assert!(matches!(output.effort, AnthropicEffort::High));
+        assert!(matches!(output.effort, Some(AnthropicEffort::High)));
+    }
+
+    #[test]
+    fn strict_model_uses_adaptive_summarized_never_budget() {
+        // Even with an explicit max_tokens, a strict model (Opus 4.7/4.8) must
+        // get adaptive thinking with summarized display — never budget_tokens.
+        let config = ResponsesReasoningConfig {
+            effort: Some(ResponsesReasoningEffort::XHigh),
+            summary: None,
+            max_tokens: Some(5000.0),
+            enabled: Some(true),
+        };
+        let (thinking, output_config) = convert_reasoning_config(
+            Some(&config),
+            "claude-opus-4-7-20260101",
+            &adaptive_models(),
+            &strict_models(),
+        );
+        assert!(matches!(
+            thinking,
+            Some(AnthropicThinkingConfig::Adaptive {
+                display: Some(AnthropicThinkingDisplay::Summarized)
+            })
+        ));
+        let oc = output_config.expect("output config");
+        assert!(matches!(oc.effort, Some(AnthropicEffort::XHigh)));
+    }
+
+    #[test]
+    fn non_strict_adaptive_model_omits_display() {
+        // Opus 4.6 is adaptive but must NOT carry `display` (it predates it).
+        let config = ResponsesReasoningConfig {
+            effort: Some(ResponsesReasoningEffort::High),
+            summary: None,
+            max_tokens: None,
+            enabled: Some(true),
+        };
+        let (thinking, _) = convert_reasoning_config(
+            Some(&config),
+            "claude-opus-4-6-20260525",
+            &adaptive_models(),
+            &strict_models(),
+        );
+        assert!(matches!(
+            thinking,
+            Some(AnthropicThinkingConfig::Adaptive { display: None })
+        ));
+    }
+
+    #[test]
+    fn effort_xhigh_max_clamp_by_model() {
+        let mk = |effort| ResponsesReasoningConfig {
+            effort: Some(effort),
+            summary: None,
+            max_tokens: None,
+            enabled: Some(true),
+        };
+        let effort_for = |effort, model: &str| {
+            convert_reasoning_config(
+                Some(&mk(effort)),
+                model,
+                &adaptive_models(),
+                &strict_models(),
+            )
+            .1
+            .expect("output config")
+            .effort
+        };
+
+        // xhigh stays xhigh on a 4.7 model, clamps to high on 4.6 (xhigh is 4.7+).
+        assert!(matches!(
+            effort_for(ResponsesReasoningEffort::XHigh, "claude-opus-4-7-20260101"),
+            Some(AnthropicEffort::XHigh)
+        ));
+        assert!(matches!(
+            effort_for(ResponsesReasoningEffort::XHigh, "claude-opus-4-6-20260525"),
+            Some(AnthropicEffort::High)
+        ));
+
+        // max stays max on an opus model, clamps to high on sonnet (Opus-tier only).
+        assert!(matches!(
+            effort_for(ResponsesReasoningEffort::Max, "claude-opus-4-6-20260525"),
+            Some(AnthropicEffort::Max)
+        ));
+        assert!(matches!(
+            effort_for(ResponsesReasoningEffort::Max, "claude-sonnet-4-6-20260101"),
+            Some(AnthropicEffort::High)
+        ));
+    }
+
+    #[test]
+    fn mid_conversation_system_message_emitted_inline() {
+        let messages = vec![
+            Message::System {
+                content: MessageContent::Text("lead".to_string()),
+                name: None,
+            },
+            Message::User {
+                content: MessageContent::Text("hi".to_string()),
+                name: None,
+            },
+            Message::System {
+                content: MessageContent::Text("mid".to_string()),
+                name: None,
+            },
+        ];
+        let (system, msgs) = convert_messages(messages);
+        // Leading system folds into the top-level prompt.
+        assert_eq!(system.as_deref(), Some("lead"));
+        // The post-turn system message is emitted inline as role:"system".
+        assert!(
+            msgs.iter().any(|m| m.role == "system"),
+            "expected an inline system message"
+        );
     }
 
     #[test]
     fn test_adaptive_thinking_config_serializes_correctly() {
-        let config = AnthropicThinkingConfig::Adaptive;
+        let config = AnthropicThinkingConfig::Adaptive { display: None };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json, serde_json::json!({"type": "adaptive"}));
     }
@@ -2739,9 +3025,10 @@ mod tests {
             stream: false,
             tools: None,
             tool_choice: None,
-            thinking: Some(AnthropicThinkingConfig::Adaptive),
+            thinking: Some(AnthropicThinkingConfig::Adaptive { display: None }),
             output_config: Some(AnthropicOutputConfig {
-                effort: AnthropicEffort::High,
+                effort: Some(AnthropicEffort::High),
+                task_budget: None,
             }),
             metadata: None,
         };

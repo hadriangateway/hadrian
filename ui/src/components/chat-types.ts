@@ -377,8 +377,13 @@ export const DEFAULT_MODE_CONFIG: ModeConfig = {
   audienceLevels: ["expert", "intermediate", "beginner"],
 };
 
-/** Reasoning effort level for models that support extended thinking */
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+/**
+ * Reasoning effort level for models that support extended thinking.
+ *
+ * `xhigh` and `max` are accepted for every model; providers clamp them down to
+ * `high` where the higher levels aren't supported.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Reasoning configuration for chat requests */
 export interface ReasoningConfig {

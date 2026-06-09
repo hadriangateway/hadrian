@@ -28,6 +28,8 @@ const EFFORT_LABELS: Record<ReasoningEffort, { label: string; description: strin
   low: { label: "Low", description: "Brief thinking" },
   medium: { label: "Medium", description: "Balanced reasoning" },
   high: { label: "High", description: "Deep, thorough thinking" },
+  xhigh: { label: "Extra High", description: "More reasoning than High" },
+  max: { label: "Max", description: "Maximum reasoning effort" },
 };
 
 export function ReasoningConfig({

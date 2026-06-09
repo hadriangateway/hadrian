@@ -24023,6 +24023,17 @@
             "type": "boolean",
             "description": "Enable streaming"
           },
+          "task_budget": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskBudgetConfig",
+                "description": "**Hadrian Extension:** Task budget for an agentic loop on adaptive Claude\nmodels (Opus 4.7/4.8). Maps to Anthropic's `output_config.task_budget`\n(beta `task-budgets-2026-03-13`). The model is told its budget and\nself-moderates — distinct from `max_output_tokens`, an enforced\nper-response ceiling. Minimum 20,000 tokens (clamped up). Consumed by the\nAnthropic provider; stripped before reaching OpenAI-compatible upstreams."
+              }
+            ]
+          },
           "temperature": {
             "type": [
               "number",
@@ -30590,7 +30601,9 @@
           "minimal",
           "low",
           "medium",
-          "high"
+          "high",
+          "xhigh",
+          "max"
         ]
       },
       "ReasoningSummary": {
@@ -32795,6 +32808,31 @@
             ]
           }
         }
+      },
+      "TaskBudgetConfig": {
+        "type": "object",
+        "description": "**Hadrian Extension:** task budget for an agentic loop (Claude Opus 4.7/4.8).\nMirrors Anthropic's `output_config.task_budget` shape\n(`{\"type\": \"tokens\", \"total\": N}`). The minimum is 20,000 tokens; smaller\nvalues are clamped up at the adapter layer.",
+        "required": [
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total token budget for the agentic loop.",
+            "minimum": 0
+          },
+          "type": {
+            "$ref": "#/components/schemas/TaskBudgetType",
+            "description": "Budget unit. Only `tokens` is supported."
+          }
+        }
+      },
+      "TaskBudgetType": {
+        "type": "string",
+        "enum": [
+          "tokens"
+        ]
       },
       "Team": {
         "type": "object",

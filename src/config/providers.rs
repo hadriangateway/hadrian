@@ -777,12 +777,55 @@ pub struct AnthropicProviderConfig {
     /// `"claude-opus-4-6-20250101"`). Some Anthropic models reject this
     /// header, so override the default list when adding or removing support.
     /// Set to an empty list to disable the beta header entirely.
+    ///
+    /// Note: Opus 4.7/4.8 are deliberately **excluded** — adaptive thinking
+    /// auto-enables interleaved thinking on those models, and they reject the
+    /// explicit header. Only models still relying on the legacy header belong
+    /// here.
     #[serde(default = "default_interleaved_thinking_models")]
     pub interleaved_thinking_models: Vec<String>,
+
+    /// Models that use **adaptive thinking** (Claude Opus 4.6+ and Sonnet 4.6).
+    /// Substring match against the model name. Adaptive-capable models receive
+    /// `thinking: {type: "adaptive"}` + `output_config.effort` instead of a
+    /// fixed `budget_tokens`. Models not listed here fall back to the legacy
+    /// budget path. Extend this list as new adaptive models ship.
+    #[serde(default = "default_adaptive_thinking_models")]
+    pub adaptive_thinking_models: Vec<String>,
+
+    /// Models that **forbid** `budget_tokens` and sampling parameters
+    /// (`temperature`/`top_p`/`top_k`) and that support `thinking.display`
+    /// (Claude Opus 4.7/4.8). Substring match. These always use adaptive
+    /// thinking — the legacy budget path is never taken for them, even if a
+    /// request supplies `reasoning.max_tokens`.
+    #[serde(default = "default_strict_thinking_models")]
+    pub strict_thinking_models: Vec<String>,
 }
 
 pub fn default_interleaved_thinking_models() -> Vec<String> {
     vec!["opus-4-6".to_string(), "opus-4.6".to_string()]
+}
+
+pub fn default_adaptive_thinking_models() -> Vec<String> {
+    vec![
+        "opus-4-6".to_string(),
+        "opus-4.6".to_string(),
+        "opus-4-7".to_string(),
+        "opus-4.7".to_string(),
+        "opus-4-8".to_string(),
+        "opus-4.8".to_string(),
+        "sonnet-4-6".to_string(),
+        "sonnet-4.6".to_string(),
+    ]
+}
+
+pub fn default_strict_thinking_models() -> Vec<String> {
+    vec![
+        "opus-4-7".to_string(),
+        "opus-4.7".to_string(),
+        "opus-4-8".to_string(),
+        "opus-4.8".to_string(),
+    ]
 }
 
 impl AnthropicProviderConfig {
@@ -2904,6 +2947,8 @@ mod tests {
             catalog_provider: None,
             sovereignty: None,
             interleaved_thinking_models: default_interleaved_thinking_models(),
+            adaptive_thinking_models: default_adaptive_thinking_models(),
+            strict_thinking_models: default_strict_thinking_models(),
         };
 
         let debug_output = format!("{:?}", config);

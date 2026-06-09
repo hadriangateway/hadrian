@@ -635,6 +635,8 @@ pub async fn dynamic_provider_to_config(
                 catalog_provider: None,
                 sovereignty: provider.sovereignty.clone(),
                 interleaved_thinking_models: crate::config::default_interleaved_thinking_models(),
+                adaptive_thinking_models: crate::config::default_adaptive_thinking_models(),
+                strict_thinking_models: crate::config::default_strict_thinking_models(),
             },
         )),
         #[cfg(feature = "provider-azure")]
