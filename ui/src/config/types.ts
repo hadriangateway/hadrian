@@ -55,7 +55,7 @@ export interface FavoriteMcpServer {
   name: string;
   /**
    * Either a direct remote URL (http(s)://...) the UI connects to, or a
-   * registry identifier (e.g. `io.github.ScriptSmith/platter`) that the UI
+   * registry identifier (e.g. `io.github.hadriangateway/platter`) that the UI
    * resolves against the public MCP registry.
    */
   url: string;

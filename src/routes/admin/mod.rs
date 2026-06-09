@@ -5837,7 +5837,7 @@ show_logo = false
             .map(|f| f["url"].as_str().unwrap())
             .collect();
         assert_eq!(urls.len(), 6);
-        assert!(urls.contains(&"io.github.ScriptSmith/platter"));
+        assert!(urls.contains(&"io.github.hadriangateway/platter"));
         assert!(urls.contains(&"https://mcp.atlassian.com/v1/mcp"));
         assert!(urls.contains(&"https://mcp.notion.com/mcp"));
         assert!(urls.contains(&"https://huggingface.co/mcp"));

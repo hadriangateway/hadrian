@@ -79,7 +79,7 @@ pub struct FavoriteMcpServer {
     /// Display name.
     pub name: String,
     /// Either a direct remote URL (`https://…`) the UI connects to, or a
-    /// registry identifier (e.g. `io.github.ScriptSmith/platter`) the UI
+    /// registry identifier (e.g. `io.github.hadriangateway/platter`) the UI
     /// resolves against the public MCP registry.
     pub url: String,
 }
@@ -88,7 +88,7 @@ fn default_favorite_mcp_servers() -> Vec<FavoriteMcpServer> {
     vec![
         FavoriteMcpServer {
             name: "Platter".into(),
-            url: "io.github.ScriptSmith/platter".into(),
+            url: "io.github.hadriangateway/platter".into(),
         },
         FavoriteMcpServer {
             name: "Atlassian".into(),

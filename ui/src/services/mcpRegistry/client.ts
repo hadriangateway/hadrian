@@ -40,7 +40,7 @@ export async function searchRegistry(
 
 /**
  * Fetch the latest version of a specific registry entry by name (e.g.
- * `io.github.ScriptSmith/platter`). Used to resolve favorite references into
+ * `io.github.hadriangateway/platter`). Used to resolve favorite references into
  * full entries so the catalog can render them alongside search results.
  */
 export async function getRegistryEntry(

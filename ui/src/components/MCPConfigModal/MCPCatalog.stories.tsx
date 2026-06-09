@@ -36,7 +36,7 @@ export const WithFavorites: Story = {
     onAddManual: () => alert("Add manually"),
     onCancel: () => alert("Cancel"),
     favorites: [
-      { name: "Platter", url: "io.github.ScriptSmith/platter" },
+      { name: "Platter", url: "io.github.hadriangateway/platter" },
       { name: "Atlassian", url: "https://mcp.atlassian.com/v1/mcp" },
       { name: "Notion", url: "https://mcp.notion.com/mcp" },
       { name: "Hugging Face", url: "https://huggingface.co/mcp" },
