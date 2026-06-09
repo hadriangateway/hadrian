@@ -1,6 +1,6 @@
 [package]
 name = "hadrian"
-version = "0.0.0-alpha.12"
+version = "0.0.0-alpha.13"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 description = "An open-source AI Gateway providing a unified OpenAI-compatible API for routing requests to multiple LLM providers"

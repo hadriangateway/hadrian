@@ -3702,7 +3702,7 @@ dependencies = [
 
 [[package]]
 name = "hadrian"
-version = "0.0.0-alpha.12"
+version = "0.0.0-alpha.13"
 dependencies = [
  "async-trait",
  "augurs",
