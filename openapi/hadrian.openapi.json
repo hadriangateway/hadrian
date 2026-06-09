@@ -7,7 +7,7 @@
       "name": "Apache-2.0 OR MIT",
       "url": "https://github.com/ScriptSmith/hadrian/blob/main/LICENSE-APACHE"
     },
-    "version": "0.0.0-alpha.12"
+    "version": "0.0.0-alpha.13"
   },
   "servers": [
     {
