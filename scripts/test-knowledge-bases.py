@@ -116,7 +116,7 @@ def create_client(timeout: float = 30.0) -> httpx.Client:
         timeout=timeout,
         follow_redirects=True,
         headers={
-            "User-Agent": "Hadrian-Gateway-Test/1.0 (https://github.com/ScriptSmith/hadrian)",
+            "User-Agent": "Hadrian-Gateway-Test/1.0 (https://github.com/hadriangateway/hadrian)",
         },
     )
 

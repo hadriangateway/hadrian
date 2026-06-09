@@ -445,5 +445,5 @@ New versions may include database migrations. The gateway applies migrations aut
 
 For issues and questions:
 
-- GitHub Issues: https://github.com/ScriptSmith/hadrian/issues
+- GitHub Issues: https://github.com/hadriangateway/hadrian/issues
 - Documentation: See README.md

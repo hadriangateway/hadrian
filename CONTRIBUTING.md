@@ -8,9 +8,9 @@ Hadrian is in an early alpha stage. We are **not accepting pull requests** at th
 
 ## How You Can Help
 
-- **Report bugs** — Open an [issue](https://github.com/ScriptSmith/hadrian/issues) with reproduction steps and expected vs. actual behavior.
-- **Request features** — Start a [discussion](https://github.com/ScriptSmith/hadrian/discussions) describing your use case and what you'd like to see.
-- **Ask questions** — Use [discussions](https://github.com/ScriptSmith/hadrian/discussions) for questions about setup, configuration, or usage.
+- **Report bugs** — Open an [issue](https://github.com/hadriangateway/hadrian/issues) with reproduction steps and expected vs. actual behavior.
+- **Request features** — Start a [discussion](https://github.com/hadriangateway/hadrian/discussions) describing your use case and what you'd like to see.
+- **Ask questions** — Use [discussions](https://github.com/hadriangateway/hadrian/discussions) for questions about setup, configuration, or usage.
 
 ## When We Open Contributions
 

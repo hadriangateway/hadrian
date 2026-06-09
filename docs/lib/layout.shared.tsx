@@ -13,7 +13,7 @@ export function baseOptions(): BaseLayoutProps {
       },
       {
         text: "GitHub",
-        url: "https://github.com/ScriptSmith/hadrian",
+        url: "https://github.com/hadriangateway/hadrian",
         external: true,
       },
     ],

@@ -526,5 +526,5 @@ View test logs:
 
 {{ if .Values.tests.enabled }}4{{ else }}3{{ end }}. Access the web UI for chat and administration
 
-For more information, visit: https://github.com/ScriptSmith/hadrian
+For more information, visit: https://github.com/hadriangateway/hadrian
 

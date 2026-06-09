@@ -18,7 +18,7 @@
 
 
 > [!WARNING]
-> Hadrian is experimental, alpha, vibe-coded software and is not ready for production use. The API, configuration format, and database schema are subject to breaking changes that will lead to data loss. Hadrian has not undergone a security audit. Do not expose it to untrusted networks or use it to handle sensitive data. We are not accepting pull requests at this time, but [issues](https://github.com/ScriptSmith/hadrian/issues) and [discussions](https://github.com/ScriptSmith/hadrian/discussions) are welcome.
+> Hadrian is experimental, alpha, vibe-coded software and is not ready for production use. The API, configuration format, and database schema are subject to breaking changes that will lead to data loss. Hadrian has not undergone a security audit. Do not expose it to untrusted networks or use it to handle sensitive data. We are not accepting pull requests at this time, but [issues](https://github.com/hadriangateway/hadrian/issues) and [discussions](https://github.com/hadriangateway/hadrian/discussions) are welcome.
 
 ## Why Hadrian?
 
@@ -33,7 +33,7 @@
 
 See the [Getting Started](https://hadriangateway.com/docs/getting-started) guide for more details. Otherwise:
 
-Download the latest binary from [GitHub Releases](https://github.com/ScriptSmith/hadrian/releases/latest) and run it:
+Download the latest binary from [GitHub Releases](https://github.com/hadriangateway/hadrian/releases/latest) and run it:
 
 ```bash
 ./hadrian
@@ -44,7 +44,7 @@ Or use Docker:
 ```bash
 docker run -p 8080:8080 \
   -v hadrian-data:/app/data \
-  ghcr.io/scriptsmith/hadrian
+  ghcr.io/hadriangateway/hadrian
 ```
 
 To customize the configuration, create a `hadrian.toml` and mount it:
@@ -74,13 +74,13 @@ EOF
 docker run -p 8080:8080 \
   -v ./hadrian.toml:/app/config/hadrian.toml:ro \
   -v hadrian-data:/app/data \
-  ghcr.io/scriptsmith/hadrian
+  ghcr.io/hadriangateway/hadrian
 ```
 
 Or build from source ([just](https://just.systems) required):
 
 ```bash
-git clone https://github.com/ScriptSmith/hadrian.git
+git clone https://github.com/hadriangateway/hadrian.git
 cd hadrian && just init && just build
 ./target/release/hadrian
 ```

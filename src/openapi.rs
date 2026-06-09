@@ -339,7 +339,7 @@ requests_per_minute = 120
 - **Use streaming for long responses**: Streaming responses don't hold connections during generation
 - **Batch requests when possible**: Combine multiple small requests into larger batches
 "#,
-        license(name = "Apache-2.0 OR MIT", url = "https://github.com/ScriptSmith/hadrian/blob/main/LICENSE-APACHE"),
+        license(name = "Apache-2.0 OR MIT", url = "https://github.com/hadriangateway/hadrian/blob/main/LICENSE-APACHE"),
     ),
     servers(
         (url = "/", description = "Default server")

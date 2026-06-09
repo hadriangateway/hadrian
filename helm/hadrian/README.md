@@ -1,11 +1,11 @@
 # Hadrian AI Gateway Helm Chart
 
-A Helm chart for deploying [Hadrian AI Gateway](https://github.com/ScriptSmith/hadrian) on Kubernetes.
+A Helm chart for deploying [Hadrian AI Gateway](https://github.com/hadriangateway/hadrian) on Kubernetes.
 
 ## TL;DR
 
 ```bash
-git clone https://github.com/ScriptSmith/hadrian.git
+git clone https://github.com/hadriangateway/hadrian.git
 cd gateway/helm/hadrian
 helm dependency update
 helm install my-gateway .
@@ -13,7 +13,7 @@ helm install my-gateway .
 
 ## Introduction
 
-This chart deploys [Hadrian AI Gateway](https://github.com/ScriptSmith/hadrian) on a Kubernetes cluster using the Helm package manager.
+This chart deploys [Hadrian AI Gateway](https://github.com/hadriangateway/hadrian) on a Kubernetes cluster using the Helm package manager.
 
 Hadrian is an open-source, OpenAI-compatible API gateway for routing requests to multiple LLM providers. It provides:
 
@@ -44,7 +44,7 @@ Hadrian is an open-source, OpenAI-compatible API gateway for routing requests to
 
 ```bash
 # Clone the repository
-git clone https://github.com/ScriptSmith/hadrian.git
+git clone https://github.com/hadriangateway/hadrian.git
 cd gateway/helm/hadrian
 
 # Update dependencies
@@ -87,7 +87,7 @@ The following sections describe key configuration areas. See the [Parameters](#p
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Container image repository | `ghcr.io/scriptsmith/hadrian` |
+| `image.repository` | Container image repository | `ghcr.io/hadriangateway/hadrian` |
 | `image.tag` | Image tag (defaults to Chart appVersion) | `""` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `imagePullSecrets` | Image pull secrets for private registries | `[]` |
@@ -453,7 +453,7 @@ gateway:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Container image repository | `ghcr.io/scriptsmith/hadrian` |
+| `image.repository` | Container image repository | `ghcr.io/hadriangateway/hadrian` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `image.tag` | Image tag (defaults to appVersion) | `""` |
 | `imagePullSecrets` | Image pull secrets | `[]` |
@@ -917,4 +917,4 @@ kubectl logs -l app.kubernetes.io/name=hadrian --all-containers
 
 ## License
 
-This project is dual-licensed under [Apache 2.0](https://github.com/ScriptSmith/hadrian/blob/main/LICENSE-APACHE) and [MIT](https://github.com/ScriptSmith/hadrian/blob/main/LICENSE-MIT). Choose whichever you prefer.
+This project is dual-licensed under [Apache 2.0](https://github.com/hadriangateway/hadrian/blob/main/LICENSE-APACHE) and [MIT](https://github.com/hadriangateway/hadrian/blob/main/LICENSE-MIT). Choose whichever you prefer.

@@ -1158,7 +1158,7 @@ const wikimediaRateLimiter = new WikimediaRateLimiter();
  * Required by Wikimedia Foundation policy.
  * @see https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
  */
-const WIKIMEDIA_USER_AGENT = "Hadrian-Gateway/1.0 (https://github.com/ScriptSmith/hadrian)";
+const WIKIMEDIA_USER_AGENT = "Hadrian-Gateway/1.0 (https://github.com/hadriangateway/hadrian)";
 
 /** Wikipedia content license information */
 const WIKIPEDIA_LICENSE = {

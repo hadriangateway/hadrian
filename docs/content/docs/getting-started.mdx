@@ -16,8 +16,8 @@ Choose your installation method, platform, and feature profile:
 <Callout type="warn">
   `cargo install` builds the **headless** profile, which includes all backend features but does not
   embed the web UI, documentation site, or model catalog. For the full experience with embedded
-  assets, use a [pre-built binary](https://github.com/ScriptSmith/hadrian/releases) or [build from
-  source](#building-from-source).
+  assets, use a [pre-built binary](https://github.com/hadriangateway/hadrian/releases) or [build
+  from source](#building-from-source).
 </Callout>
 
 The gateway starts at `http://localhost:8080` with the chat UI (when embedded assets are included). No database required for basic use.
@@ -108,7 +108,7 @@ open http://localhost:8080/api/docs
 Build Hadrian with all features and embedded assets:
 
 ```bash
-git clone https://github.com/ScriptSmith/hadrian.git
+git clone https://github.com/hadriangateway/hadrian.git
 cd hadrian
 
 # Build frontend assets

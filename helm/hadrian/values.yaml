@@ -6,7 +6,7 @@ replicaCount: 1
 
 image:
   # -- Container image repository
-  repository: ghcr.io/scriptsmith/hadrian
+  repository: ghcr.io/hadriangateway/hadrian
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Overrides the image tag (default: Chart appVersion)
@@ -1608,7 +1608,7 @@ prometheusRule:
     # -- Enable default alerting rules
     enabled: true
     # -- Base URL for runbook links (alerts include runbook_url annotation)
-    runbookUrl: "https://github.com/ScriptSmith/hadrian/blob/main/docs/runbooks"
+    runbookUrl: "https://github.com/hadriangateway/hadrian/blob/main/docs/runbooks"
     # -- Critical alerts (immediate action required)
     critical:
       # High HTTP error rate (5xx responses)

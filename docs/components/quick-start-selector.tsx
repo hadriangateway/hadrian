@@ -186,7 +186,7 @@ function getInstallCommand(method: Method, os: OS, profile: Profile, libc: Libc)
       "docker run -p 8080:8080 \\",
       "  -v ./hadrian.toml:/app/config/hadrian.toml:ro \\",
       "  -v hadrian-data:/app/data \\",
-      "  ghcr.io/scriptsmith/hadrian",
+      "  ghcr.io/hadriangateway/hadrian",
     ].join("\n");
   }
   if (method === "cargo") {
@@ -194,7 +194,7 @@ function getInstallCommand(method: Method, os: OS, profile: Profile, libc: Libc)
   }
   if (method === "helm") {
     return [
-      "git clone https://github.com/ScriptSmith/hadrian.git",
+      "git clone https://github.com/hadriangateway/hadrian.git",
       "cd gateway/helm/hadrian",
       "helm dependency update",
       "helm install my-gateway . -n hadrian --create-namespace",
@@ -203,7 +203,7 @@ function getInstallCommand(method: Method, os: OS, profile: Profile, libc: Libc)
   const ext = os === "windows" ? "zip" : "tar.gz";
   const target = getTarget(os, libc);
   const filename = `hadrian-${target}-${profile}.${ext}`;
-  const url = `https://github.com/ScriptSmith/hadrian/releases/latest/download/${filename}`;
+  const url = `https://github.com/hadriangateway/hadrian/releases/latest/download/${filename}`;
   if (os === "windows") {
     return [`curl -LO \\`, `  ${url}`, `tar -xf ${filename}`, `.\\hadrian.exe`].join("\n");
   }
@@ -213,13 +213,13 @@ function getInstallCommand(method: Method, os: OS, profile: Profile, libc: Libc)
 function getDownloadUrl(os: OS, profile: Profile, libc: Libc): string {
   const ext = os === "windows" ? "zip" : "tar.gz";
   const target = getTarget(os, libc);
-  return `https://github.com/ScriptSmith/hadrian/releases/latest/download/hadrian-${target}-${profile}.${ext}`;
+  return `https://github.com/hadriangateway/hadrian/releases/latest/download/hadrian-${target}-${profile}.${ext}`;
 }
 
 const dockerSimpleCommand = [
   "docker run -p 8080:8080 \\",
   "  -v hadrian-data:/app/data \\",
-  "  ghcr.io/scriptsmith/hadrian",
+  "  ghcr.io/hadriangateway/hadrian",
 ].join("\n");
 
 const dockerConfigCommand = [
@@ -242,7 +242,7 @@ const dockerConfigCommand = [
   "docker run -p 8080:8080 \\",
   "  -v ./hadrian.toml:/app/config/hadrian.toml:ro \\",
   "  -v hadrian-data:/app/data \\",
-  "  ghcr.io/scriptsmith/hadrian",
+  "  ghcr.io/hadriangateway/hadrian",
 ].join("\n");
 
 function CommandBlock({ command, label }: { command: string; label?: string }) {

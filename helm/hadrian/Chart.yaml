@@ -9,9 +9,9 @@ version: 0.1.0
 # Application version - matches the gateway release
 appVersion: "0.1.0"
 
-home: https://github.com/ScriptSmith/hadrian
+home: https://github.com/hadriangateway/hadrian
 sources:
-  - https://github.com/ScriptSmith/hadrian
+  - https://github.com/hadriangateway/hadrian
 
 maintainers:
   - name: Hadrian Team

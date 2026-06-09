@@ -434,7 +434,7 @@ export default function HomePage() {
                 Documentation
               </Link>
               <a
-                href="https://github.com/ScriptSmith/hadrian"
+                href="https://github.com/hadriangateway/hadrian"
                 className="inline-flex items-center gap-2 rounded-lg border border-fd-border bg-fd-background px-6 py-3 font-medium transition-colors hover:bg-fd-muted"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -532,7 +532,7 @@ export default function HomePage() {
               Deployment Guide
             </Link>
             <a
-              href="https://github.com/ScriptSmith/hadrian"
+              href="https://github.com/hadriangateway/hadrian"
               className="inline-flex items-center gap-2 rounded-lg border border-fd-border bg-fd-background px-6 py-3 font-medium transition-colors hover:bg-fd-muted"
               target="_blank"
               rel="noopener noreferrer"
@@ -554,7 +554,7 @@ export default function HomePage() {
                 Documentation
               </Link>
               <a
-                href="https://github.com/ScriptSmith/hadrian"
+                href="https://github.com/hadriangateway/hadrian"
                 className="hover:text-fd-foreground"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -562,7 +562,7 @@ export default function HomePage() {
                 GitHub
               </a>
               <a
-                href="https://github.com/ScriptSmith/hadrian/issues"
+                href="https://github.com/hadriangateway/hadrian/issues"
                 className="hover:text-fd-foreground"
                 target="_blank"
                 rel="noopener noreferrer"
