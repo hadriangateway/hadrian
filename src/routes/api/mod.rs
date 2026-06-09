@@ -173,6 +173,8 @@ fn reasoning_effort_to_string(effort: &api_types::ReasoningEffort) -> &'static s
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::Max => "max",
     }
 }
 
@@ -187,6 +189,8 @@ fn responses_reasoning_effort_to_string(
         ResponsesReasoningEffort::Low => "low",
         ResponsesReasoningEffort::Medium => "medium",
         ResponsesReasoningEffort::High => "high",
+        ResponsesReasoningEffort::XHigh => "xhigh",
+        ResponsesReasoningEffort::Max => "max",
     }
 }
 

@@ -43,6 +43,12 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    /// Between `High` and `Max` (Claude Opus 4.7+ / GPT-5.x). Providers that
+    /// don't support it clamp down to `High`.
+    XHigh,
+    /// Maximum effort (Claude Opus-tier). Providers that don't support it clamp
+    /// down to `High`.
+    Max,
 }
 
 /// Reasoning summary format

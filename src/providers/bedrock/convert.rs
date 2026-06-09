@@ -935,6 +935,7 @@ pub(super) fn convert_bedrock_to_responses_response(
                 role: "assistant".to_string(),
                 content: message_content,
                 status: Some(OutputMessageStatus::Completed),
+                phase: None,
             }),
         );
     }
@@ -1046,7 +1047,8 @@ pub fn convert_chat_completion_reasoning_to_bedrock_claude(
             let anthropic_effort = match effort {
                 ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
                 ReasoningEffort::Medium => "medium",
-                ReasoningEffort::High => "high",
+                // Bedrock has no xhigh/max concept; clamp down to high.
+                ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => "high",
                 ReasoningEffort::None => unreachable!(),
             };
             let mut config = serde_json::json!({
@@ -1060,10 +1062,12 @@ pub fn convert_chat_completion_reasoning_to_bedrock_claude(
         }
 
         let reasoning_config = match effort {
-            ReasoningEffort::High => serde_json::json!({
-                "type": "enabled",
-                "budget_tokens": 32000
-            }),
+            ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
+                serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": 32000
+                })
+            }
             ReasoningEffort::Medium => serde_json::json!({
                 "type": "enabled",
                 "budget_tokens": 16000
@@ -1110,10 +1114,12 @@ pub fn convert_chat_completion_reasoning_to_bedrock_nova(
 
     if let Some(effort) = reasoning.effort {
         let reasoning_config = match effort {
-            ReasoningEffort::High => serde_json::json!({
-                "type": "enabled",
-                "maxReasoningEffort": "high"
-            }),
+            ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
+                serde_json::json!({
+                    "type": "enabled",
+                    "maxReasoningEffort": "high"
+                })
+            }
             ReasoningEffort::Medium => serde_json::json!({
                 "type": "enabled",
                 "maxReasoningEffort": "medium"
@@ -1201,7 +1207,10 @@ pub fn convert_responses_reasoning_to_bedrock_claude(
                     "low"
                 }
                 Some(ResponsesReasoningEffort::Medium) | None => "medium",
-                Some(ResponsesReasoningEffort::High) => "high",
+                // Bedrock has no xhigh/max concept; clamp down to high.
+                Some(ResponsesReasoningEffort::High)
+                | Some(ResponsesReasoningEffort::XHigh)
+                | Some(ResponsesReasoningEffort::Max) => "high",
             };
             let mut config = serde_json::json!({
                 "reasoning_config": { "type": "adaptive" },
@@ -1218,7 +1227,9 @@ pub fn convert_responses_reasoning_to_bedrock_claude(
             max as u32
         } else {
             match reasoning.effort {
-                Some(ResponsesReasoningEffort::High) => 32000,
+                Some(ResponsesReasoningEffort::High)
+                | Some(ResponsesReasoningEffort::XHigh)
+                | Some(ResponsesReasoningEffort::Max) => 32000,
                 Some(ResponsesReasoningEffort::Medium) => 16000,
                 Some(ResponsesReasoningEffort::Low) => 8000,
                 Some(ResponsesReasoningEffort::Minimal) => 2048,
@@ -1266,7 +1277,9 @@ pub fn convert_responses_reasoning_to_bedrock_nova(
     // If enabled or effort is specified
     if reasoning.enabled == Some(true) || reasoning.effort.is_some() {
         let reasoning_config = match reasoning.effort {
-            Some(ResponsesReasoningEffort::High) => serde_json::json!({
+            Some(ResponsesReasoningEffort::High)
+            | Some(ResponsesReasoningEffort::XHigh)
+            | Some(ResponsesReasoningEffort::Max) => serde_json::json!({
                 "type": "enabled",
                 "maxReasoningEffort": "high"
             }),

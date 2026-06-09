@@ -12,10 +12,11 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use axum::response::Response;
 use convert::{
-    convert_anthropic_to_responses_response, convert_chat_completion_reasoning_config,
-    convert_messages, convert_reasoning_config, convert_response,
-    convert_responses_input_to_messages, convert_responses_tool_choice, convert_responses_tools,
-    convert_stop, convert_tool_choice, convert_tools,
+    adaptive_thinking_config, convert_anthropic_to_responses_response,
+    convert_chat_completion_reasoning_config, convert_messages, convert_reasoning_config,
+    convert_response, convert_responses_input_to_messages, convert_responses_tool_choice,
+    convert_responses_tools, convert_stop, convert_tool_choice, convert_tools,
+    requires_strict_thinking, supports_mid_conversation_system,
 };
 use serde::Deserialize;
 use stream::{AnthropicToOpenAIStream, AnthropicToResponsesStream};
@@ -48,6 +49,11 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// buffer qwen-code adopted for the same Anthropic constraint.
 const THINKING_OUTPUT_MARGIN: u32 = 8000;
 
+/// Floor for `max_tokens` when adaptive thinking is active and the caller didn't
+/// specify a value. The 4096 default is far too low for Opus 4.7/4.8 reasoning
+/// at high effort (128K output ceilings); this gives room without truncating.
+const ADAPTIVE_THINKING_MIN_MAX_TOKENS: u32 = 32_000;
+
 /// Anthropic requires `max_tokens > thinking.budget_tokens`, and the budget is
 /// thinking-only — the visible answer needs headroom on top. `max_tokens` and
 /// the thinking budget are derived independently (the budget from
@@ -66,6 +72,7 @@ const THINKING_OUTPUT_MARGIN: u32 = 8000;
 /// Anthropic validates client-specified extremes itself. Revisit if budgets grow.
 fn max_tokens_with_thinking_headroom(
     max_tokens: u32,
+    defaulted: bool,
     thinking: &Option<types::AnthropicThinkingConfig>,
 ) -> u32 {
     match thinking {
@@ -81,36 +88,127 @@ fn max_tokens_with_thinking_headroom(
             }
             raised
         }
-        // Disabled / Adaptive / None: no fixed budget to reconcile against.
+        // Adaptive thinking has no fixed budget, but the 4096 default is far too
+        // low for Opus 4.7/4.8. When the caller supplied no `max_tokens` (and no
+        // provider default applied), raise to the adaptive floor. An explicit
+        // caller value — even a small one — is left untouched.
+        Some(types::AnthropicThinkingConfig::Adaptive { .. }) if defaulted => {
+            let raised = max_tokens.max(ADAPTIVE_THINKING_MIN_MAX_TOKENS);
+            if raised != max_tokens {
+                tracing::debug!(
+                    original_max_tokens = max_tokens,
+                    adjusted_max_tokens = raised,
+                    "Raised default max_tokens for adaptive thinking"
+                );
+            }
+            raised
+        }
+        // Disabled / Adaptive-with-explicit-max / None: nothing to reconcile.
         _ => max_tokens,
     }
 }
 
-/// Compute the `anthropic-beta` header value based on model and thinking config.
+/// Compute the comma-joined `anthropic-beta` header value for a request.
 ///
-/// When thinking is enabled on models that match an entry in
-/// `interleaved_thinking_models` (substring match), include the
-/// `interleaved-thinking-2025-05-14` beta flag. Some Anthropic models reject
-/// this header, so the allowlist is configurable.
+/// Accumulates every beta the request needs:
+/// - `interleaved-thinking-2025-05-14` when thinking is enabled on a model in
+///   `interleaved_thinking_models` (substring match — configurable because some
+///   models reject it). Opus 4.7/4.8 are deliberately excluded; adaptive
+///   thinking auto-enables interleaved there.
+/// - `task-budgets-2026-03-13` when an `output_config.task_budget` is set.
+///
+/// Mid-conversation system messages need no beta header (Opus 4.8 supports them
+/// directly), so they don't appear here; gating happens at conversion time.
 fn compute_beta_header(
     model: &str,
     thinking: &Option<types::AnthropicThinkingConfig>,
+    output_config: &Option<types::AnthropicOutputConfig>,
     interleaved_thinking_models: &[String],
 ) -> Option<String> {
+    let mut betas: Vec<&str> = Vec::new();
+
     let thinking_enabled = matches!(
         thinking,
         Some(types::AnthropicThinkingConfig::Enabled { .. })
-            | Some(types::AnthropicThinkingConfig::Adaptive)
+            | Some(types::AnthropicThinkingConfig::Adaptive { .. })
     );
     if thinking_enabled
         && interleaved_thinking_models
             .iter()
             .any(|pat| !pat.is_empty() && model.contains(pat.as_str()))
     {
-        Some("interleaved-thinking-2025-05-14".to_string())
-    } else {
-        None
+        betas.push("interleaved-thinking-2025-05-14");
     }
+
+    if matches!(
+        output_config,
+        Some(types::AnthropicOutputConfig {
+            task_budget: Some(_),
+            ..
+        })
+    ) {
+        betas.push("task-budgets-2026-03-13");
+    }
+
+    if betas.is_empty() {
+        None
+    } else {
+        Some(betas.join(","))
+    }
+}
+
+/// Attach a task budget to the output config for strict (Opus 4.7/4.8) models,
+/// and ensure thinking is active so the request is coherent.
+///
+/// Task budgets are unsupported elsewhere, so the field is ignored for other
+/// models. When a budget is attached but the caller supplied no thinking config,
+/// adaptive thinking is synthesized — a task budget describes an agentic loop, so
+/// sending `output_config.task_budget` with no `thinking` field (which the beta
+/// API may reject or silently ignore) would be incoherent. If the caller
+/// explicitly disabled thinking, the budget can't apply, so it is skipped
+/// entirely rather than forwarding a contradictory `thinking: disabled` payload.
+///
+/// `total` is validated to be >= 20,000 at the request layer; the `max(20_000)`
+/// here is a defensive backstop for paths that bypass that validation.
+fn apply_task_budget(
+    thinking: Option<types::AnthropicThinkingConfig>,
+    output_config: Option<types::AnthropicOutputConfig>,
+    task_budget: Option<&crate::api_types::responses::TaskBudgetConfig>,
+    strict: bool,
+) -> (
+    Option<types::AnthropicThinkingConfig>,
+    Option<types::AnthropicOutputConfig>,
+) {
+    let Some(cfg) = task_budget else {
+        return (thinking, output_config);
+    };
+    if !strict {
+        return (thinking, output_config);
+    }
+    // A task budget governs a thinking/agentic loop. If the caller explicitly
+    // disabled thinking, the budget is inapplicable — skip it (and its beta
+    // header) rather than forwarding a contradictory `thinking: disabled` +
+    // `output_config.task_budget`, which Anthropic rejects.
+    if matches!(thinking, Some(types::AnthropicThinkingConfig::Disabled)) {
+        return (thinking, output_config);
+    }
+    let budget = types::AnthropicTaskBudget::Tokens {
+        total: cfg.total.max(20_000),
+    };
+    let output_config = Some(match output_config {
+        Some(mut oc) => {
+            oc.task_budget = Some(budget);
+            oc
+        }
+        None => types::AnthropicOutputConfig {
+            effort: None,
+            task_budget: Some(budget),
+        },
+    });
+    // Only fill the gap when the caller didn't specify thinking. This branch is
+    // strict-only, so summarized display is correct.
+    let thinking = thinking.or_else(|| Some(adaptive_thinking_config(true)));
+    (thinking, output_config)
 }
 
 pub struct AnthropicProvider {
@@ -125,6 +223,9 @@ pub struct AnthropicProvider {
     streaming_buffer: StreamingBufferConfig,
     image_fetch_config: ImageFetchConfig,
     interleaved_thinking_models: Vec<String>,
+    adaptive_thinking_models: Vec<String>,
+    strict_thinking_models: Vec<String>,
+    mid_conversation_system_models: Vec<String>,
 }
 
 impl AnthropicProvider {
@@ -168,6 +269,9 @@ impl AnthropicProvider {
             streaming_buffer: config.streaming_buffer.clone(),
             image_fetch_config,
             interleaved_thinking_models: config.interleaved_thinking_models.clone(),
+            adaptive_thinking_models: config.adaptive_thinking_models.clone(),
+            strict_thinking_models: config.strict_thinking_models.clone(),
+            mid_conversation_system_models: config.mid_conversation_system_models.clone(),
         }
     }
 }
@@ -215,7 +319,11 @@ impl Provider for AnthropicProvider {
         )
         .await;
 
-        let (system, messages) = convert_messages(messages_to_convert);
+        // Mid-conversation system messages are inline only on models that
+        // support them (Opus 4.8); otherwise they fold into the system prompt.
+        let mid_conversation_system =
+            supports_mid_conversation_system(&model, &self.mid_conversation_system_models);
+        let (system, messages) = convert_messages(messages_to_convert, mid_conversation_system);
         let stream = payload.stream;
 
         // Convert tools and tool_choice
@@ -227,17 +335,34 @@ impl Provider for AnthropicProvider {
         };
 
         // Convert reasoning config to thinking config (model-aware for adaptive thinking)
-        let (thinking, output_config) =
-            convert_chat_completion_reasoning_config(payload.reasoning.as_ref(), &model);
+        let (thinking, output_config) = convert_chat_completion_reasoning_config(
+            payload.reasoning.as_ref(),
+            &model,
+            &self.adaptive_thinking_models,
+            &self.strict_thinking_models,
+        );
 
-        // Ensure max_tokens clears the thinking budget (+ reply headroom).
-        let max_tokens = max_tokens_with_thinking_headroom(max_tokens, &thinking);
+        // Ensure max_tokens clears the thinking budget (+ reply headroom), or
+        // raises the adaptive default for Opus 4.7/4.8 when unspecified.
+        let max_tokens_defaulted =
+            payload.max_tokens.is_none() && self.default_max_tokens.is_none();
+        let max_tokens =
+            max_tokens_with_thinking_headroom(max_tokens, max_tokens_defaulted, &thinking);
 
-        // Note: When thinking is enabled, temperature must be 1.0 per Anthropic API requirements
-        let temperature = if thinking.is_some() {
-            None // Anthropic requires temperature=1 when thinking is enabled, so we don't send it
+        // Opus 4.7/4.8 reject `temperature`/`top_p`/`top_k`; other models reject
+        // sampling params only while thinking is enabled.
+        let strict = requires_strict_thinking(&model, &self.strict_thinking_models);
+        let temperature = if strict || thinking.is_some() {
+            None
         } else {
             payload.temperature
+        };
+        // Anthropic rejects `top_p` whenever thinking is active (not only for
+        // strict models), so it follows the same condition as `temperature`.
+        let top_p = if strict || thinking.is_some() {
+            None
+        } else {
+            payload.top_p
         };
 
         // Build metadata if user is provided
@@ -251,7 +376,7 @@ impl Provider for AnthropicProvider {
             max_tokens,
             system,
             temperature,
-            top_p: payload.top_p,
+            top_p,
             top_k: None, // Not supported in chat completions payload
             stop_sequences: convert_stop(payload.stop),
             stream,
@@ -266,6 +391,7 @@ impl Provider for AnthropicProvider {
         let beta_header = compute_beta_header(
             &anthropic_request.model,
             &anthropic_request.thinking,
+            &anthropic_request.output_config,
             &self.interleaved_thinking_models,
         );
         let body = serde_json::to_vec(&anthropic_request).unwrap_or_default();
@@ -356,9 +482,16 @@ impl Provider for AnthropicProvider {
 
         let echo_fields = payload.echo_fields_json();
 
-        // Convert Responses API input to Anthropic messages format
-        let (system, messages) =
-            convert_responses_input_to_messages(payload.input, payload.instructions.clone());
+        // Convert Responses API input to Anthropic messages format. Mid-
+        // conversation system messages are inline only on models that support
+        // them (Opus 4.8); otherwise they fold into the system prompt.
+        let mid_conversation_system =
+            supports_mid_conversation_system(&model, &self.mid_conversation_system_models);
+        let (system, messages) = convert_responses_input_to_messages(
+            payload.input,
+            payload.instructions.clone(),
+            mid_conversation_system,
+        );
 
         // Convert tools and tool_choice
         let tools = convert_responses_tools(payload.tools);
@@ -369,17 +502,44 @@ impl Provider for AnthropicProvider {
         };
 
         // Convert reasoning config to thinking config (model-aware for adaptive thinking)
-        let (thinking, output_config) =
-            convert_reasoning_config(payload.reasoning.as_ref(), &model);
+        let (thinking, output_config) = convert_reasoning_config(
+            payload.reasoning.as_ref(),
+            &model,
+            &self.adaptive_thinking_models,
+            &self.strict_thinking_models,
+        );
 
-        // Ensure max_tokens clears the thinking budget (+ reply headroom).
-        let max_tokens = max_tokens_with_thinking_headroom(max_tokens, &thinking);
+        let strict = requires_strict_thinking(&model, &self.strict_thinking_models);
 
-        // Note: When thinking is enabled, temperature must be 1.0 per Anthropic API requirements
-        let temperature = if thinking.is_some() {
-            None // Anthropic requires temperature=1 when thinking is enabled, so we don't send it
+        // Attach a task budget (Opus 4.7/4.8 only); this also synthesizes adaptive
+        // thinking when a budget is set without a reasoning config.
+        let (thinking, output_config) = apply_task_budget(
+            thinking,
+            output_config,
+            payload.task_budget.as_ref(),
+            strict,
+        );
+
+        // Ensure max_tokens clears the thinking budget (+ reply headroom), or
+        // raises the adaptive default for Opus 4.7/4.8 when unspecified.
+        let max_tokens_defaulted =
+            payload.max_output_tokens.is_none() && self.default_max_tokens.is_none();
+        let max_tokens =
+            max_tokens_with_thinking_headroom(max_tokens, max_tokens_defaulted, &thinking);
+
+        // Opus 4.7/4.8 reject `temperature`/`top_p`/`top_k`; other models reject
+        // sampling params only while thinking is enabled.
+        let temperature = if strict || thinking.is_some() {
+            None
         } else {
             payload.temperature
+        };
+        // Anthropic rejects `top_p` whenever thinking is active (not only for
+        // strict models), so it follows the same condition as `temperature`.
+        let top_p = if strict || thinking.is_some() {
+            None
+        } else {
+            payload.top_p
         };
 
         let stream = payload.stream;
@@ -395,7 +555,7 @@ impl Provider for AnthropicProvider {
             max_tokens,
             system,
             temperature,
-            top_p: payload.top_p,
+            top_p,
             top_k: None,
             stop_sequences: None, // Responses API doesn't have stop sequences
             stream,
@@ -410,6 +570,7 @@ impl Provider for AnthropicProvider {
         let beta_header = compute_beta_header(
             &anthropic_request.model,
             &anthropic_request.thinking,
+            &anthropic_request.output_config,
             &self.interleaved_thinking_models,
         );
         let body = serde_json::to_vec(&anthropic_request).unwrap_or_default();
@@ -570,7 +731,7 @@ mod tests {
     use super::*;
 
     fn enabled() -> Option<types::AnthropicThinkingConfig> {
-        Some(types::AnthropicThinkingConfig::Adaptive)
+        Some(types::AnthropicThinkingConfig::Adaptive { display: None })
     }
 
     fn enabled_budget(budget_tokens: u32) -> Option<types::AnthropicThinkingConfig> {
@@ -582,12 +743,12 @@ mod tests {
         // The logged failure: effort `medium` (budget 16000) with the 4096
         // default would 400. Now it clears the budget plus the reply margin.
         assert_eq!(
-            max_tokens_with_thinking_headroom(DEFAULT_MAX_TOKENS, &enabled_budget(16000)),
+            max_tokens_with_thinking_headroom(DEFAULT_MAX_TOKENS, false, &enabled_budget(16000)),
             16000 + THINKING_OUTPUT_MARGIN,
         );
         // High effort (32000) likewise.
         assert_eq!(
-            max_tokens_with_thinking_headroom(DEFAULT_MAX_TOKENS, &enabled_budget(32000)),
+            max_tokens_with_thinking_headroom(DEFAULT_MAX_TOKENS, false, &enabled_budget(32000)),
             32000 + THINKING_OUTPUT_MARGIN,
         );
     }
@@ -596,7 +757,7 @@ mod tests {
     fn max_tokens_only_ever_raised() {
         // A client-supplied ceiling already above budget + margin is preserved.
         assert_eq!(
-            max_tokens_with_thinking_headroom(50000, &enabled_budget(16000)),
+            max_tokens_with_thinking_headroom(50000, false, &enabled_budget(16000)),
             50000,
         );
     }
@@ -607,36 +768,50 @@ mod tests {
         // satisfy Anthropic's raw `max_tokens > budget_tokens` check) but sits
         // below budget + margin — it must still be raised to clear the margin.
         assert_eq!(
-            max_tokens_with_thinking_headroom(20000, &enabled_budget(16000)),
+            max_tokens_with_thinking_headroom(20000, false, &enabled_budget(16000)),
             16000 + THINKING_OUTPUT_MARGIN,
         );
     }
 
     #[test]
     fn max_tokens_untouched_without_fixed_budget() {
-        // Adaptive, disabled, and absent thinking have no budget to reconcile.
+        // Disabled and absent thinking have no budget to reconcile.
         assert_eq!(
             max_tokens_with_thinking_headroom(
                 4096,
-                &Some(types::AnthropicThinkingConfig::Adaptive)
-            ),
-            4096,
-        );
-        assert_eq!(
-            max_tokens_with_thinking_headroom(
-                4096,
+                false,
                 &Some(types::AnthropicThinkingConfig::Disabled)
             ),
             4096,
         );
-        assert_eq!(max_tokens_with_thinking_headroom(4096, &None), 4096);
+        assert_eq!(max_tokens_with_thinking_headroom(4096, false, &None), 4096);
+    }
+
+    #[test]
+    fn adaptive_max_tokens_floor_only_when_defaulted() {
+        let adaptive = Some(types::AnthropicThinkingConfig::Adaptive { display: None });
+        // A caller-specified max_tokens (defaulted = false) is left untouched.
+        assert_eq!(
+            max_tokens_with_thinking_headroom(4096, false, &adaptive),
+            4096
+        );
+        // An unspecified max_tokens (defaulted = true) is raised to the floor.
+        assert_eq!(
+            max_tokens_with_thinking_headroom(DEFAULT_MAX_TOKENS, true, &adaptive),
+            ADAPTIVE_THINKING_MIN_MAX_TOKENS,
+        );
+        // A default-path value already above the floor is preserved.
+        assert_eq!(
+            max_tokens_with_thinking_headroom(64000, true, &adaptive),
+            64000,
+        );
     }
 
     #[test]
     fn beta_header_set_for_allowed_model() {
         let allow = vec!["opus-4-6".to_string()];
         assert_eq!(
-            compute_beta_header("claude-opus-4-6-20260101", &enabled(), &allow),
+            compute_beta_header("claude-opus-4-6-20260101", &enabled(), &None, &allow),
             Some("interleaved-thinking-2025-05-14".to_string())
         );
     }
@@ -645,7 +820,7 @@ mod tests {
     fn beta_header_skipped_for_unlisted_model() {
         let allow = vec!["opus-4-6".to_string()];
         assert_eq!(
-            compute_beta_header("claude-sonnet-4-5-20250929", &enabled(), &allow),
+            compute_beta_header("claude-sonnet-4-5-20250929", &enabled(), &None, &allow),
             None
         );
     }
@@ -654,7 +829,7 @@ mod tests {
     fn beta_header_skipped_when_thinking_disabled() {
         let allow = vec!["opus-4-6".to_string()];
         assert_eq!(
-            compute_beta_header("claude-opus-4-6-20260101", &None, &allow),
+            compute_beta_header("claude-opus-4-6-20260101", &None, &None, &allow),
             None
         );
     }
@@ -662,7 +837,7 @@ mod tests {
     #[test]
     fn beta_header_disabled_with_empty_allowlist() {
         assert_eq!(
-            compute_beta_header("claude-opus-4-6-20260101", &enabled(), &[]),
+            compute_beta_header("claude-opus-4-6-20260101", &enabled(), &None, &[]),
             None
         );
     }
@@ -671,8 +846,88 @@ mod tests {
     fn beta_header_ignores_empty_pattern() {
         let allow = vec![String::new()];
         assert_eq!(
-            compute_beta_header("claude-opus-4-6", &enabled(), &allow),
+            compute_beta_header("claude-opus-4-6", &enabled(), &None, &allow),
             None
         );
+    }
+
+    #[test]
+    fn beta_header_accumulates_task_budget() {
+        // Opus 4.7/4.8 stay out of the interleaved list (adaptive covers it), and
+        // mid-conversation system needs no beta — only the task budget is added.
+        let oc = Some(types::AnthropicOutputConfig {
+            effort: Some(types::AnthropicEffort::XHigh),
+            task_budget: Some(types::AnthropicTaskBudget::Tokens { total: 50_000 }),
+        });
+        let header = compute_beta_header("claude-opus-4-8", &enabled(), &oc, &[])
+            .expect("expected a beta header");
+        assert_eq!(header, "task-budgets-2026-03-13");
+        assert!(!header.contains("interleaved-thinking-2025-05-14"));
+    }
+
+    #[test]
+    fn apply_task_budget_strict_only_and_clamped() {
+        use crate::api_types::responses::{TaskBudgetConfig, TaskBudgetType};
+        let cfg = TaskBudgetConfig {
+            type_: TaskBudgetType::Tokens,
+            total: 25_000,
+        };
+        // Non-strict model: the budget and thinking are left untouched.
+        let (thinking, oc) = apply_task_budget(None, None, Some(&cfg), false);
+        assert!(thinking.is_none() && oc.is_none());
+
+        // Strict model: budget attached and thinking synthesized.
+        let (thinking, oc) = apply_task_budget(None, None, Some(&cfg), true);
+        assert!(matches!(
+            oc.expect("budget attached").task_budget,
+            Some(types::AnthropicTaskBudget::Tokens { total }) if total == 25_000
+        ));
+        assert!(matches!(
+            thinking,
+            Some(types::AnthropicThinkingConfig::Adaptive {
+                display: Some(types::AnthropicThinkingDisplay::Summarized)
+            })
+        ));
+    }
+
+    #[test]
+    fn apply_task_budget_synthesizes_thinking_when_none() {
+        use crate::api_types::responses::{TaskBudgetConfig, TaskBudgetType};
+        let cfg = TaskBudgetConfig {
+            type_: TaskBudgetType::Tokens,
+            total: 30_000,
+        };
+
+        // No reasoning config (thinking None) -> adaptive thinking synthesized so
+        // the wire payload isn't `output_config.task_budget` with no `thinking`.
+        let (thinking, oc) = apply_task_budget(None, None, Some(&cfg), true);
+        assert!(matches!(
+            thinking,
+            Some(types::AnthropicThinkingConfig::Adaptive { .. })
+        ));
+        assert!(oc.is_some_and(|oc| oc.task_budget.is_some()));
+    }
+
+    #[test]
+    fn apply_task_budget_skipped_when_thinking_disabled() {
+        use crate::api_types::responses::{TaskBudgetConfig, TaskBudgetType};
+        let cfg = TaskBudgetConfig {
+            type_: TaskBudgetType::Tokens,
+            total: 30_000,
+        };
+
+        // An explicit `disabled` is preserved, and the budget is dropped — never a
+        // contradictory `thinking: disabled` + `output_config.task_budget`.
+        let (thinking, oc) = apply_task_budget(
+            Some(types::AnthropicThinkingConfig::Disabled),
+            None,
+            Some(&cfg),
+            true,
+        );
+        assert!(matches!(
+            thinking,
+            Some(types::AnthropicThinkingConfig::Disabled)
+        ));
+        assert!(oc.is_none());
     }
 }

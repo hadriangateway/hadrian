@@ -516,7 +516,10 @@ pub(super) fn convert_reasoning_to_thinking_config(
             }
             ResponsesReasoningEffort::Low => VertexThinkingLevel::Low,
             ResponsesReasoningEffort::Medium => VertexThinkingLevel::Medium,
-            ResponsesReasoningEffort::High => VertexThinkingLevel::High,
+            // Gemini has no xhigh/max level; clamp down to high.
+            ResponsesReasoningEffort::High
+            | ResponsesReasoningEffort::XHigh
+            | ResponsesReasoningEffort::Max => VertexThinkingLevel::High,
         });
 
         Some(VertexThinkingConfig {
@@ -533,7 +536,10 @@ pub(super) fn convert_reasoning_to_thinking_config(
                 ResponsesReasoningEffort::Minimal => 1024,
                 ResponsesReasoningEffort::Low => 4096,
                 ResponsesReasoningEffort::Medium => 8192,
-                ResponsesReasoningEffort::High => -1, // Dynamic budget
+                // xhigh/max map to the same dynamic budget as high.
+                ResponsesReasoningEffort::High
+                | ResponsesReasoningEffort::XHigh
+                | ResponsesReasoningEffort::Max => -1, // Dynamic budget
             })
         });
 
@@ -568,7 +574,10 @@ pub(super) fn convert_chat_completion_reasoning_to_thinking_config(
             ReasoningEffort::None | ReasoningEffort::Minimal => VertexThinkingLevel::Minimal,
             ReasoningEffort::Low => VertexThinkingLevel::Low,
             ReasoningEffort::Medium => VertexThinkingLevel::Medium,
-            ReasoningEffort::High => VertexThinkingLevel::High,
+            // Gemini has no xhigh/max level; clamp down to high.
+            ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
+                VertexThinkingLevel::High
+            }
         };
 
         Some(VertexThinkingConfig {
@@ -583,7 +592,8 @@ pub(super) fn convert_chat_completion_reasoning_to_thinking_config(
             ReasoningEffort::Minimal => 1024,
             ReasoningEffort::Low => 4096,
             ReasoningEffort::Medium => 8192,
-            ReasoningEffort::High => -1, // Dynamic budget
+            // xhigh/max map to the same dynamic budget as high.
+            ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => -1, // Dynamic budget
         };
 
         Some(VertexThinkingConfig {
@@ -1173,6 +1183,7 @@ pub(super) fn convert_vertex_to_responses_response(
                 role: "assistant".to_string(),
                 content: message_content,
                 status: Some(OutputMessageStatus::Completed),
+                phase: None,
             }),
         );
     }
@@ -1568,6 +1579,7 @@ mod responses_api_tests {
                     logprobs: vec![],
                 }],
                 status: Some(OutputMessageStatus::Completed),
+                phase: None,
             }),
         ]));
 

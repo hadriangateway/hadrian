@@ -74,23 +74,61 @@ pub enum AnthropicThinkingConfig {
         budget_tokens: u32,
     },
     Disabled,
-    /// Adaptive thinking — model decides how much to reason (Opus 4.6+)
-    Adaptive,
+    /// Adaptive thinking — model decides how much to reason (Opus 4.6+).
+    ///
+    /// `display` controls whether thinking summaries are returned. On Opus
+    /// 4.7/4.8 the default is omitted (empty thinking text), so we send
+    /// `summarized` for those models to keep surfacing reasoning. The field is
+    /// rejected by models that predate it, so it stays `None` on 4.6.
+    Adaptive {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display: Option<AnthropicThinkingDisplay>,
+    },
 }
 
-/// Anthropic effort level for adaptive thinking
+/// Controls whether adaptive-thinking summaries are returned (Opus 4.7+).
+///
+/// Only `Summarized` is ever emitted — a `None` on the `display` field already
+/// expresses the upstream default of omitting summaries, so there is no need for
+/// an explicit `omitted` value.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnthropicThinkingDisplay {
+    Summarized,
+}
+
+/// Anthropic effort level for adaptive thinking.
+///
+/// `XHigh` is Opus 4.7+ only; `Max` is Opus-tier only (Opus 4.6+). The convert
+/// layer clamps these down for models that don't support them.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AnthropicEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
-/// Output configuration for Anthropic requests (used with adaptive thinking)
+/// Output configuration for Anthropic requests (used with adaptive thinking).
 #[derive(Debug, Serialize)]
 pub struct AnthropicOutputConfig {
-    pub effort: AnthropicEffort,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<AnthropicEffort>,
+    /// Task budget for an agentic loop (Opus 4.7/4.8, beta
+    /// `task-budgets-2026-03-13`). Distinct from `max_tokens`: the model is
+    /// told its budget and self-moderates. Minimum 20,000 tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_budget: Option<AnthropicTaskBudget>,
+}
+
+/// Task budget for an agentic loop. Serializes as
+/// `{"type": "tokens", "total": N}`.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum AnthropicTaskBudget {
+    Tokens { total: u32 },
 }
 
 /// Anthropic tool definition

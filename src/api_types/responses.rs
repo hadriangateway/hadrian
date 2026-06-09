@@ -132,6 +132,12 @@ pub enum ResponsesReasoningEffort {
     Low,
     Minimal,
     None,
+    /// Between `High` and `Max` (Claude Opus 4.7+ / GPT-5.x). Providers that
+    /// don't support it clamp down to `High`.
+    XHigh,
+    /// Maximum effort (Claude Opus-tier). Providers that don't support it clamp
+    /// down to `High`.
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,6 +154,30 @@ pub enum ResponseTextConfigVerbosity {
     High,
     Low,
     Medium,
+}
+
+/// **Hadrian Extension:** task budget for an agentic loop (Claude Opus 4.7/4.8).
+/// Mirrors Anthropic's `output_config.task_budget` shape
+/// (`{"type": "tokens", "total": N}`). The minimum is 20,000 tokens; smaller
+/// values are rejected at request validation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Validate)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct TaskBudgetConfig {
+    /// Budget unit. Only `tokens` is supported.
+    #[serde(rename = "type", default)]
+    pub type_: TaskBudgetType,
+    /// Total token budget for the agentic loop. Minimum 20,000.
+    #[validate(range(min = 20000, message = "task_budget total must be at least 20000"))]
+    #[cfg_attr(feature = "utoipa", schema(minimum = 20000))]
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TaskBudgetType {
+    #[default]
+    Tokens,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -607,6 +637,21 @@ pub struct OutputMessage {
     pub content: Vec<OutputMessageContentItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<OutputMessageStatus>,
+    /// **GPT-5.4+:** marks an assistant item as intermediate `commentary` or the
+    /// `final_answer`. Must be preserved verbatim and replayed on subsequent
+    /// turns — dropping it degrades GPT-5.4 conversation quality. Absent
+    /// (serialized as omitted) for models that don't emit phases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<OutputMessagePhase>,
+}
+
+/// Phase of a GPT-5.4 assistant output item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMessagePhase {
+    Commentary,
+    FinalAnswer,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2720,6 +2765,16 @@ pub struct CreateResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 
+    /// **Hadrian Extension:** Task budget for an agentic loop on adaptive Claude
+    /// models (Opus 4.7/4.8). Maps to Anthropic's `output_config.task_budget`
+    /// (beta `task-budgets-2026-03-13`). The model is told its budget and
+    /// self-moderates — distinct from `max_output_tokens`, an enforced
+    /// per-response ceiling. Minimum 20,000 tokens. Consumed by the Anthropic
+    /// provider; stripped before reaching OpenAI-compatible upstreams.
+    #[validate(nested)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_budget: Option<TaskBudgetConfig>,
+
     /// **Hadrian Extension:** Per-request sovereignty requirements.
     /// Merged with API key requirements (most restrictive wins).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3121,6 +3176,7 @@ impl CreateResponsesPayload {
         self.plugins = None;
         self.sovereignty_requirements = None;
         self.skills = None;
+        self.task_budget = None;
     }
 
     /// Produce a JSON map of echo fields for streaming response.completed events.
@@ -3285,6 +3341,55 @@ impl CreateResponsesPayload {
 #[cfg(test)]
 mod context_management_tests {
     use super::*;
+
+    #[test]
+    fn output_message_phase_round_trips_through_output_item() {
+        // Mirrors the previous_response_id chaining path: a stored output item
+        // (raw Value) is deserialized via the untagged `ResponsesOutputItem`,
+        // then re-serialized as a `ResponsesInputItem` for the continuation.
+        let raw = serde_json::json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "phase": "final_answer"
+        });
+        let item: ResponsesOutputItem = serde_json::from_value(raw).unwrap();
+        let ResponsesOutputItem::Message(msg) = &item else {
+            panic!("expected Message variant");
+        };
+        assert_eq!(msg.phase, Some(OutputMessagePhase::FinalAnswer));
+
+        let reser = serde_json::to_value(ResponsesInputItem::OutputMessage(msg.clone())).unwrap();
+        assert_eq!(reser["phase"], serde_json::json!("final_answer"));
+
+        // A message without a phase omits the field entirely on the wire.
+        let plain = serde_json::json!({
+            "id": "msg_2", "type": "message", "role": "assistant", "content": []
+        });
+        let item: ResponsesOutputItem = serde_json::from_value(plain).unwrap();
+        let ResponsesOutputItem::Message(msg) = &item else {
+            panic!("expected Message variant");
+        };
+        assert_eq!(msg.phase, None);
+        let reser = serde_json::to_value(ResponsesInputItem::OutputMessage(msg.clone())).unwrap();
+        assert!(reser.get("phase").is_none());
+    }
+
+    #[test]
+    fn task_budget_total_below_minimum_is_rejected() {
+        use validator::Validate;
+        let too_small = TaskBudgetConfig {
+            type_: TaskBudgetType::Tokens,
+            total: 5_000,
+        };
+        assert!(too_small.validate().is_err());
+        let ok = TaskBudgetConfig {
+            type_: TaskBudgetType::Tokens,
+            total: 20_000,
+        };
+        assert!(ok.validate().is_ok());
+    }
 
     #[test]
     fn compaction_round_trip_matches_openai_spec() {
