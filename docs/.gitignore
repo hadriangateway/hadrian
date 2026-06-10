@@ -9,6 +9,7 @@
 /content/docs/api/*.mdx
 !/content/docs/api/index.mdx
 !/content/docs/api/authentication.mdx
+!/content/docs/api/responses-extensions.mdx
 
 # test & build
 /coverage

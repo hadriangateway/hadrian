@@ -127,6 +127,11 @@ export interface ResponsesStreamEvent {
   type: string;
   delta?: string;
   text?: string;
+  /**
+   * Cumulative loop usage for Hadrian's `response.usage.updated` events —
+   * top-level, unlike terminal events' `response.usage`.
+   */
+  usage?: ResponsesUsage;
   /** Item ID for tool call events (e.g., image_generation_call, file_search_call) */
   item_id?: string;
   /** Output index for tool call events */

@@ -72,6 +72,23 @@ export const AllDetails: Story = {
   },
 };
 
+/**
+ * Running mid-stream total during a server-tool loop: the whole label
+ * pulses in a slightly brighter color, tooltip reframed as
+ * "running total" / "cost so far".
+ */
+export const Provisional: Story = {
+  args: {
+    usage: {
+      inputTokens: 300,
+      outputTokens: 80,
+      totalTokens: 380,
+      cost: 0.003,
+    },
+    provisional: true,
+  },
+};
+
 export const Compact: Story = {
   args: {
     usage: {

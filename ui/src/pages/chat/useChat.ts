@@ -1070,6 +1070,12 @@ export function useChat({
         // Add tools to request if any are configured
         if (tools.length > 0) {
           requestBody.tools = tools;
+          // Hadrian extension: stream cumulative usage/cost updates at each
+          // server-tool turn boundary so the display ticks during the loop.
+          requestBody.include = [
+            ...((requestBody.include as string[] | undefined) ?? []),
+            "usage.incremental",
+          ];
         }
 
         const response = await fetch("/api/v1/responses", {
@@ -1254,6 +1260,20 @@ export function useChat({
               streamingStore.setReasoningContent(storeKey, reasoningContent);
             } else if (event.type === "response.output_text.done") {
               // Completion signal only — streamed deltas are authoritative.
+            } else if (event.type === "response.usage.updated" && event.usage) {
+              // Hadrian extension: cumulative loop usage at a server-tool
+              // turn boundary. Tick the live display; the terminal
+              // `response.completed` mapping (with timing stats) overwrites
+              // this when the loop finishes.
+              const u = event.usage;
+              streamingStore.updateStreamUsage(storeKey, {
+                inputTokens: u.input_tokens,
+                outputTokens: u.output_tokens,
+                totalTokens: u.total_tokens,
+                cost: u.cost,
+                cachedTokens: u.input_tokens_details?.cached_tokens,
+                reasoningTokens: u.output_tokens_details?.reasoning_tokens,
+              });
             } else if (event.type === "response.output_item.done" && event.item) {
               // Handle file_search_call output items (server-side file search)
               if (event.item.type === "file_search_call" && event.item.results) {

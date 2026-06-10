@@ -937,7 +937,11 @@ const ModelResponseCard = memo(function ModelResponseCard({
             />
           ) : (
             <>
-              {isComplete && response.usage && <UsageDisplay usage={response.usage} />}
+              {/* Usage shows mid-stream too: server-tool loops report
+                  cumulative tokens/cost at each turn boundary. */}
+              {(isComplete || response.isStreaming) && response.usage && (
+                <UsageDisplay usage={response.usage} provisional={!isComplete} />
+              )}
               {isComplete && (
                 <ResponseActions
                   content={response.content}
@@ -1587,6 +1591,7 @@ function areMultiModelResponsePropsEqual(
     if (prevR.error !== nextR.error) return false;
     if (prevR.usage?.totalTokens !== nextR.usage?.totalTokens) return false;
     if (prevR.usage?.reasoningTokens !== nextR.usage?.reasoningTokens) return false;
+    if (prevR.usage?.cost !== nextR.usage?.cost) return false;
     // Feedback flips (rating, "select as best") — these change badges in the
     // header; without a check the user has to scroll/click to see the new
     // state.

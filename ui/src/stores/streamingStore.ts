@@ -727,6 +727,11 @@ interface StreamingActions {
   pushCompletedRound: (instanceId: string, round: CompletedRound) => void;
   /** Attach tool execution data to the last completed round */
   setCompletedRoundToolExecution: (instanceId: string, toolExecution: ToolExecutionRound) => void;
+  /**
+   * Update an instance's running usage mid-stream (cumulative totals from
+   * `response.usage.updated` events at server-tool turn boundaries).
+   */
+  updateStreamUsage: (instanceId: string, usage: MessageUsage) => void;
   /** Mark an instance's stream as complete */
   completeStream: (instanceId: string, usage?: MessageUsage) => void;
   /** Resume streaming for an instance (e.g., between tool-calling rounds) */
@@ -1009,6 +1014,16 @@ export const useStreamingStore = create<StreamingStore>((set) => ({
       rounds[rounds.length - 1] = { ...rounds[rounds.length - 1], toolExecution };
       const newStreams = new Map(state.streams);
       newStreams.set(model, { ...existing, completedRounds: rounds });
+      return { streams: newStreams };
+    }),
+
+  updateStreamUsage: (model, usage) =>
+    set((state) => {
+      const existing = state.streams.get(model);
+      if (!existing) return state;
+
+      const newStreams = new Map(state.streams);
+      newStreams.set(model, { ...existing, usage });
       return { streams: newStreams };
     }),
 

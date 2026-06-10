@@ -391,6 +391,47 @@ export const WithTokenUsage: Story = {
 };
 
 /**
+ * Test: Usage ticks live while streaming — a server-tool loop reports
+ * cumulative tokens/cost at each turn boundary (`response.usage.updated`),
+ * so the display must render before the stream completes.
+ */
+export const StreamingWithUsage: Story = {
+  args: {
+    responses: [
+      {
+        model: "anthropic/claude-3-opus",
+        content: "Searching the web for relevant results...",
+        isStreaming: true,
+        usage: {
+          inputTokens: 300,
+          outputTokens: 80,
+          totalTokens: 380,
+          cost: 0.003,
+        },
+      },
+    ],
+    timestamp: new Date(),
+    groupId: "test-group-streaming-usage",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    // The running totals show while the stream is still open.
+    await expect(canvas.getByText("380")).toBeInTheDocument();
+    const usageDisplay = canvasElement.querySelector('[class*="cursor-help"]');
+    await expect(usageDisplay).toBeInTheDocument();
+    await expect(usageDisplay!.textContent).toContain("$0.0030");
+
+    // The whole provisional label pulses until the terminal figure lands.
+    await expect(usageDisplay!.className).toContain("animate-pulse");
+
+    // Still streaming: completion-only actions stay hidden.
+    const selectBestButton = canvas.queryByText(/select as best/i);
+    await expect(selectBestButton).not.toBeInTheDocument();
+  },
+};
+
+/**
  * Test: Selected best response shows trophy badge and ring highlight
  */
 export const WithSelectedBest: Story = {

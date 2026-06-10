@@ -23893,7 +23893,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Items to include in response"
+            "description": "Items to include in response.\n\n**Hadrian Extension:** also accepts `\"usage.incremental\"`, which emits\ncumulative `response.usage.updated` SSE events at server-tool turn\nboundaries (stripped before forwarding upstream)."
           },
           "input": {
             "type": "object",

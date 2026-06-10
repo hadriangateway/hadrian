@@ -265,6 +265,13 @@ pub enum ResponsesIncludable {
     CodeInterpreterCallOutputs,
     #[serde(rename = "web_search_call.action.sources")]
     WebSearchCallActionSources,
+    /// **Hadrian Extension:** emit cumulative `response.usage.updated` SSE
+    /// events at each server-tool turn boundary while streaming, so clients
+    /// can watch tokens/cost accrue across the agent loop instead of only
+    /// seeing the total on the terminal event. Stripped before the request
+    /// is forwarded upstream.
+    #[serde(rename = "usage.incremental")]
+    UsageIncremental,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2710,7 +2717,11 @@ pub struct CreateResponsesPayload {
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub prompt: Option<ResponsesPrompt>,
 
-    /// Items to include in response
+    /// Items to include in response.
+    ///
+    /// **Hadrian Extension:** also accepts `"usage.incremental"`, which emits
+    /// cumulative `response.usage.updated` SSE events at server-tool turn
+    /// boundaries (stripped before forwarding upstream).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<String>))]
     pub include: Option<Vec<ResponsesIncludable>>,
@@ -3163,6 +3174,9 @@ impl CreateResponsesPayload {
     /// - `sovereignty_requirements` — enforced by gateway middleware.
     /// - `skills` — resolved into `instructions` + sandbox mounts before
     ///   dispatch; the raw refs (incl. inline bundles) must not leak upstream.
+    /// - `include` (`usage.incremental` only) — the Hadrian extension value is
+    ///   consumed by the server-tool loop; upstream providers would reject it.
+    ///   Spec-defined include values pass through untouched.
     ///
     /// All of these are fully consumed in the route handler before dispatch, so
     /// dropping them here is safe. Provider adapters that build their own
@@ -3177,6 +3191,12 @@ impl CreateResponsesPayload {
         self.sovereignty_requirements = None;
         self.skills = None;
         self.task_budget = None;
+        if let Some(include) = self.include.as_mut() {
+            include.retain(|i| *i != ResponsesIncludable::UsageIncremental);
+            if include.is_empty() {
+                self.include = None;
+            }
+        }
     }
 
     /// Produce a JSON map of echo fields for streaming response.completed events.
@@ -3463,6 +3483,7 @@ mod context_management_tests {
             "plugins": [],
             "sovereignty_requirements": {},
             "skills": [{"type": "skill_reference", "skill_id": "00000000-0000-0000-0000-000000000000"}],
+            "include": ["reasoning.encrypted_content", "usage.incremental"],
             "temperature": 0.5
         }))
         .expect("payload parses");
@@ -3478,6 +3499,12 @@ mod context_management_tests {
         assert!(payload.plugins.is_none());
         assert!(payload.sovereignty_requirements.is_none());
         assert!(payload.skills.is_none());
+
+        // Only the Hadrian include value is removed; spec values survive.
+        assert_eq!(
+            payload.include.as_deref(),
+            Some(&[ResponsesIncludable::ReasoningEncryptedContent][..])
+        );
 
         // Non-gateway fields are untouched.
         assert_eq!(payload.model.as_deref(), Some("openrouter/some-model"));
@@ -3497,6 +3524,25 @@ mod context_management_tests {
         ] {
             assert!(body.get(key).is_none(), "{key} should not be serialized");
         }
+    }
+
+    #[test]
+    fn strip_gateway_fields_drops_include_entirely_when_only_hadrian_values() {
+        let mut payload: CreateResponsesPayload = serde_json::from_value(serde_json::json!({
+            "model": "gpt-test",
+            "include": ["usage.incremental"]
+        }))
+        .expect("payload parses");
+        assert_eq!(
+            payload.include.as_deref(),
+            Some(&[ResponsesIncludable::UsageIncremental][..])
+        );
+
+        payload.strip_gateway_fields();
+
+        assert!(payload.include.is_none());
+        let body = serde_json::to_value(&payload).unwrap();
+        assert!(body.get("include").is_none());
     }
 }
 

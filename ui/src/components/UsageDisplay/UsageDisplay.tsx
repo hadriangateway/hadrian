@@ -8,9 +8,15 @@ export interface UsageDisplayProps {
   usage: MessageUsage;
   /** Show compact version without icon */
   compact?: boolean;
+  /**
+   * Running mid-stream total, not the final figure — a server-tool loop is
+   * still adding turns. Pulses the whole label in a slightly brighter color
+   * and reframes the tooltip as a running total.
+   */
+  provisional?: boolean;
 }
 
-export function UsageDisplay({ usage, compact = false }: UsageDisplayProps) {
+export function UsageDisplay({ usage, compact = false, provisional = false }: UsageDisplayProps) {
   const hasTimingStats =
     usage.firstTokenMs !== undefined ||
     usage.totalDurationMs !== undefined ||
@@ -22,7 +28,13 @@ export function UsageDisplay({ usage, compact = false }: UsageDisplayProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-help shrink-0">
+        <div
+          className={`flex items-center gap-1.5 text-xs cursor-help shrink-0 ${
+            // Running total: pulse in a slightly brighter color until the
+            // terminal figure lands.
+            provisional ? "animate-pulse text-foreground/80" : "text-muted-foreground"
+          }`}
+        >
           {!compact && <Coins className="h-3 w-3" />}
           <span>{formatTokens(usage.totalTokens)}</span>
           {usage.cost !== undefined && usage.cost > 0 && (
@@ -35,7 +47,9 @@ export function UsageDisplay({ usage, compact = false }: UsageDisplayProps) {
       </TooltipTrigger>
       <TooltipContent side="bottom" className="text-xs">
         <div className="space-y-1">
-          <div className="font-medium">Token Usage</div>
+          <div className="font-medium">
+            {provisional ? "Token Usage — running total" : "Token Usage"}
+          </div>
           <div>Input: {formatTokens(usage.inputTokens)}</div>
           <div>Output: {formatTokens(usage.outputTokens)}</div>
           {usage.cachedTokens !== undefined && usage.cachedTokens > 0 && (
@@ -48,7 +62,12 @@ export function UsageDisplay({ usage, compact = false }: UsageDisplayProps) {
           )}
           {usage.cost !== undefined && usage.cost > 0 && (
             <div className="pt-1 border-t border-border/50 font-medium">
-              Cost: {formatCost(usage.cost)}
+              {provisional ? "Cost so far" : "Cost"}: {formatCost(usage.cost)}
+            </div>
+          )}
+          {provisional && (
+            <div className="pt-1 border-t border-border/50 text-muted-foreground">
+              Updates as the response runs; final totals on completion.
             </div>
           )}
 

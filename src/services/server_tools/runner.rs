@@ -14,8 +14,8 @@ use super::{DetectedToolCall, ProviderCallback, ServerExecutedTool, ToolCallResu
 use crate::{
     api_types::responses::{
         CreateResponsesPayload, EasyInputMessage, EasyInputMessageContent, EasyInputMessageRole,
-        OutputItemFunctionCall, OutputMessage, ResponsesInput, ResponsesInputItem,
-        ResponsesReasoning, ResponsesUsage,
+        OutputItemFunctionCall, OutputMessage, ResponsesIncludable, ResponsesInput,
+        ResponsesInputItem, ResponsesReasoning, ResponsesUsage,
     },
     observability::metrics::record_server_tool_iteration,
     streaming::SseBuffer,
@@ -146,6 +146,12 @@ impl ToolLoopRunner {
         let has_callback = self.provider_callback.is_some();
         let provider_callback = self.provider_callback;
         let original_payload = self.original_payload;
+        // **Hadrian Extension:** `include: ["usage.incremental"]` opts into
+        // cumulative `response.usage.updated` events at turn boundaries.
+        let emit_usage_updates = original_payload
+            .include
+            .as_deref()
+            .is_some_and(|i| i.contains(&ResponsesIncludable::UsageIncremental));
         let rewrite_output = self.rewrite_output;
         let response_id = self.response_id;
         let mcp_tool_echo = self.mcp_tool_echo;
@@ -305,12 +311,33 @@ impl ToolLoopRunner {
                                             if let Some(r) = rewriter.as_mut() {
                                                 r.accumulate_suppressed_usage(&event);
                                             }
-                                            // Keep the final terminal so an
-                                            // error/abort path below can re-emit
-                                            // it through the rewriter rather than
-                                            // forwarding raw provider bytes.
                                             if is_terminal_lifecycle(&event) {
-                                                suppressed_terminal = Some(event.clone());
+                                                // Keep the final terminal so an
+                                                // error/abort path below can
+                                                // re-emit it through the rewriter
+                                                // rather than forwarding raw
+                                                // provider bytes. Its own usage
+                                                // was just folded into the
+                                                // carried total, which that path
+                                                // folds back in — strip it so
+                                                // the turn isn't counted twice.
+                                                suppressed_terminal =
+                                                    Some(strip_response_usage(event.clone()));
+                                                // Surface the running loop total
+                                                // at the turn boundary when the
+                                                // caller opted in via `include:
+                                                // ["usage.incremental"]`.
+                                                if emit_usage_updates
+                                                    && let Some(update) = rewriter
+                                                        .as_ref()
+                                                        .and_then(|r| r.carried_usage.as_ref())
+                                                        .map(format_usage_updated_event)
+                                                    && let Some(out) =
+                                                        finalize_event(&mut rewriter, update)
+                                                    && tx.send(Ok(out)).await.is_err()
+                                                {
+                                                    return; // client disconnected
+                                                }
                                             }
                                             continue;
                                         }
@@ -1186,6 +1213,68 @@ fn is_terminal_lifecycle(event: &[u8]) -> bool {
     )
 }
 
+/// Serialize the cumulative tool-loop usage as a `response.usage.updated`
+/// SSE event — a **Hadrian Extension** emitted at each suppressed turn
+/// boundary when the caller opted in via `include: ["usage.incremental"]`,
+/// so streaming clients can watch tokens/cost accrue across the loop
+/// instead of only seeing the total on the terminal event. The placeholder
+/// `sequence_number` and the `event:` framing line are stamped by the
+/// [`StreamRewriter`].
+fn format_usage_updated_event(usage: &ResponsesUsage) -> Bytes {
+    let payload = serde_json::json!({
+        "type": "response.usage.updated",
+        "sequence_number": 0,
+        "usage": usage,
+    });
+    let s = serde_json::to_string(&payload).unwrap_or_default();
+    Bytes::from(format!("data: {s}\n\n"))
+}
+
+/// Remove `response.usage` from a suppressed terminal event before it is
+/// stashed for the failure/abort re-emission path. The turn's usage has
+/// already been folded into the carried total by
+/// [`StreamRewriter::accumulate_suppressed_usage`]; the re-emission path
+/// folds the carried total into the event's own usage, so keeping the
+/// event's copy would count the turn twice. Events without a parseable
+/// `response.usage` pass through unchanged.
+fn strip_response_usage(event: Bytes) -> Bytes {
+    let Ok(text) = std::str::from_utf8(&event) else {
+        return event;
+    };
+    let mut prefix_lines: Vec<&str> = Vec::new();
+    let mut data_parts: Vec<&str> = Vec::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        match line.strip_prefix("data:") {
+            Some(rest) => data_parts.push(rest.strip_prefix(' ').unwrap_or(rest)),
+            None => prefix_lines.push(line),
+        }
+    }
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&data_parts.join("\n")) else {
+        return event;
+    };
+    let stripped = json
+        .get_mut("response")
+        .and_then(|r| r.as_object_mut())
+        .and_then(|r| r.remove("usage"));
+    if stripped.is_none() {
+        return event;
+    }
+    let body = serde_json::to_string(&json).unwrap_or_default();
+    let mut out = String::with_capacity(body.len() + 32);
+    for line in prefix_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("data: ");
+    out.push_str(&body);
+    out.push_str("\n\n");
+    Bytes::from(out)
+}
+
 /// Emit the final terminal when the loop ends without a fresh provider
 /// turn — a failure/abort path, or a tool-requested clean stop (the MCP
 /// approval gate's `stop_loop`). In the stop case the suppressed terminal
@@ -1776,15 +1865,11 @@ mod rewriter_tests {
     }
 }
 
-/// End-to-end loop tests for `ToolCallResult::stop_loop` — the signal the
-/// MCP approval gate uses to end the turn at the `mcp_approval_request`
-/// instead of looping the model into a trailing assistant message.
+/// Shared end-to-end loop test harness: a fake tool triggered by a
+/// `faketool` function call, canned provider turns, and stream collection.
 #[cfg(test)]
-mod stop_loop_tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
+mod loop_test_support {
+    use std::sync::{Arc, atomic::AtomicUsize};
 
     use async_trait::async_trait;
     use axum::{body::Body, response::Response};
@@ -1800,8 +1885,8 @@ mod stop_loop_tests {
     /// synthesized output item (standing in for the gate's
     /// `mcp_approval_request`) and resolves with a result whose `stop_loop`
     /// flag is configurable.
-    struct FakeTool {
-        stop: bool,
+    pub(super) struct FakeTool {
+        pub(super) stop: bool,
     }
 
     #[async_trait]
@@ -1871,45 +1956,90 @@ mod stop_loop_tests {
     }
 
     /// A provider turn that emits one `faketool` call then completes.
-    fn first_turn_body() -> Response<Body> {
-        let sse = concat!(
-            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{}}\n\n",
-            "data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{}}\n\n",
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"faketool\",\"call_id\":\"c1\",\"id\":\"fc_1\",\"arguments\":\"{}\"}}\n\n",
-            "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{}}\n\n",
-            "data: [DONE]\n\n",
+    /// `usage` (if given) rides on the terminal `response.completed`.
+    pub(super) fn first_turn_body(usage: Option<serde_json::Value>) -> Response<Body> {
+        let terminal = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 2,
+            "response": usage.map_or(serde_json::json!({}), |u| serde_json::json!({"usage": u})),
+        });
+        let sse = format!(
+            concat!(
+                "data: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{}}}}\n\n",
+                "data: {{\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{{}}}}\n\n",
+                "data: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"name\":\"faketool\",\"call_id\":\"c1\",\"id\":\"fc_1\",\"arguments\":\"{{}}\"}}}}\n\n",
+                "data: {terminal}\n\n",
+                "data: [DONE]\n\n",
+            ),
+            terminal = terminal
         );
         Response::new(Body::from(sse))
     }
 
     /// Continuation callback that counts invocations and returns a trivial
     /// final turn (a message, no tool call) so a non-stop loop terminates.
-    fn counting_callback(counter: Arc<AtomicUsize>) -> ProviderCallback {
+    /// `usage` (if given) rides on the final turn's `response.completed`.
+    pub(super) fn counting_callback(
+        counter: Arc<AtomicUsize>,
+        usage: Option<serde_json::Value>,
+    ) -> ProviderCallback {
         Arc::new(move |_payload| {
             let counter = counter.clone();
+            let usage = usage.clone();
             Box::pin(async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-                let sse = concat!(
-                    "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{}}\n\n",
-                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\",\"annotations\":[]}]}}\n\n",
-                    "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{}}\n\n",
-                    "data: [DONE]\n\n",
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let terminal = serde_json::json!({
+                    "type": "response.completed",
+                    "sequence_number": 1,
+                    "response": usage
+                        .map_or(serde_json::json!({}), |u| serde_json::json!({"usage": u})),
+                });
+                let sse = format!(
+                    concat!(
+                        "data: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{}}}}\n\n",
+                        "data: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{{\"type\":\"output_text\",\"text\":\"done\",\"annotations\":[]}}]}}}}\n\n",
+                        "data: {terminal}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    terminal = terminal
                 );
                 Ok(Response::new(Body::from(sse)))
             })
         })
     }
 
-    async fn collect(resp: Response<Body>) -> String {
+    pub(super) async fn collect(resp: Response<Body>) -> String {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    fn payload() -> CreateResponsesPayload {
+    pub(super) fn payload() -> CreateResponsesPayload {
         serde_json::from_value(serde_json::json!({"model":"m","stream":true})).unwrap()
     }
+
+    /// Parse every `data:` payload (excluding `[DONE]`) in stream order.
+    pub(super) fn events_of(out: &str) -> Vec<serde_json::Value> {
+        out.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter(|d| *d != "[DONE]")
+            .map(|d| serde_json::from_str(d).unwrap())
+            .collect()
+    }
+}
+
+/// End-to-end loop tests for `ToolCallResult::stop_loop` — the signal the
+/// MCP approval gate uses to end the turn at the `mcp_approval_request`
+/// instead of looping the model into a trailing assistant message.
+#[cfg(test)]
+mod stop_loop_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::{loop_test_support::*, *};
 
     #[tokio::test]
     async fn stop_loop_ends_turn_without_continuation() {
@@ -1919,10 +2049,10 @@ mod stop_loop_tests {
         // request and broke the resume turn).
         let counter = Arc::new(AtomicUsize::new(0));
         let runner = ToolLoopRunner::new(payload(), 8)
-            .with_provider_callback(counting_callback(counter.clone()))
+            .with_provider_callback(counting_callback(counter.clone(), None))
             .rewrite_output(true)
             .register(Arc::new(FakeTool { stop: true }));
-        let out = collect(runner.wrap_streaming(first_turn_body())).await;
+        let out = collect(runner.wrap_streaming(first_turn_body(None))).await;
 
         assert_eq!(
             counter.load(Ordering::SeqCst),
@@ -1954,15 +2084,197 @@ mod stop_loop_tests {
         // doing, not a dead callback or a tool that never engaged.
         let counter = Arc::new(AtomicUsize::new(0));
         let runner = ToolLoopRunner::new(payload(), 8)
-            .with_provider_callback(counting_callback(counter.clone()))
+            .with_provider_callback(counting_callback(counter.clone(), None))
             .rewrite_output(true)
             .register(Arc::new(FakeTool { stop: false }));
-        let _ = collect(runner.wrap_streaming(first_turn_body())).await;
+        let _ = collect(runner.wrap_streaming(first_turn_body(None))).await;
 
         assert_eq!(
             counter.load(Ordering::SeqCst),
             1,
             "a normal tool result must drive exactly one continuation"
         );
+    }
+}
+
+/// End-to-end tests for the `include: ["usage.incremental"]` extension —
+/// cumulative `response.usage.updated` events at tool-loop turn boundaries.
+#[cfg(test)]
+mod usage_update_tests {
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    use super::{loop_test_support::*, *};
+
+    fn turn1_usage() -> serde_json::Value {
+        serde_json::json!({
+            "input_tokens": 100, "output_tokens": 50, "total_tokens": 150,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 5},
+            "cost": 0.001
+        })
+    }
+
+    fn turn2_usage() -> serde_json::Value {
+        serde_json::json!({
+            "input_tokens": 200, "output_tokens": 30, "total_tokens": 230,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 10},
+            "cost": 0.002
+        })
+    }
+
+    fn payload_with_include() -> CreateResponsesPayload {
+        serde_json::from_value(serde_json::json!({
+            "model": "m", "stream": true, "include": ["usage.incremental"]
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn emits_cumulative_usage_update_at_turn_boundary() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let runner = ToolLoopRunner::new(payload_with_include(), 8)
+            .with_provider_callback(counting_callback(counter, Some(turn2_usage())))
+            .rewrite_output(true)
+            .register(Arc::new(FakeTool { stop: false }));
+        let out = collect(runner.wrap_streaming(first_turn_body(Some(turn1_usage())))).await;
+        let events = events_of(&out);
+
+        // Exactly one update — at the turn-1 boundary — carrying turn 1's
+        // usage as the cumulative total so far, with proper SSE framing.
+        let updates: Vec<_> = events
+            .iter()
+            .filter(|e| e["type"] == "response.usage.updated")
+            .collect();
+        assert_eq!(updates.len(), 1, "one suppressed turn, one update:\n{out}");
+        assert_eq!(updates[0]["usage"]["total_tokens"], 150);
+        assert!((updates[0]["usage"]["cost"].as_f64().unwrap() - 0.001).abs() < 1e-9);
+        assert!(out.contains("event: response.usage.updated\n"));
+
+        // The terminal still reports the whole loop's fold.
+        let terminal = events
+            .iter()
+            .find(|e| e["type"] == "response.completed")
+            .expect("terminal event");
+        let usage = &terminal["response"]["usage"];
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 80);
+        assert_eq!(usage["total_tokens"], 380);
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 15);
+        assert!((usage["cost"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+
+        // One monotonic sequence-number space across the merged stream,
+        // update included.
+        let seqs: Vec<u64> = events
+            .iter()
+            .filter_map(|e| e["sequence_number"].as_u64())
+            .collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seqs: {seqs:?}");
+    }
+
+    #[tokio::test]
+    async fn usage_update_requires_include_opt_in() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let runner = ToolLoopRunner::new(payload(), 8)
+            .with_provider_callback(counting_callback(counter, Some(turn2_usage())))
+            .rewrite_output(true)
+            .register(Arc::new(FakeTool { stop: false }));
+        let out = collect(runner.wrap_streaming(first_turn_body(Some(turn1_usage())))).await;
+
+        assert!(!out.contains("response.usage.updated"), "{out}");
+        // The terminal fold is unaffected by the missing opt-in.
+        assert!(out.contains("\"total_tokens\":380"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn no_usage_update_without_tool_turns() {
+        // A single-turn response (no tool call → nothing suppressed) stays
+        // update-free even with the opt-in.
+        let terminal = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {"usage": turn1_usage()},
+        });
+        let sse = format!(
+            concat!(
+                "data: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{}}}}\n\n",
+                "data: {terminal}\n\n",
+                "data: [DONE]\n\n",
+            ),
+            terminal = terminal
+        );
+        let counter = Arc::new(AtomicUsize::new(0));
+        let runner = ToolLoopRunner::new(payload_with_include(), 8)
+            .with_provider_callback(counting_callback(counter.clone(), None))
+            .rewrite_output(true)
+            .register(Arc::new(FakeTool { stop: false }));
+        let out = collect(runner.wrap_streaming(Response::new(Body::from(sse)))).await;
+
+        assert!(!out.contains("response.usage.updated"), "{out}");
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn stop_loop_terminal_reports_carried_usage_once() {
+        // `stop_loop` re-emits the suppressed terminal through the rewriter,
+        // which folds in the carried total. The stash is usage-stripped, so
+        // the turn's tokens appear exactly once — and the terminal agrees
+        // with the last `usage.updated`.
+        let counter = Arc::new(AtomicUsize::new(0));
+        let runner = ToolLoopRunner::new(payload_with_include(), 8)
+            .with_provider_callback(counting_callback(counter, None))
+            .rewrite_output(true)
+            .register(Arc::new(FakeTool { stop: true }));
+        let out = collect(runner.wrap_streaming(first_turn_body(Some(turn1_usage())))).await;
+        let events = events_of(&out);
+
+        let update = events
+            .iter()
+            .find(|e| e["type"] == "response.usage.updated")
+            .expect("update event");
+        let terminal = events
+            .iter()
+            .find(|e| e["type"] == "response.completed")
+            .expect("terminal event");
+        let usage = &terminal["response"]["usage"];
+        assert_eq!(usage["input_tokens"], 100, "not double-counted:\n{out}");
+        assert_eq!(usage["total_tokens"], 150);
+        assert!((usage["cost"].as_f64().unwrap() - 0.001).abs() < 1e-9);
+        assert_eq!(update["usage"], *usage);
+    }
+
+    #[test]
+    fn format_usage_updated_event_shape() {
+        let usage: ResponsesUsage = serde_json::from_value(turn1_usage()).unwrap();
+        let ev = format_usage_updated_event(&usage);
+        let text = std::str::from_utf8(&ev).unwrap();
+        let data = text.strip_prefix("data: ").unwrap().trim_end();
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert_eq!(v["type"], "response.usage.updated");
+        assert_eq!(v["sequence_number"], 0);
+        assert_eq!(v["usage"], turn1_usage());
+    }
+
+    #[test]
+    fn strip_response_usage_removes_usage_preserving_framing() {
+        let event = Bytes::from(format!(
+            "event: response.completed\ndata: {}\n\n",
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {"status": "completed", "usage": turn1_usage()},
+            })
+        ));
+        let out = strip_response_usage(event);
+        let text = std::str::from_utf8(&out).unwrap();
+        assert!(text.starts_with("event: response.completed\n"));
+        let data = text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert!(v["response"].get("usage").is_none());
+        assert_eq!(v["response"]["status"], "completed");
+
+        // No usage → unchanged bytes.
+        let plain =
+            Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{}}\n\n");
+        assert_eq!(strip_response_usage(plain.clone()), plain);
     }
 }

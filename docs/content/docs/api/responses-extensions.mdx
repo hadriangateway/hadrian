@@ -1,0 +1,78 @@
+---
+title: Responses API Extensions
+description: Hadrian-specific extensions to the OpenAI Responses API
+---
+
+Hadrian extends the OpenAI Responses API with gateway-level usage and cost reporting. This page documents the extension fields and streaming events; everything else on `/v1/responses` follows the OpenAI specification.
+
+## Usage Cost Fields
+
+Every response's `usage` object carries Hadrian extension fields alongside the standard token counts:
+
+```json
+{
+  "usage": {
+    "input_tokens": 300,
+    "output_tokens": 80,
+    "total_tokens": 380,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens_details": { "reasoning_tokens": 15 },
+    "cost": 0.003,
+    "cost_details": {
+      "upstream_inference_input_cost": 0.0024,
+      "upstream_inference_output_cost": 0.0006
+    },
+    "is_byok": false
+  }
+}
+```
+
+- `cost` — total upstream inference cost in US dollars, priced per provider turn.
+- `cost_details` — input/output cost components.
+- `is_byok` — `true` when the request ran on a bring-your-own-key provider; the tokens are counted but not billed by the gateway.
+
+When a request runs Hadrian's server-side tools (web search, shell, hosted MCP), the model may take several provider turns inside one response. The terminal `response.completed` event reports the fold across the whole loop, not just the last turn.
+
+## Incremental Usage Updates
+
+By default, streaming clients only see usage once, on the terminal event. Opt into incremental updates with the `usage.incremental` include value:
+
+```bash
+curl -N http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer gw_live_abc123..." \
+  -d '{
+    "model": "gpt-5.2",
+    "stream": true,
+    "include": ["usage.incremental"],
+    "tools": [{ "type": "web_search" }],
+    "input": "What changed in the EU AI Act this quarter?"
+  }'
+```
+
+At each server-tool turn boundary, the gateway emits a `response.usage.updated` event carrying the **cumulative** usage for the loop so far:
+
+```text
+event: response.web_search_call.completed
+data: {"type":"response.web_search_call.completed","sequence_number":17,...}
+
+event: response.usage.updated
+data: {"type":"response.usage.updated","sequence_number":18,"usage":{"input_tokens":300,"output_tokens":80,"total_tokens":380,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":15},"cost":0.003,"cost_details":{...}}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":19,"delta":"The"}
+```
+
+Semantics:
+
+- **Cumulative, not delta.** Each event replaces the previous one — render the latest, never sum them. A dropped or replayed event cannot corrupt the total.
+- **One event per completed turn.** Updates fire when an intermediate turn finishes and its tool calls start executing. Single-turn responses (no server-side tool calls) emit no updates.
+- **The terminal event stays authoritative.** `response.completed` (or `failed` / `incomplete`) carries the full loop's usage, including the final turn the updates haven't seen.
+- **Persisted and replayed.** Stored responses replay the events through `GET /v1/responses/{id}?stream=true` exactly as streamed.
+- **Gateway-only.** The include value is stripped before the request is forwarded upstream, so providers never see it. Without the opt-in the stream is byte-for-byte spec-shaped — strictly typed SDKs that reject unknown event types are unaffected.
+
+## Next Steps
+
+- [Budgets](/docs/features/budgets) — enforce spend limits per team, user, or key
+- [Web Tools](/docs/features/web-tools) — server-side web search and fetch
+- [MCP Tool](/docs/features/mcp-tool) — gateway-hosted MCP servers in the Responses API
