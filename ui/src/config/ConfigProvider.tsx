@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { UiConfig, ColorPalette, FontsConfig, CustomFont } from "./types";
+import { buildBrandingColorCss } from "./brandingCss";
 import { defaultConfig, defaultPagesConfig, getApiBaseUrl } from "./defaults";
 
 interface ConfigContextValue {
@@ -13,18 +14,6 @@ const ConfigContext = createContext<ConfigContextValue | null>(null);
 
 const BRANDING_STYLE_ID = "hadrian-branding-colors";
 const BRANDING_FONTS_STYLE_ID = "hadrian-branding-fonts";
-
-/** Permissive color literal: hex, rgb()/hsl()/oklch()/var(), CSS keyword.
- *  Rejects anything containing CSS control chars (`{`, `}`, `;`, `<`, etc.)
- *  so a misconfigured branding payload can't break out of the rule and
- *  inject arbitrary CSS into the page. */
-const COLOR_RE = /^[a-zA-Z0-9#%(),.\s\-/_]+$/;
-
-function isSafeColor(value: string | undefined): value is string {
-  return (
-    typeof value === "string" && value.length > 0 && value.length < 200 && COLOR_RE.test(value)
-  );
-}
 
 /** Validate a font-family name. Quotes/braces/semicolons in here would let
  *  an attacker close the `font-family` declaration and inject other rules. */
@@ -48,51 +37,6 @@ function isSafeFontUrl(value: string | undefined): value is string {
 }
 
 /**
- * Generates CSS variable overrides from a color palette
- */
-function generateColorCss(colors: ColorPalette, selector: string): string {
-  const rules: string[] = [];
-
-  if (isSafeColor(colors.primary)) {
-    rules.push(`--color-primary: ${colors.primary};`);
-    rules.push(`--color-ring: ${colors.primary};`);
-    // Set accent-foreground to primary color for consistent branding on selected items
-    rules.push(`--color-accent-foreground: ${colors.primary};`);
-  }
-  if (isSafeColor(colors.primary_foreground)) {
-    rules.push(`--color-primary-foreground: ${colors.primary_foreground};`);
-  } else if (isSafeColor(colors.primary)) {
-    // Default to white if primary is set but primary_foreground is not
-    rules.push(`--color-primary-foreground: #ffffff;`);
-  }
-  if (isSafeColor(colors.secondary)) {
-    rules.push(`--color-secondary: ${colors.secondary};`);
-  }
-  if (isSafeColor(colors.secondary_foreground)) {
-    rules.push(`--color-secondary-foreground: ${colors.secondary_foreground};`);
-  }
-  if (isSafeColor(colors.accent)) {
-    rules.push(`--color-accent: ${colors.accent};`);
-  }
-  if (isSafeColor(colors.background)) {
-    rules.push(`--color-background: ${colors.background};`);
-  }
-  if (isSafeColor(colors.foreground)) {
-    rules.push(`--color-foreground: ${colors.foreground};`);
-  }
-  if (isSafeColor(colors.muted)) {
-    rules.push(`--color-muted: ${colors.muted};`);
-  }
-  if (isSafeColor(colors.border)) {
-    rules.push(`--color-border: ${colors.border};`);
-    rules.push(`--color-input: ${colors.border};`);
-  }
-
-  if (rules.length === 0) return "";
-  return `${selector} { ${rules.join(" ")} }`;
-}
-
-/**
  * Injects branding colors as CSS custom properties
  */
 function injectBrandingColors(colors: ColorPalette, colorsDark: ColorPalette | null): void {
@@ -102,10 +46,7 @@ function injectBrandingColors(colors: ColorPalette, colorsDark: ColorPalette | n
     existing.remove();
   }
 
-  const lightCss = generateColorCss(colors, ":root");
-  const darkCss = colorsDark ? generateColorCss(colorsDark, ".dark") : "";
-
-  const css = [lightCss, darkCss].filter(Boolean).join("\n");
+  const css = buildBrandingColorCss(colors, colorsDark);
   if (!css) return;
 
   const style = document.createElement("style");

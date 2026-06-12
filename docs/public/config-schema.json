@@ -7,37 +7,45 @@
     "auth": {
       "description": "Authentication and authorization configuration.",
       "default": {
-        "api_key": null,
-        "bootstrap": null,
-        "emergency": null,
         "mode": {
           "type": "none"
         },
+        "api_key": null,
+        "session": null,
         "rbac": {
+          "enabled": false,
+          "default_effect": "deny",
+          "role_claim": "",
+          "org_claim": null,
+          "team_claim": null,
+          "project_claim": null,
+          "role_mapping": {},
+          "policies": [],
           "audit": {
             "log_allowed": false,
             "log_denied": true
           },
-          "default_effect": "deny",
-          "enabled": false,
-          "fail_on_evaluation_error": false,
           "gateway": {
-            "default_effect": "allow",
-            "enabled": false
+            "enabled": false,
+            "default_effect": "allow"
           },
+          "max_expression_length": 0,
+          "fail_on_evaluation_error": false,
+          "policy_cache_ttl_ms": 0,
           "lazy_load_policies": false,
           "max_cached_orgs": 0,
-          "max_expression_length": 0,
-          "org_claim": null,
-          "policies": [],
-          "policy_cache_ttl_ms": 0,
-          "policy_eviction_batch_size": 0,
-          "project_claim": null,
-          "role_claim": "",
-          "role_mapping": {},
-          "team_claim": null
+          "policy_eviction_batch_size": 0
         },
-        "session": null
+        "bootstrap": null,
+        "emergency": null,
+        "oauth_pkce": {
+          "enabled": true,
+          "allowed_domains": [],
+          "denied_domains": [],
+          "code_ttl_seconds": 600,
+          "allow_plain_method": false,
+          "public_url": null
+        }
       },
       "allOf": [
         {
@@ -70,14 +78,14 @@
     "docs": {
       "description": "Documentation site configuration.",
       "default": {
+        "enabled": false,
+        "path": "/docs",
         "assets": {
-          "cache_control": "public, max-age=3600",
           "source": {
             "type": "embedded"
-          }
-        },
-        "enabled": false,
-        "path": "/docs"
+          },
+          "cache_control": "public, max-age=3600"
+        }
       },
       "allOf": [
         {
@@ -88,42 +96,72 @@
     "features": {
       "description": "Feature flags for optional capabilities.",
       "default": {
+        "file_search": null,
+        "guardrails": null,
+        "response_caching": null,
+        "image_fetching": {
+          "enabled": true,
+          "max_size_mb": 20,
+          "timeout_secs": 30,
+          "allowed_content_types": [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp"
+          ]
+        },
+        "websocket": {
+          "enabled": true,
+          "require_auth": false,
+          "ping_interval_secs": 30,
+          "pong_timeout_secs": 60,
+          "max_connections": 1000,
+          "channel_capacity": 1024
+        },
+        "vector_store_cleanup": {
+          "enabled": false,
+          "interval_secs": 300,
+          "cleanup_delay_secs": 3600,
+          "batch_size": 100,
+          "max_duration_secs": 60,
+          "dry_run": false
+        },
+        "containers_cleanup": {
+          "enabled": false,
+          "interval_secs": 300,
+          "cleanup_delay_secs": 3600,
+          "batch_size": 100,
+          "max_duration_secs": 60,
+          "dry_run": false
+        },
         "file_processing": {
-          "callback_url": null,
-          "circuit_breaker": {
-            "backoff_multiplier": 2.0,
-            "enabled": false,
-            "failure_status_codes": [
-              500,
-              502,
-              503,
-              504
-            ],
-            "failure_threshold": 5,
-            "max_open_timeout_secs": 300,
-            "open_timeout_secs": 30,
-            "success_threshold": 2
-          },
+          "mode": "inline",
+          "max_file_size_mb": 10,
+          "max_concurrent_tasks": 4,
           "default_max_chunk_tokens": 800,
           "default_overlap_tokens": 200,
+          "queue": null,
+          "callback_url": null,
+          "virus_scan": {
+            "enabled": false,
+            "backend": "clamav",
+            "clamav": null
+          },
           "document_extraction": {
             "enable_ocr": false,
             "force_ocr": false,
             "ocr_language": "eng",
             "pdf_extract_images": false,
-            "pdf_image_dpi": 300
+            "pdf_image_dpi": 300,
+            "extraction_timeout_secs": 120
           },
-          "max_concurrent_tasks": 4,
-          "max_file_size_mb": 10,
-          "mode": "inline",
-          "queue": null,
           "retry": {
-            "backoff_multiplier": 2.0,
             "enabled": true,
-            "initial_delay_ms": 100,
-            "jitter": 0.1,
-            "max_delay_ms": 10000,
             "max_retries": 3,
+            "initial_delay_ms": 100,
+            "max_delay_ms": 10000,
+            "backoff_multiplier": 2.0,
+            "jitter": 0.1,
             "retryable_status_codes": [
               429,
               500,
@@ -132,48 +170,83 @@
               504
             ]
           },
-          "stale_processing_timeout_secs": 1800,
-          "virus_scan": {
-            "backend": "clamav",
-            "clamav": null,
-            "enabled": false
-          }
-        },
-        "file_search": null,
-        "guardrails": null,
-        "image_fetching": {
-          "allowed_content_types": [
-            "image/png",
-            "image/jpeg",
-            "image/gif",
-            "image/webp"
-          ],
-          "enabled": true,
-          "max_size_mb": 20,
-          "timeout_secs": 30
+          "circuit_breaker": {
+            "enabled": false,
+            "failure_threshold": 5,
+            "open_timeout_secs": 30,
+            "success_threshold": 2,
+            "failure_status_codes": [
+              500,
+              502,
+              503,
+              504
+            ],
+            "backoff_multiplier": 2.0,
+            "max_open_timeout_secs": 300
+          },
+          "stale_processing_timeout_secs": 1800
         },
         "model_catalog": {
-          "api_url": "https://models.dev/api.json",
           "enabled": true,
-          "sync_interval_secs": 1800
+          "sync_interval_secs": 1800,
+          "api_url": "https://models.dev/api.json"
         },
-        "response_caching": null,
-        "vector_store_cleanup": {
-          "batch_size": 100,
-          "cleanup_delay_secs": 3600,
-          "dry_run": false,
-          "enabled": false,
-          "interval_secs": 300,
-          "max_duration_secs": 60
+        "web_search": null,
+        "web_fetch": null,
+        "static_models_cache": {
+          "refresh_interval_secs": 300
         },
-        "websocket": {
-          "channel_capacity": 1024,
+        "server_tools": {
+          "max_iterations": 10,
+          "pricing": {
+            "microsandbox_microcents_per_second": 0
+          },
+          "shell_limits": {
+            "command_timeout_secs": 300,
+            "default_cpu_limit": null,
+            "default_mem_limit_mb": null,
+            "max_mem_limit_mb": null,
+            "allowed_egress_hosts": [],
+            "allowed_domain_secrets": {},
+            "max_output_chars": 8000,
+            "environment_description": "Alpine Linux (musl libc), minimal base image. Install what you need at the start of a session; nothing beyond busybox + a shell is guaranteed. **Always try `apk` first** — most tools are packaged and it's the fastest, most reliable option: `apk add --no-cache <pkg>`, e.g. `apk add --no-cache curl git python3 py3-pip nodejs npm build-base uv pnpm` (uv and pnpm are in the Alpine community repo on recent releases). Only if a package isn't available via apk, fall back to a language-specific installer: uv via `curl -LsSf https://astral.sh/uv/install.sh | sh`, pnpm via `npm install -g pnpm`, Python libs via `uv pip`/`pip`, Node libs via `pnpm`/`npm`, Rust crates via `cargo`. Installs need network egress to be allowed."
+          }
+        },
+        "shell": {
+          "type": "none"
+        },
+        "containers": {
           "enabled": true,
-          "max_connections": 1000,
-          "ping_interval_secs": 30,
-          "pong_timeout_secs": 60,
-          "require_auth": false
-        }
+          "default_idle_ttl_secs": 1200,
+          "max_idle_ttl_secs": 5184000,
+          "max_files_per_exec": 64,
+          "max_bytes_per_file": 26214400,
+          "max_bytes_per_session": 262144000,
+          "max_input_files_per_request": 32,
+          "max_input_bytes_per_request": 104857600
+        },
+        "responses": {
+          "retention_secs": 86400,
+          "cleanup_interval_secs": 3600,
+          "worker_concurrency": 8,
+          "max_in_progress_secs": 3600,
+          "retry": {
+            "enabled": true,
+            "max_attempts": 3,
+            "initial_backoff_ms": 500,
+            "multiplier": 2.0,
+            "max_backoff_ms": 30000
+          },
+          "webhook": null,
+          "compaction": {
+            "enabled": false,
+            "default_strategy": "truncate",
+            "default_threshold_tokens": 12000,
+            "keep_recent_items": 6,
+            "default_prompt": "Summarize the prior conversation in <= 250 words. Preserve concrete decisions, user-stated constraints, file paths and IDs, and unresolved questions. Drop redundant pleasantries. Output a single paragraph; the result will be inserted as system context for the model to consult in the remaining turns."
+          }
+        },
+        "mcp": null
       },
       "allOf": [
         {
@@ -184,31 +257,54 @@
     "limits": {
       "description": "Default rate limits and budgets. These can be overridden at the org, project, and user levels.",
       "default": {
-        "budgets": {
-          "daily_budget_usd": null,
-          "estimated_cost_cents": 10,
-          "monthly_budget_usd": null,
-          "warning_threshold": 0.8
-        },
         "rate_limits": {
-          "allow_per_key_above_global": false,
+          "requests_per_minute": 60,
+          "requests_per_day": null,
+          "tokens_per_minute": 100000,
+          "tokens_per_day": null,
           "concurrent_requests": 10,
+          "window_type": "sliding",
           "estimated_tokens_per_request": 1000,
           "ip_rate_limits": {
             "enabled": true,
-            "requests_per_hour": null,
-            "requests_per_minute": 120
+            "requests_per_minute": 120,
+            "requests_per_hour": null
           },
-          "requests_per_day": null,
-          "requests_per_minute": 60,
-          "tokens_per_day": null,
-          "tokens_per_minute": 100000,
-          "window_type": "sliding"
+          "allow_per_key_above_global": false
+        },
+        "budgets": {
+          "monthly_budget_usd": null,
+          "daily_budget_usd": null,
+          "warning_threshold": 0.8,
+          "estimated_cost_cents": 10
         },
         "resource_limits": {
-          "max_api_keys_per_user": 25,
           "max_policies_per_org": 100,
-          "max_providers_per_user": 10
+          "max_providers_per_user": 10,
+          "max_providers_per_org": 100,
+          "max_providers_per_team": 50,
+          "max_providers_per_project": 50,
+          "max_api_keys_per_user": 25,
+          "max_api_keys_per_org": 500,
+          "max_api_keys_per_team": 100,
+          "max_api_keys_per_project": 100,
+          "max_teams_per_org": 100,
+          "max_projects_per_org": 1000,
+          "max_service_accounts_per_org": 50,
+          "max_vector_stores_per_owner": 100,
+          "max_files_per_vector_store": 10000,
+          "max_conversations_per_owner": 10000,
+          "max_templates_per_owner": 5000,
+          "max_skills_per_owner": 5000,
+          "max_skill_bytes": 512000,
+          "max_skill_versions_per_skill": 0,
+          "max_domains_per_sso_config": 50,
+          "max_sso_group_mappings_per_org": 500,
+          "max_members_per_org": 10000,
+          "max_members_per_team": 10000,
+          "max_members_per_project": 10000,
+          "max_files_per_owner": 10000,
+          "max_projects_per_team": 100
         }
       },
       "allOf": [
@@ -220,26 +316,41 @@
     "observability": {
       "description": "Observability configuration (logging, tracing, metrics).",
       "default": {
-        "dead_letter_queue": null,
         "logging": {
-          "file_line": false,
-          "filter": null,
-          "format": "compact",
-          "include_spans": true,
           "level": "info",
+          "format": "compact",
+          "timestamps": true,
+          "file_line": false,
+          "include_spans": true,
+          "filter": null,
           "siem": {
-            "app_name": "hadrian",
-            "device_product": "Gateway",
             "device_vendor": "Hadrian",
+            "device_product": "Gateway",
             "device_version": null,
             "facility": "local0",
             "hostname": null,
+            "app_name": "hadrian",
             "leef_version": "2.0"
+          }
+        },
+        "tracing": {
+          "enabled": false,
+          "otlp": null,
+          "service_name": "hadrian",
+          "service_version": null,
+          "environment": null,
+          "sampling": {
+            "strategy": "always_on",
+            "rate": 1.0
           },
-          "timestamps": true
+          "resource_attributes": {},
+          "propagation": "trace_context"
         },
         "metrics": {
           "enabled": true,
+          "prometheus": null,
+          "prometheus_query_url": null,
+          "otlp": null,
           "latency_buckets_ms": [
             10.0,
             50.0,
@@ -251,9 +362,6 @@
             5000.0,
             10000.0
           ],
-          "otlp": null,
-          "prometheus": null,
-          "prometheus_query_url": null,
           "token_buckets": [
             10.0,
             50.0,
@@ -266,31 +374,19 @@
             100000.0
           ]
         },
+        "usage": {
+          "database": true,
+          "otlp": [],
+          "buffer": {
+            "max_size": 1000,
+            "flush_interval_ms": 1000,
+            "max_pending_entries": 10000
+          }
+        },
+        "dead_letter_queue": null,
         "response_validation": {
           "enabled": false,
           "mode": "warn"
-        },
-        "tracing": {
-          "enabled": false,
-          "environment": null,
-          "otlp": null,
-          "propagation": "trace_context",
-          "resource_attributes": {},
-          "sampling": {
-            "rate": 1.0,
-            "strategy": "always_on"
-          },
-          "service_name": "",
-          "service_version": null
-        },
-        "usage": {
-          "buffer": {
-            "flush_interval_ms": 1000,
-            "max_pending_entries": 10000,
-            "max_size": 1000
-          },
-          "database": true,
-          "otlp": null
         }
       },
       "allOf": [
@@ -302,8 +398,8 @@
     "pricing": {
       "description": "Pricing configuration for cost calculation.",
       "default": {
-        "cost_source": "prefer_provider",
-        "pricing": {}
+        "pricing": {},
+        "cost_source": "prefer_provider"
       },
       "allOf": [
         {
@@ -328,15 +424,14 @@
         "enabled": false,
         "interval_hours": 24,
         "periods": {
+          "usage_records_days": 90,
           "audit_logs_days": 730,
-          "conversations_deleted_days": 30,
-          "daily_spend_days": 365,
-          "usage_records_days": 90
+          "conversations_deleted_days": 30
         },
         "safety": {
-          "batch_size": 1000,
           "dry_run": false,
-          "max_deletes_per_run": 100000
+          "max_deletes_per_run": 100000,
+          "batch_size": 1000
         }
       },
       "allOf": [
@@ -359,16 +454,24 @@
     "server": {
       "description": "HTTP server configuration.",
       "default": {
-        "allow_loopback_urls": false,
-        "allow_private_urls": false,
+        "host": "0.0.0.0",
+        "port": 8080,
         "body_limit_bytes": 10485760,
+        "audio_body_limit_bytes": 104857600,
+        "files_body_limit_bytes": 536870912,
+        "skills_body_limit_bytes": 67108864,
+        "max_response_body_bytes": 104857600,
+        "timeout_secs": 300,
+        "streaming_idle_timeout_secs": 120,
+        "tls": null,
+        "trusted_proxies": {
+          "dangerously_trust_all": false,
+          "cidrs": [],
+          "real_ip_header": ""
+        },
         "cors": {
-          "allow_credentials": false,
-          "allowed_headers": [
-            "Content-Type",
-            "Authorization",
-            "X-API-Key"
-          ],
+          "enabled": true,
+          "allowed_origins": [],
           "allowed_methods": [
             "GET",
             "POST",
@@ -376,52 +479,64 @@
             "DELETE",
             "OPTIONS"
           ],
-          "allowed_origins": [],
-          "enabled": true,
+          "allowed_headers": [
+            "Content-Type",
+            "Authorization",
+            "X-API-Key"
+          ],
+          "allow_credentials": false,
           "max_age_secs": 86400
         },
-        "host": "0.0.0.0",
-        "http_client": {
-          "connect_timeout_secs": 10,
-          "http2_adaptive_window": true,
-          "http2_prior_knowledge": false,
-          "pool_idle_timeout_secs": 90,
-          "pool_max_idle_per_host": 32,
-          "tcp_keepalive_secs": 60,
-          "tcp_nodelay": true,
-          "timeout_secs": 300,
-          "user_agent": "hadrian/0.0.0-alpha.7",
-          "verbose": false
-        },
-        "max_response_body_bytes": 104857600,
-        "port": 8080,
         "security_headers": {
-          "content_security_policy": "default-src 'self'; script-src 'self' blob: 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'",
-          "content_type_options": "nosniff",
           "enabled": true,
+          "content_type_options": "nosniff",
           "frame_options": "DENY",
           "hsts": {
             "enabled": true,
-            "include_subdomains": true,
             "max_age_secs": 31536000,
+            "include_subdomains": true,
             "preload": false
           },
-          "permissions_policy": null,
+          "content_security_policy": null,
+          "csp_preset": "strict",
+          "xss_protection": null,
           "referrer_policy": "strict-origin-when-cross-origin",
-          "xss_protection": null
+          "permissions_policy": null
         },
-        "streaming_idle_timeout_secs": 120,
-        "timeout_secs": 300,
-        "tls": null,
-        "trusted_proxies": {
-          "cidrs": [],
-          "dangerously_trust_all": false,
-          "real_ip_header": ""
-        }
+        "http_client": {
+          "timeout_secs": 300,
+          "verbose": false,
+          "connect_timeout_secs": 10,
+          "pool_max_idle_per_host": 32,
+          "pool_idle_timeout_secs": 90,
+          "http2_prior_knowledge": false,
+          "http2_adaptive_window": true,
+          "tcp_keepalive_secs": 60,
+          "tcp_nodelay": true,
+          "user_agent": "hadrian/0.0.0-alpha.13"
+        },
+        "shutdown": {
+          "usage_buffer_flush_secs": 5,
+          "drain_secs": 30
+        },
+        "jwt_loader_concurrency": 10,
+        "allow_loopback_urls": false,
+        "allow_private_urls": false
       },
       "allOf": [
         {
           "$ref": "#/definitions/ServerConfig"
+        }
+      ]
+    },
+    "sovereignty": {
+      "description": "Sovereignty and compliance metadata configuration.",
+      "default": {
+        "custom_fields": []
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/SovereigntyConfig"
         }
       ]
     },
@@ -430,8 +545,13 @@
       "default": {
         "files": {
           "backend": "database",
-          "filesystem": null,
-          "s3": null
+          "s3": null,
+          "filesystem": null
+        },
+        "container_files": {
+          "backend": "database",
+          "s3": null,
+          "filesystem": null
         }
       },
       "allOf": [
@@ -443,36 +563,21 @@
     "ui": {
       "description": "UI configuration.",
       "default": {
-        "admin": {
-          "enabled": true,
-          "path": "/admin"
-        },
+        "enabled": false,
+        "path": "/",
         "assets": {
-          "cache_control": "public, max-age=31536000, immutable",
           "source": {
             "type": "embedded"
-          }
-        },
-        "branding": {
-          "colors": null,
-          "colors_dark": null,
-          "custom_css_url": null,
-          "favicon_url": null,
-          "fonts": null,
-          "footer_links": [],
-          "footer_text": null,
-          "login": null,
-          "logo_dark_url": null,
-          "logo_url": null,
-          "show_version": false,
-          "tagline": null,
-          "title": null
+          },
+          "cache_control": "public, max-age=31536000, immutable"
         },
         "chat": {
-          "available_models": [],
-          "default_model": null,
           "enabled": true,
+          "default_model": null,
+          "available_models": [],
           "file_uploads": {
+            "enabled": false,
+            "max_size_bytes": 10485760,
             "allowed_types": [
               "image/png",
               "image/jpeg",
@@ -482,15 +587,87 @@
               "text/plain",
               "text/markdown"
             ],
-            "enabled": false,
-            "max_size_bytes": 10485760,
             "storage": {
               "type": "database"
             }
           }
         },
-        "enabled": false,
-        "path": "/"
+        "admin": {
+          "enabled": true,
+          "path": "/admin"
+        },
+        "branding": {
+          "title": null,
+          "tagline": null,
+          "logo_url": null,
+          "logo_dark_url": null,
+          "favicon_url": null,
+          "colors": null,
+          "colors_dark": null,
+          "fonts": null,
+          "custom_css_url": null,
+          "footer_text": null,
+          "footer_links": [],
+          "show_version": false,
+          "login": null
+        },
+        "pages": {
+          "chat": "enabled",
+          "studio": "enabled",
+          "projects": "enabled",
+          "teams": "enabled",
+          "knowledge_bases": "enabled",
+          "containers": "enabled",
+          "api_keys": "enabled",
+          "providers": "enabled",
+          "usage": "enabled",
+          "admin": {
+            "dashboard": "enabled",
+            "organizations": "enabled",
+            "projects": "enabled",
+            "teams": "enabled",
+            "service_accounts": "enabled",
+            "users": "enabled",
+            "sso": "enabled",
+            "session_info": "enabled",
+            "api_keys": "enabled",
+            "providers": "enabled",
+            "provider_health": "enabled",
+            "knowledge_bases": "enabled",
+            "pricing": "enabled",
+            "usage": "enabled",
+            "audit_logs": "enabled",
+            "settings": "enabled"
+          }
+        },
+        "mcp": {
+          "favorites": [
+            {
+              "name": "Platter",
+              "url": "io.github.hadriangateway/platter"
+            },
+            {
+              "name": "Atlassian",
+              "url": "https://mcp.atlassian.com/v1/mcp"
+            },
+            {
+              "name": "Notion",
+              "url": "https://mcp.notion.com/mcp"
+            },
+            {
+              "name": "Hugging Face",
+              "url": "https://huggingface.co/mcp"
+            },
+            {
+              "name": "Miro",
+              "url": "https://mcp.miro.com/"
+            },
+            {
+              "name": "Vercel",
+              "url": "https://mcp.vercel.com"
+            }
+          ]
+        }
       },
       "allOf": [
         {
@@ -513,6 +690,163 @@
         "path": {
           "description": "Path for admin panel.",
           "default": "/admin",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AdminPagesConfig": {
+      "description": "Per-page visibility for admin pages.",
+      "type": "object",
+      "properties": {
+        "api_keys": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "audit_logs": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "dashboard": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "knowledge_bases": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "organizations": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "pricing": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "projects": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "provider_health": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "providers": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "service_accounts": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "session_info": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "settings": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "sso": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "teams": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "usage": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "users": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AllowedDomainSecret": {
+      "description": "One operator-pinned secret the request may reference via `ShellDomainSecretRef`. The literal value can be a plaintext token or a secrets-manager URI; resolution is the runtime's responsibility.",
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "allowed_hosts": {
+          "description": "Hostnames the runtime is permitted to send this secret to. A request's `allowed_domains` must be a subset; empty in the request inherits this full list.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "value": {
+          "description": "Literal value or `secret://…` reference. Never logged. Never returned in API responses.",
           "type": "string"
         }
       },
@@ -694,31 +1028,47 @@
             }
           ]
         },
+        "oauth_pkce": {
+          "description": "OAuth-style PKCE flow for issuing user-scoped API keys to external apps. Disabled by setting `enabled = false`; otherwise allowed by default for any callback domain, with optional allow/deny lists.",
+          "default": {
+            "enabled": true,
+            "allowed_domains": [],
+            "denied_domains": [],
+            "code_ttl_seconds": 600,
+            "allow_plain_method": false,
+            "public_url": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/OAuthPkceConfig"
+            }
+          ]
+        },
         "rbac": {
           "description": "Authorization (RBAC) configuration.",
           "default": {
+            "enabled": false,
+            "default_effect": "deny",
+            "role_claim": "",
+            "org_claim": null,
+            "team_claim": null,
+            "project_claim": null,
+            "role_mapping": {},
+            "policies": [],
             "audit": {
               "log_allowed": false,
               "log_denied": true
             },
-            "default_effect": "deny",
-            "enabled": false,
-            "fail_on_evaluation_error": false,
             "gateway": {
-              "default_effect": "allow",
-              "enabled": false
+              "enabled": false,
+              "default_effect": "allow"
             },
+            "max_expression_length": 0,
+            "fail_on_evaluation_error": false,
+            "policy_cache_ttl_ms": 0,
             "lazy_load_policies": false,
             "max_cached_orgs": 0,
-            "max_expression_length": 0,
-            "org_claim": null,
-            "policies": [],
-            "policy_cache_ttl_ms": 0,
-            "policy_eviction_batch_size": 0,
-            "project_claim": null,
-            "role_claim": "",
-            "role_mapping": {},
-            "team_claim": null
+            "policy_eviction_batch_size": 0
           },
           "allOf": [
             {
@@ -1287,7 +1637,7 @@
       "type": "object",
       "properties": {
         "colors": {
-          "description": "Color palette for light mode.",
+          "description": "Color palette for light mode and brand identity. The identity keys `primary` and `primary_foreground` also apply in dark mode unless overridden in `colors_dark`; all other keys affect light mode only.",
           "default": null,
           "anyOf": [
             {
@@ -1299,7 +1649,7 @@
           ]
         },
         "colors_dark": {
-          "description": "Color palette overrides for dark mode.",
+          "description": "Per-key dark mode overrides. `primary` and `primary_foreground` fall back to `colors` when unset here. Surface keys (`background`, `foreground`, `border`, `muted`, `secondary`, `secondary_foreground`, `accent`) fall back to the built-in dark theme — never to `colors` — so set them here too when branding surfaces in light mode.",
           "default": null,
           "anyOf": [
             {
@@ -1485,8 +1835,8 @@
               "description": "TTL settings for specific cache types.",
               "default": {
                 "api_key_secs": 300,
-                "provider_secs": 300,
-                "rate_limit_secs": 60
+                "rate_limit_secs": 60,
+                "provider_secs": 300
               },
               "allOf": [
                 {
@@ -1544,8 +1894,8 @@
               "description": "TTL settings for specific cache types.",
               "default": {
                 "api_key_secs": 300,
-                "provider_secs": 300,
-                "rate_limit_secs": 60
+                "rate_limit_secs": 60,
+                "provider_secs": 300
               },
               "allOf": [
                 {
@@ -1651,6 +2001,8 @@
         "file_uploads": {
           "description": "Enable file uploads.",
           "default": {
+            "enabled": false,
+            "max_size_bytes": 10485760,
             "allowed_types": [
               "image/png",
               "image/jpeg",
@@ -1660,8 +2012,6 @@
               "text/plain",
               "text/markdown"
             ],
-            "enabled": false,
-            "max_size_bytes": 10485760,
             "storage": {
               "type": "database"
             }
@@ -1782,7 +2132,7 @@
       "type": "object",
       "properties": {
         "accent": {
-          "description": "Accent color for highlights and CTAs (hex).",
+          "description": "Accent color for highlights and CTAs (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -1790,7 +2140,7 @@
           ]
         },
         "background": {
-          "description": "Background color (hex).",
+          "description": "Background color (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -1798,7 +2148,7 @@
           ]
         },
         "border": {
-          "description": "Border color (hex).",
+          "description": "Border color (hex). Mode-scoped: applies only to the palette it is set in. Also drives input borders.",
           "default": null,
           "type": [
             "string",
@@ -1806,7 +2156,7 @@
           ]
         },
         "foreground": {
-          "description": "Foreground/text color (hex).",
+          "description": "Foreground/text color (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -1814,7 +2164,7 @@
           ]
         },
         "muted": {
-          "description": "Muted color for subtle backgrounds (hex).",
+          "description": "Muted color for subtle backgrounds (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -1822,7 +2172,7 @@
           ]
         },
         "primary": {
-          "description": "Primary brand color (hex, e.g., \"#3b82f6\").",
+          "description": "Primary brand color (hex, e.g., \"#3b82f6\"). Identity key: carries into dark mode unless overridden in `colors_dark`. Also drives the focus ring color and, in light mode, the accent text color.",
           "default": null,
           "type": [
             "string",
@@ -1830,7 +2180,7 @@
           ]
         },
         "primary_foreground": {
-          "description": "Text color on primary backgrounds (hex, e.g., \"#ffffff\"). Used for text on primary buttons like \"New Chat\".",
+          "description": "Text color on primary backgrounds (hex, e.g., \"#ffffff\"). Used for text on primary buttons like \"New Chat\". Identity key: carries into dark mode unless overridden. Defaults to `#ffffff` whenever the effective `primary` is set.",
           "default": null,
           "type": [
             "string",
@@ -1838,7 +2188,7 @@
           ]
         },
         "secondary": {
-          "description": "Secondary color for secondary actions (hex).",
+          "description": "Secondary color for secondary actions (hex). Mode-scoped: applies only to the palette it is set in (light `colors` / dark `colors_dark`).",
           "default": null,
           "type": [
             "string",
@@ -1846,12 +2196,118 @@
           ]
         },
         "secondary_foreground": {
-          "description": "Text color on secondary backgrounds (hex).",
+          "description": "Text color on secondary backgrounds (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContainersCleanupConfig": {
+      "description": "Configuration for the container cleanup job.\n\nContainers move `active` → `expired` (idle reaper) → `deleted` (explicit `DELETE /v1/containers/{id}`). Both terminal states stamp `expires_at` with the transition time but never remove the row, so without this job `expired` / `deleted` rows (and their `container_files`) accumulate forever. This worker hard-deletes terminal rows whose `expires_at` is older than `cleanup_delay_secs`, cascading their files.\n\n# Example Configuration\n\n```toml [features.containers_cleanup] enabled = true interval_secs = 300 cleanup_delay_secs = 3600 batch_size = 100 max_duration_secs = 60 ```",
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "description": "Maximum number of containers to hard-delete per run. Prevents long-running cleanup operations. Default: 100",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "cleanup_delay_secs": {
+          "description": "Time to wait after a container becomes terminal (`expired` / `deleted`) before hard deleting it (in seconds). Measured from `expires_at`. Gives clients time to download captured files. Default: 3600 (1 hour)",
+          "default": 3600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "dry_run": {
+          "description": "Dry run mode - log what would be deleted without actually deleting. Useful for testing cleanup configuration. Default: false",
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Enable the cleanup job. When disabled, terminal containers remain in the database indefinitely.",
+          "default": false,
+          "type": "boolean"
+        },
+        "interval_secs": {
+          "description": "How often to run the cleanup job (in seconds). Default: 300 (5 minutes)",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_duration_secs": {
+          "description": "Maximum duration for a single cleanup run (in seconds). If exceeded, cleanup stops gracefully and continues next run. Set to 0 for unlimited. Default: 60",
+          "default": 60,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContainersConfig": {
+      "description": "Settings for `/mnt/data` artifact capture from the shell tool.\n\nWhen the configured shell runtime supports `file_io`, Hadrian snapshots the container's `/mnt/data` directory before and after every shell command. New or changed files are surfaced as `container_file_citation` annotations on the assistant's reply, with a stable `cfile_<uuid>` identifier that the container files API resolves to downloadable bytes.\n\nSetting `enabled = false` reverts to the legacy \"tear down VM after every command\" behaviour with no artifact capture.",
+      "type": "object",
+      "properties": {
+        "default_idle_ttl_secs": {
+          "description": "Idle time after which an in-memory container session is torn down. Sessions are response-scoped, so this only kicks in if a response stalls without terminating. Default 1200 (20m, matching OpenAI's hosted-container idle TTL).",
+          "default": 1200,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "description": "Master switch. When false, the shell tool boots and tears down a fresh microVM for every command and never captures artifacts.",
+          "default": true,
+          "type": "boolean"
+        },
+        "max_bytes_per_file": {
+          "description": "Hard cap on the size of any single captured file. Files larger than this are recorded as metadata only (bytes + filename) with no content stored. Default 25 MiB.",
+          "default": 26214400,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_bytes_per_session": {
+          "description": "Hard cap on the total bytes captured across all files in one container session. Default 250 MiB.",
+          "default": 262144000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_files_per_exec": {
+          "description": "Hard cap on the number of new/changed files captured per shell exec. Excess files are dropped with a warning. Default 64.",
+          "default": 64,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_idle_ttl_secs": {
+          "description": "Hard cap on `expires_after.minutes` per request and on `POST /v1/containers` creation. Requests above this cap reject with 400. Default 86_400 (60 days), matching OpenAI's hosted-container maximum.",
+          "default": 5184000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_input_bytes_per_request": {
+          "description": "Hard cap on the total bytes across all staged input files in one request. Default 100 MiB.",
+          "default": 104857600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_input_files_per_request": {
+          "description": "Hard cap on the number of `input_file` parts Hadrian will materialize into `/mnt/data` for one request. Excess parts cause the request to fail with a 400. Default 32.",
+          "default": 32,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false
@@ -1936,6 +2392,25 @@
           "type": "string",
           "enum": [
             "provider_only"
+          ]
+        }
+      ]
+    },
+    "CspPreset": {
+      "description": "Built-in CSP presets selectable via `[server.security_headers].csp_preset`.",
+      "oneOf": [
+        {
+          "description": "Locked-down CSP. No `'unsafe-eval'`, `connect-src 'self'`. Default.",
+          "type": "string",
+          "enum": [
+            "strict"
+          ]
+        },
+        {
+          "description": "Allows the bundled UI's WASM features (Pyodide, Vega chart eval, CDN-loaded modules) and runtime-configured MCP server URLs.",
+          "type": "string",
+          "enum": [
+            "permissive"
           ]
         }
       ]
@@ -2065,6 +2540,31 @@
         }
       },
       "additionalProperties": false
+    },
+    "CustomSovereigntyFieldDef": {
+      "description": "Definition of a custom sovereignty metadata field.\n\nCustom fields are defined globally in `[sovereignty.custom_fields]` and can be set per-provider or per-model via `sovereignty.custom.<key>`.",
+      "type": "object",
+      "required": [
+        "key",
+        "title"
+      ],
+      "properties": {
+        "description": {
+          "description": "Optional description shown as help text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Unique key used in config and API responses.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Human-readable title for display in the UI.",
+          "type": "string"
+        }
+      }
     },
     "DatabaseConfig": {
       "description": "Database configuration.\n\nThe database stores persistent data: API keys, usage logs, budgets, org/project configurations, and dynamic provider credentials.",
@@ -2240,13 +2740,13 @@
             "retry": {
               "description": "Retry configuration.",
               "default": {
-                "backoff_multiplier": 2.0,
-                "batch_size": 100,
                 "enabled": true,
-                "initial_delay_secs": 60,
                 "interval_secs": 60,
+                "initial_delay_secs": 60,
                 "max_delay_secs": 3600,
+                "backoff_multiplier": 2.0,
                 "max_retries": 10,
+                "batch_size": 100,
                 "prune_enabled": true
               },
               "allOf": [
@@ -2287,13 +2787,13 @@
             "retry": {
               "description": "Retry configuration.",
               "default": {
-                "backoff_multiplier": 2.0,
-                "batch_size": 100,
                 "enabled": true,
-                "initial_delay_secs": 60,
                 "interval_secs": 60,
+                "initial_delay_secs": 60,
                 "max_delay_secs": 3600,
+                "backoff_multiplier": 2.0,
                 "max_retries": 10,
+                "batch_size": 100,
                 "prune_enabled": true
               },
               "allOf": [
@@ -2339,13 +2839,13 @@
             "retry": {
               "description": "Retry configuration.",
               "default": {
-                "backoff_multiplier": 2.0,
-                "batch_size": 100,
                 "enabled": true,
-                "initial_delay_secs": 60,
                 "interval_secs": 60,
+                "initial_delay_secs": 60,
                 "max_delay_secs": 3600,
+                "backoff_multiplier": 2.0,
                 "max_retries": 10,
+                "batch_size": 100,
                 "prune_enabled": true
               },
               "allOf": [
@@ -2489,10 +2989,10 @@
         "assets": {
           "description": "Static assets configuration.",
           "default": {
-            "cache_control": "public, max-age=3600",
             "source": {
               "type": "embedded"
-            }
+            },
+            "cache_control": "public, max-age=3600"
           },
           "allOf": [
             {
@@ -2521,6 +3021,13 @@
           "description": "Enable OCR (Optical Character Recognition) for scanned documents and images.\n\nWhen enabled, Kreuzberg will use Tesseract to extract text from: - Scanned PDF documents (no embedded text layer) - Images embedded in documents - Image files (PNG, JPG, TIFF, etc.) if supported\n\nRequires Tesseract to be installed on the system. Default: false",
           "default": false,
           "type": "boolean"
+        },
+        "extraction_timeout_secs": {
+          "description": "Maximum time (in seconds) a single document extraction is allowed to run. Set to 0 to disable the timeout.\n\nA malicious or pathological document (e.g. an OCR job on a 5,000-page PDF) can otherwise tie up an extraction worker indefinitely. Default: 120 seconds (2 minutes)",
+          "default": 120,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
         },
         "force_ocr": {
           "description": "Force OCR processing even for documents that have embedded text.\n\nUseful when: - The embedded text is known to be unreliable or incomplete - Documents were generated from scanned images with poor OCR - You want consistent processing regardless of text layer presence\n\nHas no effect if `enable_ocr` is false. Default: false",
@@ -2599,9 +3106,9 @@
         "rate_limit": {
           "description": "Rate limiting configuration for emergency access attempts.",
           "default": {
-            "lockout_secs": 3600,
             "max_attempts": 5,
-            "window_secs": 900
+            "window_secs": 900,
+            "lockout_secs": 3600
           },
           "allOf": [
             {
@@ -2727,48 +3234,93 @@
       },
       "additionalProperties": false
     },
+    "FavoriteMcpServer": {
+      "description": "A suggested MCP server shown in the catalog's \"Favorites\" section.",
+      "type": "object",
+      "required": [
+        "name",
+        "url"
+      ],
+      "properties": {
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Either a direct remote URL (`https://…`) the UI connects to, or a registry identifier (e.g. `io.github.hadriangateway/platter`) the UI resolves against the public MCP registry.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "FeaturesConfig": {
       "description": "Feature flags for optional capabilities.",
       "type": "object",
       "properties": {
+        "containers": {
+          "description": "Container / `/mnt/data` artifact capture settings. Controls how files written by the shell tool are persisted and surfaced back to the conversation as `container_file_citation` annotations.",
+          "default": {
+            "enabled": true,
+            "default_idle_ttl_secs": 1200,
+            "max_idle_ttl_secs": 5184000,
+            "max_files_per_exec": 64,
+            "max_bytes_per_file": 26214400,
+            "max_bytes_per_session": 262144000,
+            "max_input_files_per_request": 32,
+            "max_input_bytes_per_request": 104857600
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ContainersConfig"
+            }
+          ]
+        },
+        "containers_cleanup": {
+          "description": "Container cleanup job configuration. Hard-deletes `expired` / `deleted` containers (and their captured files) after a configurable delay so terminal rows don't accumulate.",
+          "default": {
+            "enabled": false,
+            "interval_secs": 300,
+            "cleanup_delay_secs": 3600,
+            "batch_size": 100,
+            "max_duration_secs": 60,
+            "dry_run": false
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ContainersCleanupConfig"
+            }
+          ]
+        },
         "file_processing": {
           "description": "File processing configuration for RAG document ingestion. Controls how uploaded files are chunked and embedded into vector stores.",
           "default": {
-            "callback_url": null,
-            "circuit_breaker": {
-              "backoff_multiplier": 2.0,
-              "enabled": false,
-              "failure_status_codes": [
-                500,
-                502,
-                503,
-                504
-              ],
-              "failure_threshold": 5,
-              "max_open_timeout_secs": 300,
-              "open_timeout_secs": 30,
-              "success_threshold": 2
-            },
+            "mode": "inline",
+            "max_file_size_mb": 10,
+            "max_concurrent_tasks": 4,
             "default_max_chunk_tokens": 800,
             "default_overlap_tokens": 200,
+            "queue": null,
+            "callback_url": null,
+            "virus_scan": {
+              "enabled": false,
+              "backend": "clamav",
+              "clamav": null
+            },
             "document_extraction": {
               "enable_ocr": false,
               "force_ocr": false,
               "ocr_language": "eng",
               "pdf_extract_images": false,
-              "pdf_image_dpi": 300
+              "pdf_image_dpi": 300,
+              "extraction_timeout_secs": 120
             },
-            "max_concurrent_tasks": 4,
-            "max_file_size_mb": 10,
-            "mode": "inline",
-            "queue": null,
             "retry": {
-              "backoff_multiplier": 2.0,
               "enabled": true,
-              "initial_delay_ms": 100,
-              "jitter": 0.1,
-              "max_delay_ms": 10000,
               "max_retries": 3,
+              "initial_delay_ms": 100,
+              "max_delay_ms": 10000,
+              "backoff_multiplier": 2.0,
+              "jitter": 0.1,
               "retryable_status_codes": [
                 429,
                 500,
@@ -2777,12 +3329,21 @@
                 504
               ]
             },
-            "stale_processing_timeout_secs": 1800,
-            "virus_scan": {
-              "backend": "clamav",
-              "clamav": null,
-              "enabled": false
-            }
+            "circuit_breaker": {
+              "enabled": false,
+              "failure_threshold": 5,
+              "open_timeout_secs": 30,
+              "success_threshold": 2,
+              "failure_status_codes": [
+                500,
+                502,
+                503,
+                504
+              ],
+              "backoff_multiplier": 2.0,
+              "max_open_timeout_secs": 300
+            },
+            "stale_processing_timeout_secs": 1800
           },
           "allOf": [
             {
@@ -2817,15 +3378,15 @@
         "image_fetching": {
           "description": "HTTP image URL fetching configuration. Controls how non-OpenAI providers (Anthropic, Bedrock, Vertex) handle HTTP image URLs in chat completion requests.",
           "default": {
+            "enabled": true,
+            "max_size_mb": 20,
+            "timeout_secs": 30,
             "allowed_content_types": [
               "image/png",
               "image/jpeg",
               "image/gif",
               "image/webp"
-            ],
-            "enabled": true,
-            "max_size_mb": 20,
-            "timeout_secs": 30
+            ]
           },
           "allOf": [
             {
@@ -2833,12 +3394,24 @@
             }
           ]
         },
+        "mcp": {
+          "description": "MCP (Model Context Protocol) tool configuration. When set, `/v1/responses` accepts `{\"type\": \"mcp\", ...}` tool entries and either forwards them to OpenAI/Azure (`mode = passthrough_openai`) or runs the MCP client loop locally (`mode = hadrian_hosted`). Defaults to `None` — MCP tool disabled.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model_catalog": {
           "description": "Model catalog configuration for enriching API responses with model metadata. Provides per-model capabilities, pricing, context limits, and modalities from the models.dev catalog.",
           "default": {
-            "api_url": "https://models.dev/api.json",
             "enabled": true,
-            "sync_interval_secs": 1800
+            "sync_interval_secs": 1800,
+            "api_url": "https://models.dev/api.json"
           },
           "allOf": [
             {
@@ -2858,15 +3431,90 @@
             }
           ]
         },
+        "responses": {
+          "description": "Persistence settings for the Responses API.",
+          "default": {
+            "retention_secs": 86400,
+            "cleanup_interval_secs": 3600,
+            "worker_concurrency": 8,
+            "max_in_progress_secs": 3600,
+            "retry": {
+              "enabled": true,
+              "max_attempts": 3,
+              "initial_backoff_ms": 500,
+              "multiplier": 2.0,
+              "max_backoff_ms": 30000
+            },
+            "webhook": null,
+            "compaction": {
+              "enabled": false,
+              "default_strategy": "truncate",
+              "default_threshold_tokens": 12000,
+              "keep_recent_items": 6,
+              "default_prompt": "Summarize the prior conversation in <= 250 words. Preserve concrete decisions, user-stated constraints, file paths and IDs, and unresolved questions. Drop redundant pleasantries. Output a single paragraph; the result will be inserted as system context for the model to consult in the remaining turns."
+            }
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponsesPersistenceConfig"
+            }
+          ]
+        },
+        "server_tools": {
+          "description": "Shared configuration for server-executed tools (file_search, web_search, future: shell). Controls the global per-request iteration budget across all such tools. Replaces the per-tool `max_iterations` fields on `[features.file_search]` and `[features.web_search]`, which are deprecated and emit a warning at startup if set to a non-default value.",
+          "default": {
+            "max_iterations": 10,
+            "pricing": {
+              "microsandbox_microcents_per_second": 0
+            },
+            "shell_limits": {
+              "command_timeout_secs": 300,
+              "default_cpu_limit": null,
+              "default_mem_limit_mb": null,
+              "max_mem_limit_mb": null,
+              "allowed_egress_hosts": [],
+              "allowed_domain_secrets": {},
+              "max_output_chars": 8000,
+              "environment_description": "Alpine Linux (musl libc), minimal base image. Install what you need at the start of a session; nothing beyond busybox + a shell is guaranteed. **Always try `apk` first** — most tools are packaged and it's the fastest, most reliable option: `apk add --no-cache <pkg>`, e.g. `apk add --no-cache curl git python3 py3-pip nodejs npm build-base uv pnpm` (uv and pnpm are in the Alpine community repo on recent releases). Only if a package isn't available via apk, fall back to a language-specific installer: uv via `curl -LsSf https://astral.sh/uv/install.sh | sh`, pnpm via `npm install -g pnpm`, Python libs via `uv pip`/`pip`, Node libs via `pnpm`/`npm`, Rust crates via `cargo`. Installs need network egress to be allowed."
+            }
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ServerToolsConfig"
+            }
+          ]
+        },
+        "shell": {
+          "description": "Shell tool runtime configuration. Selects which backend executes `shell` tool calls (passthrough_openai, microsandbox, etc.). Defaults to `None` — shell tool disabled.",
+          "default": {
+            "type": "none"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ShellRuntimeConfig"
+            }
+          ]
+        },
+        "static_models_cache": {
+          "description": "Static models cache configuration. Caches model lists from config-file providers to avoid per-request latency.",
+          "default": {
+            "refresh_interval_secs": 300
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/StaticModelsCacheConfig"
+            }
+          ]
+        },
         "vector_store_cleanup": {
           "description": "Vector store cleanup job configuration. Cleans up soft-deleted vector stores, their chunks, and orphaned files.",
           "default": {
-            "batch_size": 100,
-            "cleanup_delay_secs": 3600,
-            "dry_run": false,
             "enabled": false,
             "interval_secs": 300,
-            "max_duration_secs": 60
+            "cleanup_delay_secs": 3600,
+            "batch_size": 100,
+            "max_duration_secs": 60,
+            "dry_run": false
           },
           "allOf": [
             {
@@ -2874,15 +3522,39 @@
             }
           ]
         },
+        "web_fetch": {
+          "description": "Web fetch configuration for backend-proxied URL fetching tool. Validates URLs with SSRF protection and enforces size limits.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebFetchConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "web_search": {
+          "description": "Web search configuration for backend-proxied web search tool. Requires a search provider API key (Tavily or Exa).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "websocket": {
           "description": "WebSocket configuration for real-time event subscriptions. Enables clients to subscribe to server events via `/ws/events`.",
           "default": {
-            "channel_capacity": 1024,
             "enabled": true,
-            "max_connections": 1000,
+            "require_auth": false,
             "ping_interval_secs": 30,
             "pong_timeout_secs": 60,
-            "require_auth": false
+            "max_connections": 1000,
+            "channel_capacity": 1024
           },
           "allOf": [
             {
@@ -2908,18 +3580,18 @@
         "circuit_breaker": {
           "description": "Circuit breaker configuration for vector store operations.\n\nProtects against unhealthy vector store backends by failing fast after repeated failures. When the circuit is open, requests fail immediately without attempting the operation.\n\nDefault: enabled with 5 failures in 60s to open, 30s recovery.",
           "default": {
-            "backoff_multiplier": 2.0,
             "enabled": false,
+            "failure_threshold": 5,
+            "open_timeout_secs": 30,
+            "success_threshold": 2,
             "failure_status_codes": [
               500,
               502,
               503,
               504
             ],
-            "failure_threshold": 5,
-            "max_open_timeout_secs": 300,
-            "open_timeout_secs": 30,
-            "success_threshold": 2
+            "backoff_multiplier": 2.0,
+            "max_open_timeout_secs": 300
           },
           "allOf": [
             {
@@ -2946,7 +3618,8 @@
             "force_ocr": false,
             "ocr_language": "eng",
             "pdf_extract_images": false,
-            "pdf_image_dpi": 300
+            "pdf_image_dpi": 300,
+            "extraction_timeout_secs": 120
           },
           "allOf": [
             {
@@ -2992,12 +3665,12 @@
         "retry": {
           "description": "Retry configuration for vector store operations during file processing.\n\nApplies to: - Storing chunks to vector database (transient DB errors) - Deleting chunks (connection issues)\n\nNote: Embedding API retries are handled separately at the provider level. Default: enabled with 3 retries, 100ms initial delay, 2x backoff.",
           "default": {
-            "backoff_multiplier": 2.0,
             "enabled": true,
-            "initial_delay_ms": 100,
-            "jitter": 0.1,
-            "max_delay_ms": 10000,
             "max_retries": 3,
+            "initial_delay_ms": 100,
+            "max_delay_ms": 10000,
+            "backoff_multiplier": 2.0,
+            "jitter": 0.1,
             "retryable_status_codes": [
               429,
               500,
@@ -3022,9 +3695,9 @@
         "virus_scan": {
           "description": "Virus scanning configuration. When enabled, uploaded files are scanned before being stored.",
           "default": {
+            "enabled": false,
             "backend": "clamav",
-            "clamav": null,
-            "enabled": false
+            "clamav": null
           },
           "allOf": [
             {
@@ -3106,18 +3779,18 @@
         "circuit_breaker": {
           "description": "Circuit breaker configuration for vector store operations.\n\nProtects against unhealthy vector store backends by failing fast after repeated failures. When the circuit is open, requests fail immediately without attempting the operation.\n\nDefault: enabled with 5 failures in 60s to open, 30s recovery.",
           "default": {
-            "backoff_multiplier": 2.0,
             "enabled": false,
+            "failure_threshold": 5,
+            "open_timeout_secs": 30,
+            "success_threshold": 2,
             "failure_status_codes": [
               500,
               502,
               503,
               504
             ],
-            "failure_threshold": 5,
-            "max_open_timeout_secs": 300,
-            "open_timeout_secs": 30,
-            "success_threshold": 2
+            "backoff_multiplier": 2.0,
+            "max_open_timeout_secs": 300
           },
           "allOf": [
             {
@@ -3171,12 +3844,12 @@
         "rerank": {
           "description": "LLM-based re-ranking configuration.\n\nRe-ranking uses a language model to re-score search results based on semantic relevance to the query. Enable this to use `ranker: \"llm\"` in API requests.\n\nDefault: disabled",
           "default": {
-            "batch_size": 10,
             "enabled": false,
-            "fallback_on_error": true,
-            "max_results_to_rerank": 20,
             "model": null,
-            "timeout_secs": 30
+            "max_results_to_rerank": 20,
+            "batch_size": 10,
+            "timeout_secs": 30,
+            "fallback_on_error": true
           },
           "allOf": [
             {
@@ -3187,12 +3860,12 @@
         "retry": {
           "description": "Retry configuration for RAG operations.\n\nApplies to: - Embedding API calls (transient 429/5xx errors) - Vector database writes (network issues, DB overload) - Vector database searches (connection errors)\n\nUses exponential backoff with configurable jitter. Default: enabled with 3 retries, 100ms initial delay, 2x backoff.",
           "default": {
-            "backoff_multiplier": 2.0,
             "enabled": true,
-            "initial_delay_ms": 100,
-            "jitter": 0.1,
-            "max_delay_ms": 10000,
             "max_retries": 3,
+            "initial_delay_ms": 100,
+            "max_delay_ms": 10000,
+            "backoff_multiplier": 2.0,
+            "jitter": 0.1,
             "retryable_status_codes": [
               429,
               500,
@@ -3639,8 +4312,8 @@
             "enabled": true,
             "log_all_evaluations": false,
             "log_blocked": true,
-            "log_redacted": true,
-            "log_violations": true
+            "log_violations": true,
+            "log_redacted": true
           },
           "allOf": [
             {
@@ -4192,7 +4865,7 @@
         },
         "user_agent": {
           "description": "User-Agent header to send with requests. Some providers require or prefer specific User-Agent values.",
-          "default": "hadrian/0.0.0-alpha.7",
+          "default": "hadrian/0.0.0-alpha.13",
           "type": "string"
         },
         "verbose": {
@@ -4371,10 +5044,10 @@
         "budgets": {
           "description": "Budget defaults.",
           "default": {
-            "daily_budget_usd": null,
-            "estimated_cost_cents": 10,
             "monthly_budget_usd": null,
-            "warning_threshold": 0.8
+            "daily_budget_usd": null,
+            "warning_threshold": 0.8,
+            "estimated_cost_cents": 10
           },
           "allOf": [
             {
@@ -4385,19 +5058,19 @@
         "rate_limits": {
           "description": "Rate limiting defaults.",
           "default": {
-            "allow_per_key_above_global": false,
+            "requests_per_minute": 60,
+            "requests_per_day": null,
+            "tokens_per_minute": 100000,
+            "tokens_per_day": null,
             "concurrent_requests": 10,
+            "window_type": "sliding",
             "estimated_tokens_per_request": 1000,
             "ip_rate_limits": {
               "enabled": true,
-              "requests_per_hour": null,
-              "requests_per_minute": 120
+              "requests_per_minute": 120,
+              "requests_per_hour": null
             },
-            "requests_per_day": null,
-            "requests_per_minute": 60,
-            "tokens_per_day": null,
-            "tokens_per_minute": 100000,
-            "window_type": "sliding"
+            "allow_per_key_above_global": false
           },
           "allOf": [
             {
@@ -4408,9 +5081,32 @@
         "resource_limits": {
           "description": "Resource limits for entity counts.",
           "default": {
-            "max_api_keys_per_user": 25,
             "max_policies_per_org": 100,
-            "max_providers_per_user": 10
+            "max_providers_per_user": 10,
+            "max_providers_per_org": 100,
+            "max_providers_per_team": 50,
+            "max_providers_per_project": 50,
+            "max_api_keys_per_user": 25,
+            "max_api_keys_per_org": 500,
+            "max_api_keys_per_team": 100,
+            "max_api_keys_per_project": 100,
+            "max_teams_per_org": 100,
+            "max_projects_per_org": 1000,
+            "max_service_accounts_per_org": 50,
+            "max_vector_stores_per_owner": 100,
+            "max_files_per_vector_store": 10000,
+            "max_conversations_per_owner": 10000,
+            "max_templates_per_owner": 5000,
+            "max_skills_per_owner": 5000,
+            "max_skill_bytes": 512000,
+            "max_skill_versions_per_skill": 0,
+            "max_domains_per_sso_config": 50,
+            "max_sso_group_mappings_per_org": 500,
+            "max_members_per_org": 10000,
+            "max_members_per_team": 10000,
+            "max_members_per_project": 10000,
+            "max_files_per_owner": 10000,
+            "max_projects_per_team": 100
           },
           "allOf": [
             {
@@ -4520,12 +5216,12 @@
         "siem": {
           "description": "SIEM-specific configuration (for CEF, LEEF, Syslog formats).",
           "default": {
-            "app_name": "hadrian",
-            "device_product": "Gateway",
             "device_vendor": "Hadrian",
+            "device_product": "Gateway",
             "device_version": null,
             "facility": "local0",
             "hostname": null,
+            "app_name": "hadrian",
             "leef_version": "2.0"
           },
           "allOf": [
@@ -4574,6 +5270,122 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpConfig": {
+      "description": "MCP tool configuration.\n\nTwo execution modes:\n\n- `passthrough_openai` — `mcp` tools are forwarded verbatim to OpenAI / Azure OpenAI, which runs the MCP client loop and emits the canonical `mcp_*` items. Other providers reject with `mcp_passthrough_unsupported_provider`. - `hadrian_hosted` — Hadrian runs the MCP client loop itself using `rmcp` and rewrites `mcp` into per-tool function tools, so any provider can drive the loop.",
+      "type": "object",
+      "properties": {
+        "allow_connector_ids": {
+          "description": "When `false` (the default), requests using `connector_id` — OpenAI's first-party connector handles — are rejected. Self- hosted gateways usually can't reach OpenAI's connector registry, so the safe default is \"off\"; flip to `true` only when the upstream is OpenAI/Azure and the connector is known to work.",
+          "default": false,
+          "type": "boolean"
+        },
+        "allowed_server_urls": {
+          "description": "Operator allowlist of remote MCP server URLs. `None` = any URL the caller supplies is accepted (the caller already controls `Authorization`, so this is a defense-in-depth knob, not an auth check). When `Some`, the caller's `server_url` must match at least one entry exactly.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "call_timeout_secs": {
+          "description": "Deployment default upper bound, in seconds, on a single MCP `tools/call` round-trip under `hadrian_hosted`. `rmcp` applies no request timeout of its own and the underlying reqwest client sets none either, so without this a server that accepts the connection and then never responds would hang the response indefinitely. Overridable per tool via the `mcp` tool's `call_timeout_secs` Hadrian extension. Default 300s (5 min).",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "description": "Master enable. `false` makes the gateway behave as if MCP isn't configured at all (no preprocess, no executor) even when other fields are set.",
+          "default": true,
+          "type": "boolean"
+        },
+        "mode": {
+          "description": "Execution mode.",
+          "default": "passthrough_openai",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpMode"
+            }
+          ]
+        },
+        "tool_search": {
+          "description": "Hadrian-side tool search for deferred tools (`defer_loading`). Only relevant under `hadrian_hosted`.",
+          "default": {
+            "ranker": "hybrid",
+            "max_results": 20,
+            "score_threshold": 0.0,
+            "rrf_k": 60
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolSearchConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpMode": {
+      "description": "Where the MCP client loop runs.",
+      "oneOf": [
+        {
+          "description": "Forward `mcp` tool entries to OpenAI / Azure OpenAI. Other providers reject. The default — zero gateway overhead.",
+          "type": "string",
+          "enum": [
+            "passthrough_openai"
+          ]
+        },
+        {
+          "description": "Hadrian runs the MCP client loop itself via `rmcp` and rewrites `mcp` tools into per-tool function tools. Requires the `mcp` cargo feature.",
+          "type": "string",
+          "enum": [
+            "hadrian_hosted"
+          ]
+        }
+      ]
+    },
+    "McpUiConfig": {
+      "description": "MCP (Model Context Protocol) UI configuration.",
+      "type": "object",
+      "properties": {
+        "favorites": {
+          "description": "Favorite MCP servers surfaced prominently in the catalog.",
+          "default": [
+            {
+              "name": "Platter",
+              "url": "io.github.hadriangateway/platter"
+            },
+            {
+              "name": "Atlassian",
+              "url": "https://mcp.atlassian.com/v1/mcp"
+            },
+            {
+              "name": "Notion",
+              "url": "https://mcp.notion.com/mcp"
+            },
+            {
+              "name": "Hugging Face",
+              "url": "https://huggingface.co/mcp"
+            },
+            {
+              "name": "Miro",
+              "url": "https://mcp.miro.com/"
+            },
+            {
+              "name": "Vercel",
+              "url": "https://mcp.vercel.com"
+            }
+          ],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FavoriteMcpServer"
+          }
         }
       },
       "additionalProperties": false
@@ -4874,6 +5686,17 @@
           ],
           "format": "int64"
         },
+        "sovereignty": {
+          "description": "Sovereignty and compliance metadata override for this model.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SovereigntyMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tasks": {
           "description": "Supported tasks / API endpoints (e.g., \"chat\", \"image_generation\", \"tts\", \"transcription\", \"translation\", \"embedding\").",
           "type": "array",
@@ -5021,6 +5844,54 @@
         }
       }
     },
+    "OAuthPkceConfig": {
+      "description": "OAuth-style PKCE flow for letting external apps obtain user-scoped API keys after the user grants consent in Hadrian's UI.\n\nThe flow follows OpenRouter's PKCE pattern: an external app generates a `code_verifier`/`code_challenge` pair, redirects the user to Hadrian's consent page, and exchanges the resulting code for an API key on the `/oauth/token` endpoint.",
+      "type": "object",
+      "properties": {
+        "allow_plain_method": {
+          "description": "Allow `code_challenge_method = \"plain\"`. By default only `S256` is accepted, which is the only method any modern client should use.",
+          "default": false,
+          "type": "boolean"
+        },
+        "allowed_domains": {
+          "description": "If non-empty, only callback URLs whose host equals one of these domains (or is a subdomain of one) are accepted. An empty list means any host passes the allowlist check.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "code_ttl_seconds": {
+          "description": "Lifetime of an authorization code before it expires, in seconds. Codes are also single-use and consumed atomically on exchange.",
+          "default": 600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "denied_domains": {
+          "description": "Callback URLs whose host equals one of these domains (or is a subdomain of one) are rejected. Denylist entries always win over allowlist entries.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Whether the OAuth PKCE flow is available. When false, both the authorize and token endpoints return 404 and the consent page is not advertised in the UI config.",
+          "default": true,
+          "type": "boolean"
+        },
+        "public_url": {
+          "description": "Externally-visible base URL of this Hadrian deployment (e.g. `\"https://hadrian.example.com\"`). When set, used verbatim as the `issuer` and the prefix for `authorization_endpoint` / `token_endpoint` in the RFC 8414 discovery document.\n\nWhen unset, the discovery document falls back to building URLs from `config.server.host`, `port`, and `tls`. We deliberately do NOT honour `X-Forwarded-*` headers from anonymous callers — those are trivially spoofable on the unauthenticated discovery endpoint and would let an attacker poison the document to advertise their own authorize/token URLs to OAuth clients.\n\nOperators behind a reverse proxy that exposes Hadrian on a different host must set this to that external URL.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ObservabilityConfig": {
       "description": "Observability configuration.",
       "type": "object",
@@ -5040,21 +5911,21 @@
         "logging": {
           "description": "Logging configuration.",
           "default": {
-            "file_line": false,
-            "filter": null,
-            "format": "compact",
-            "include_spans": true,
             "level": "info",
+            "format": "compact",
+            "timestamps": true,
+            "file_line": false,
+            "include_spans": true,
+            "filter": null,
             "siem": {
-              "app_name": "hadrian",
-              "device_product": "Gateway",
               "device_vendor": "Hadrian",
+              "device_product": "Gateway",
               "device_version": null,
               "facility": "local0",
               "hostname": null,
+              "app_name": "hadrian",
               "leef_version": "2.0"
-            },
-            "timestamps": true
+            }
           },
           "allOf": [
             {
@@ -5066,6 +5937,9 @@
           "description": "Metrics configuration.",
           "default": {
             "enabled": true,
+            "prometheus": null,
+            "prometheus_query_url": null,
+            "otlp": null,
             "latency_buckets_ms": [
               10.0,
               50.0,
@@ -5077,9 +5951,6 @@
               5000.0,
               10000.0
             ],
-            "otlp": null,
-            "prometheus": null,
-            "prometheus_query_url": null,
             "token_buckets": [
               10.0,
               50.0,
@@ -5114,16 +5985,16 @@
           "description": "Tracing configuration (OpenTelemetry).",
           "default": {
             "enabled": false,
-            "environment": null,
             "otlp": null,
-            "propagation": "trace_context",
-            "resource_attributes": {},
+            "service_name": "hadrian",
+            "service_version": null,
+            "environment": null,
             "sampling": {
-              "rate": 1.0,
-              "strategy": "always_on"
+              "strategy": "always_on",
+              "rate": 1.0
             },
-            "service_name": "",
-            "service_version": null
+            "resource_attributes": {},
+            "propagation": "trace_context"
           },
           "allOf": [
             {
@@ -5134,13 +6005,13 @@
         "usage": {
           "description": "Usage logging configuration.",
           "default": {
-            "buffer": {
-              "flush_interval_ms": 1000,
-              "max_pending_entries": 10000,
-              "max_size": 1000
-            },
             "database": true,
-            "otlp": null
+            "otlp": [],
+            "buffer": {
+              "max_size": 1000,
+              "flush_interval_ms": 1000,
+              "max_pending_entries": 10000
+            }
           },
           "allOf": [
             {
@@ -5280,6 +6151,145 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PageConfig": {
+      "description": "Per-page configuration. Accepts either a bare string (`\"enabled\"`) or an inline table (`{ status = \"notice\", notice_message = \"...\" }`).",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PageStatus"
+        },
+        {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "notice_message": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/PageStatus"
+            }
+          }
+        }
+      ]
+    },
+    "PageStatus": {
+      "description": "Page visibility status.",
+      "type": "string",
+      "enum": [
+        "enabled",
+        "disabled",
+        "notice"
+      ]
+    },
+    "PagesConfig": {
+      "description": "Per-page visibility for main UI pages.",
+      "type": "object",
+      "properties": {
+        "admin": {
+          "default": {
+            "dashboard": "enabled",
+            "organizations": "enabled",
+            "projects": "enabled",
+            "teams": "enabled",
+            "service_accounts": "enabled",
+            "users": "enabled",
+            "sso": "enabled",
+            "session_info": "enabled",
+            "api_keys": "enabled",
+            "providers": "enabled",
+            "provider_health": "enabled",
+            "knowledge_bases": "enabled",
+            "pricing": "enabled",
+            "usage": "enabled",
+            "audit_logs": "enabled",
+            "settings": "enabled"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/AdminPagesConfig"
+            }
+          ]
+        },
+        "api_keys": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "chat": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "containers": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "knowledge_bases": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "projects": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "providers": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "studio": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "teams": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
+        },
+        "usage": {
+          "default": "enabled",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PageConfig"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -5764,18 +6774,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -5792,7 +6802,7 @@
               }
             },
             "headers": {
-              "description": "Custom headers to include in requests. Useful for provider-specific headers like OpenRouter's HTTP-Referer.",
+              "description": "Custom headers to include in requests. For OpenRouter providers, `HTTP-Referer`, `X-OpenRouter-Title`, and `X-OpenRouter-Categories` are set automatically for app attribution. Override here to customize or opt out.",
               "default": {},
               "type": "object",
               "additionalProperties": {
@@ -5803,8 +6813,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -5859,12 +6869,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -5876,6 +6886,17 @@
               "allOf": [
                 {
                   "$ref": "#/definitions/RetryConfig"
+                }
+              ]
+            },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
                 }
               ]
             },
@@ -5912,6 +6933,23 @@
             "type"
           ],
           "properties": {
+            "adaptive_thinking_models": {
+              "description": "Models that use **adaptive thinking** (Claude Opus 4.6+ and Sonnet 4.6). Substring match against the model name. Adaptive-capable models receive `thinking: {type: \"adaptive\"}` + `output_config.effort` instead of a fixed `budget_tokens`. Models not listed here fall back to the legacy budget path. Extend this list as new adaptive models ship.",
+              "default": [
+                "opus-4-6",
+                "opus-4.6",
+                "opus-4-7",
+                "opus-4.7",
+                "opus-4-8",
+                "opus-4.8",
+                "sonnet-4-6",
+                "sonnet-4.6"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "allowed_models": {
               "description": "Models available through this provider.",
               "default": [],
@@ -5940,18 +6978,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -5989,8 +7027,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -5998,6 +7036,28 @@
                   "$ref": "#/definitions/ProviderHealthCheckConfig"
                 }
               ]
+            },
+            "interleaved_thinking_models": {
+              "description": "Models for which the `interleaved-thinking-2025-05-14` beta header should be sent when thinking is enabled. Each entry is matched against the model name as a substring (e.g. `\"opus-4-6\"` matches `\"claude-opus-4-6-20250101\"`). Some Anthropic models reject this header, so override the default list when adding or removing support. Set to an empty list to disable the beta header entirely.\n\nNote: Opus 4.7/4.8 are deliberately **excluded** — adaptive thinking auto-enables interleaved thinking on those models, and they reject the explicit header. Only models still relying on the legacy header belong here.",
+              "default": [
+                "opus-4-6",
+                "opus-4.6"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "mid_conversation_system_models": {
+              "description": "Models that support **mid-conversation system messages** — an inline `role:\"system\"` message in the `messages` array (Claude Opus 4.8 only at time of writing; no beta header is required). Substring match. For models not listed here, system/developer messages that appear after the first turn are folded into the top-level `system` prompt, since those models reject a non-user/assistant role in `messages`. Extend this list as new models gain support.",
+              "default": [
+                "opus-4-8",
+                "opus-4.8"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "model_aliases": {
               "description": "Model aliases.",
@@ -6029,12 +7089,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -6049,17 +7109,42 @@
                 }
               ]
             },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "streaming_buffer": {
               "description": "Streaming buffer limits for DoS protection.",
               "default": {
                 "max_input_buffer_bytes": 16777216,
-                "max_output_buffer_chunks": 1000
+                "max_output_buffer_chunks": 1000,
+                "max_response_state_bytes": 33554432
               },
               "allOf": [
                 {
                   "$ref": "#/definitions/StreamingBufferConfig"
                 }
               ]
+            },
+            "strict_thinking_models": {
+              "description": "Models that **forbid** `budget_tokens` and sampling parameters (`temperature`/`top_p`/`top_k`) and that support `thinking.display` (Claude Opus 4.7/4.8). Substring match. These always use adaptive thinking — the legacy budget path is never taken for them, even if a request supplies `reasoning.max_tokens`.",
+              "default": [
+                "opus-4-7",
+                "opus-4.7",
+                "opus-4-8",
+                "opus-4.8"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "timeout_secs": {
               "description": "Request timeout in seconds.",
@@ -6103,18 +7188,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -6153,8 +7238,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -6170,6 +7255,17 @@
                 "string",
                 "null"
               ]
+            },
+            "interleaved_thinking_models": {
+              "description": "Substring allowlist of Bedrock-hosted Claude models that should receive the `interleaved-thinking-2025-05-14` beta header when adaptive thinking is requested. Some Bedrock-hosted Claude models reject the header, so this lets operators opt models in/out without recompiling. Set to an empty list to disable the beta header. Mirrors `AnthropicProviderConfig.interleaved_thinking_models`.",
+              "default": [
+                "opus-4-6",
+                "opus-4.6"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "model_aliases": {
               "description": "Model aliases.",
@@ -6205,12 +7301,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -6225,11 +7321,23 @@
                 }
               ]
             },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "streaming_buffer": {
               "description": "Streaming buffer limits for DoS protection.",
               "default": {
                 "max_input_buffer_bytes": 16777216,
-                "max_output_buffer_chunks": 1000
+                "max_output_buffer_chunks": 1000,
+                "max_response_state_bytes": 33554432
               },
               "allOf": [
                 {
@@ -6294,18 +7402,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -6336,8 +7444,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -6397,12 +7505,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -6417,11 +7525,23 @@
                 }
               ]
             },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "streaming_buffer": {
               "description": "Streaming buffer limits for DoS protection.",
               "default": {
                 "max_input_buffer_bytes": 16777216,
-                "max_output_buffer_chunks": 1000
+                "max_output_buffer_chunks": 1000,
+                "max_response_state_bytes": 33554432
               },
               "allOf": [
                 {
@@ -6485,18 +7605,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -6524,8 +7644,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -6568,12 +7688,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -6585,6 +7705,17 @@
               "allOf": [
                 {
                   "$ref": "#/definitions/RetryConfig"
+                }
+              ]
+            },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
                 }
               ]
             },
@@ -6629,18 +7760,18 @@
             "circuit_breaker": {
               "description": "Circuit breaker configuration for unhealthy provider protection.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": false,
+                "failure_threshold": 5,
+                "open_timeout_secs": 30,
+                "success_threshold": 2,
                 "failure_status_codes": [
                   500,
                   502,
                   503,
                   504
                 ],
-                "failure_threshold": 5,
-                "max_open_timeout_secs": 300,
-                "open_timeout_secs": 30,
-                "success_threshold": 2
+                "backoff_multiplier": 2.0,
+                "max_open_timeout_secs": 300
               },
               "allOf": [
                 {
@@ -6671,8 +7802,8 @@
               "description": "Health check configuration for proactive provider monitoring.",
               "default": {
                 "enabled": false,
-                "interval_secs": 60,
                 "mode": "reachability",
+                "interval_secs": 60,
                 "timeout_secs": 10
               },
               "allOf": [
@@ -6716,12 +7847,12 @@
             "retry": {
               "description": "Retry configuration for transient failures.",
               "default": {
-                "backoff_multiplier": 2.0,
                 "enabled": true,
-                "initial_delay_ms": 100,
-                "jitter": 0.1,
-                "max_delay_ms": 10000,
                 "max_retries": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 10000,
+                "backoff_multiplier": 2.0,
+                "jitter": 0.1,
                 "retryable_status_codes": [
                   429,
                   500,
@@ -6733,6 +7864,17 @@
               "allOf": [
                 {
                   "$ref": "#/definitions/RetryConfig"
+                }
+              ]
+            },
+            "sovereignty": {
+              "description": "Sovereignty and compliance metadata for this provider.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SovereigntyMetadata"
+                },
+                {
+                  "type": "null"
                 }
               ]
             },
@@ -6981,8 +8123,8 @@
           "description": "IP-based rate limiting for unauthenticated requests. Protects public endpoints (health, auth) from abuse.",
           "default": {
             "enabled": true,
-            "requests_per_hour": null,
-            "requests_per_minute": 120
+            "requests_per_minute": 120,
+            "requests_per_hour": null
           },
           "allOf": [
             {
@@ -7093,8 +8235,8 @@
         "gateway": {
           "description": "Gateway endpoint authorization configuration. Controls authorization for `/v1/*` endpoints (chat completions, embeddings, etc.).",
           "default": {
-            "default_effect": "allow",
-            "enabled": false
+            "enabled": false,
+            "default_effect": "allow"
           },
           "allOf": [
             {
@@ -7270,26 +8412,187 @@
       "additionalProperties": false
     },
     "ResourceLimits": {
-      "description": "Resource limits for entity counts.\n\nThese limits prevent unbounded growth of resources that could cause performance issues or resource exhaustion.",
+      "description": "Resource limits for entity counts.\n\nThese limits prevent unbounded growth of resources that could cause performance issues or resource exhaustion. Set any limit to 0 for unlimited.\n\n**Enforcement model:** Limits are best-effort. Under concurrent load, the `count → compare → create` pattern may allow a small number of requests to exceed the configured limit. This is acceptable for configuration guardrails; use database-level constraints for strict enforcement.",
       "type": "object",
       "properties": {
-        "max_api_keys_per_user": {
-          "description": "Maximum API keys per user (self-service). Set to 0 for unlimited. Default: 25 keys per user.",
-          "default": 25,
+        "max_api_keys_per_org": {
+          "description": "Maximum API keys per organization. Default: 500.",
+          "default": 500,
           "type": "integer",
           "format": "uint32",
           "minimum": 0.0
         },
-        "max_policies_per_org": {
-          "description": "Maximum RBAC policies per organization. Set to 0 for unlimited. Default: 100 policies per org.\n\nThis limit prevents resource exhaustion from unbounded policy growth. Organizations hitting this limit must delete or disable existing policies before creating new ones.",
+        "max_api_keys_per_project": {
+          "description": "Maximum API keys per project. Default: 100.",
           "default": 100,
           "type": "integer",
           "format": "uint32",
           "minimum": 0.0
         },
+        "max_api_keys_per_team": {
+          "description": "Maximum API keys per team. Default: 100.",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_api_keys_per_user": {
+          "description": "Maximum API keys per user (self-service). Default: 25.",
+          "default": 25,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_conversations_per_owner": {
+          "description": "Maximum conversations per owner (project/user). Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_domains_per_sso_config": {
+          "description": "Maximum domain verifications per SSO configuration. Default: 50.",
+          "default": 50,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_files_per_owner": {
+          "description": "Maximum uploaded files per owner (org/team/project/user). Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_files_per_vector_store": {
+          "description": "Maximum files per vector store. Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_members_per_org": {
+          "description": "Maximum members per organization. Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_members_per_project": {
+          "description": "Maximum members per project. Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_members_per_team": {
+          "description": "Maximum members per team. Default: 10,000.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_policies_per_org": {
+          "description": "Maximum RBAC policies per organization. Default: 100.",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_projects_per_org": {
+          "description": "Maximum projects per organization. Default: 1000.",
+          "default": 1000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_projects_per_team": {
+          "description": "Maximum projects per team. Default: 100.",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_providers_per_org": {
+          "description": "Maximum dynamic providers per organization. Default: 100.",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_providers_per_project": {
+          "description": "Maximum dynamic providers per project. Default: 50.",
+          "default": 50,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_providers_per_team": {
+          "description": "Maximum dynamic providers per team. Default: 50.",
+          "default": 50,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
         "max_providers_per_user": {
-          "description": "Maximum dynamic providers per user (BYOK). Set to 0 for unlimited. Default: 10 providers per user.",
+          "description": "Maximum dynamic providers per user (BYOK). Default: 10.",
           "default": 10,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_service_accounts_per_org": {
+          "description": "Maximum service accounts per organization. Default: 50.",
+          "default": 50,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_skill_bytes": {
+          "description": "Maximum total size of a skill's files in bytes (SKILL.md + bundled files). Default: 512,000 (500 KiB). Set to 0 for unlimited.",
+          "default": 512000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_skill_versions_per_skill": {
+          "description": "Maximum number of immutable versions retained per skill. Default: 0 (unlimited). When set, creating a version past the limit is rejected.",
+          "default": 0,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_skills_per_owner": {
+          "description": "Maximum skills per owner (org/team/project/user). Default: 5,000.",
+          "default": 5000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_sso_group_mappings_per_org": {
+          "description": "Maximum SSO group mappings per organization. Default: 500.",
+          "default": 500,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_teams_per_org": {
+          "description": "Maximum teams per organization. Default: 100.",
+          "default": 100,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_templates_per_owner": {
+          "description": "Maximum templates per owner (org/team/project/user). Default: 5,000.",
+          "default": 5000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_vector_stores_per_owner": {
+          "description": "Maximum vector stores per owner (org/team/project/user). Default: 100.",
+          "default": 100,
           "type": "integer",
           "format": "uint32",
           "minimum": 0.0
@@ -7310,8 +8613,8 @@
           "description": "Cache key components.",
           "default": {
             "model": false,
-            "system_prompt": false,
             "temperature": false,
+            "system_prompt": false,
             "tools": false
           },
           "allOf": [
@@ -7394,6 +8697,231 @@
         }
       ]
     },
+    "ResponsesCompactionConfig": {
+      "description": "Operator-side defaults for the gateway compactor. When a request includes `context_management = [{type: \"compaction\", ...}]` and the upstream provider does not natively support server-side compaction (i.e. anything other than OpenAI / Azure OpenAI), Hadrian runs the compactor before dispatch.",
+      "type": "object",
+      "properties": {
+        "default_prompt": {
+          "description": "Default prompt the `llm` strategy uses to summarise dropped items. Overridden per-request via `context_management.compaction.prompt`. Includes a placeholder describing what the summary will be inserted as.",
+          "default": "Summarize the prior conversation in <= 250 words. Preserve concrete decisions, user-stated constraints, file paths and IDs, and unresolved questions. Drop redundant pleasantries. Output a single paragraph; the result will be inserted as system context for the model to consult in the remaining turns.",
+          "type": "string"
+        },
+        "default_strategy": {
+          "description": "Strategy used when the request didn't specify one. Picks `truncate` so the default behaviour is deterministic + free.",
+          "default": "truncate",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponsesCompactionStrategy"
+            }
+          ]
+        },
+        "default_threshold_tokens": {
+          "description": "Fallback `compact_threshold` (in tokens) when the request didn't specify one. The default 12_000 leaves headroom under the smaller non-OpenAI context windows (Bedrock claude-haiku ~200k, but typical app prompts stay well below the limit).",
+          "default": 12000,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "enabled": {
+          "description": "Master switch. When false, gateway-side compaction never runs regardless of request directives; non-OpenAI providers still see the unedited payload (matching pre-compactor behaviour).",
+          "default": false,
+          "type": "boolean"
+        },
+        "keep_recent_items": {
+          "description": "Number of most-recent items the compactor must keep intact. Older items are dropped (truncate) or replaced by a summary (llm). Default 6.",
+          "default": 6,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResponsesCompactionStrategy": {
+      "oneOf": [
+        {
+          "description": "Summarise dropped items via the active provider.",
+          "type": "string",
+          "enum": [
+            "llm"
+          ]
+        },
+        {
+          "description": "Drop oldest non-system items until the rolling token estimate falls under the threshold.",
+          "type": "string",
+          "enum": [
+            "truncate"
+          ]
+        }
+      ]
+    },
+    "ResponsesPersistenceConfig": {
+      "description": "Persistence and retention settings for the Responses API.\n\nWhen `store=true` (the OpenAI default) is set on a request, Hadrian writes a row to the `responses` table that can later be retrieved via `GET /v1/responses/{id}` or cancelled via `POST /v1/responses/{id}/cancel`. Records past `retention_secs` are removed by the cleanup worker.",
+      "type": "object",
+      "properties": {
+        "cleanup_interval_secs": {
+          "description": "Interval at which the retention worker scans for expired records. Default 3600 (1h). Must be > 0.",
+          "default": 3600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "compaction": {
+          "description": "Gateway-side context compaction for non-OpenAI providers (the canonical OpenAI compaction directive is otherwise forwarded verbatim). Disabled by default.",
+          "default": {
+            "enabled": false,
+            "default_strategy": "truncate",
+            "default_threshold_tokens": 12000,
+            "keep_recent_items": 6,
+            "default_prompt": "Summarize the prior conversation in <= 250 words. Preserve concrete decisions, user-stated constraints, file paths and IDs, and unresolved questions. Drop redundant pleasantries. Output a single paragraph; the result will be inserted as system context for the model to consult in the remaining turns."
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponsesCompactionConfig"
+            }
+          ]
+        },
+        "max_in_progress_secs": {
+          "description": "Maximum wall-clock time a response is allowed to remain in `status='in_progress'`. The retention worker reaps rows that exceed this (mark Failed with `code=\"worker_lost\"`), covering the case where a worker crashed mid-execution. Should be generously larger than the longest expected execution — a real workload should finish well within this. Default 3600 (1h). Must be > 0.",
+          "default": 3600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "retention_secs": {
+          "description": "How long a terminal response is kept before pruning. Default 86400 (24h). Must be > 0.",
+          "default": 86400,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "retry": {
+          "description": "Retry policy for background-mode responses. Foreground streaming requests don't use this — the client owns the retry.",
+          "default": {
+            "enabled": true,
+            "max_attempts": 3,
+            "initial_backoff_ms": 500,
+            "multiplier": 2.0,
+            "max_backoff_ms": 30000
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponsesRetryConfig"
+            }
+          ]
+        },
+        "webhook": {
+          "description": "Optional webhook fired on terminal-state transitions (`completed`, `failed`, `cancelled`, `incomplete`). Disabled when unset.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ResponsesWebhookConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worker_concurrency": {
+          "description": "Max concurrent in-flight background-mode responses **per replica**. Each `background=true` request claims a row and runs the LLM stream in its own task; without a cap a burst can pin the whole replica. Default 8.",
+          "default": 8,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResponsesRetryConfig": {
+      "description": "Retry policy for background-mode responses.\n\nForeground `/v1/responses` requests are streamed back to the client — retries are the client's responsibility. Background requests have no client connected during execution, so the worker handles transient failures (provider 5xx, network blips, transient DB errors) by re-running the row with exponential backoff until either the call succeeds or `max_attempts` is hit.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Default `true`.",
+          "default": true,
+          "type": "boolean"
+        },
+        "initial_backoff_ms": {
+          "description": "Initial backoff before the second attempt, in milliseconds. Default 500ms.",
+          "default": 500,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_attempts": {
+          "description": "Maximum number of execution attempts, including the first. `1` means no retry. Default 3.",
+          "default": 3,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_backoff_ms": {
+          "description": "Cap on a single backoff interval, in milliseconds. Default 30000 (30s).",
+          "default": 30000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "multiplier": {
+          "description": "Backoff multiplier between attempts. Default 2.0.",
+          "default": 2.0,
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResponsesWebhookConfig": {
+      "description": "Webhook delivery settings.",
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "bearer_token": {
+          "description": "Optional bearer token sent in the `Authorization` header. As with other secret-bearing config fields, treat this value as sensitive: don't log it and prefer routing through the secrets manager URI scheme rather than embedding the literal token.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_concurrent_deliveries": {
+          "description": "Maximum concurrent in-flight deliveries. A slow target won't hold up new deliveries beyond this cap; additional events queue in the bounded retry channel. Default 32.",
+          "default": 32,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "retry_queue_capacity": {
+          "description": "Bounded retry queue capacity. When full, new events are dropped (with a `webhook_dropped_total` counter increment) so the gateway doesn't grow memory unboundedly when the target is wedged. Default 1000.",
+          "default": 1000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "signing_secret": {
+          "description": "Optional HMAC signing secret. When set, every delivery carries an `X-Hadrian-Signature: t=<unix>,v1=<hex>` header where the hex digest is `HMAC-SHA256(secret, \"<unix>.<body>\")`. Receivers reject requests whose timestamp is too old (defends against replay) and recompute the digest to verify the body.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_secs": {
+          "description": "Per-request timeout in seconds. Default 10s.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "url": {
+          "description": "Target URL. Validated for SSRF at config-load time via `validate_base_url` (no private/loopback/metadata addresses by default).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "RetentionConfig": {
       "description": "Data retention configuration.\n\nControls automatic purging of old data from the database. When enabled, a background worker periodically deletes records older than their configured retention period.",
       "type": "object",
@@ -7413,10 +8941,9 @@
         "periods": {
           "description": "Retention periods for different data types.",
           "default": {
+            "usage_records_days": 90,
             "audit_logs_days": 730,
-            "conversations_deleted_days": 30,
-            "daily_spend_days": 365,
-            "usage_records_days": 90
+            "conversations_deleted_days": 30
           },
           "allOf": [
             {
@@ -7427,9 +8954,9 @@
         "safety": {
           "description": "Safety settings to prevent accidental data loss.",
           "default": {
-            "batch_size": 1000,
             "dry_run": false,
-            "max_deletes_per_run": 100000
+            "max_deletes_per_run": 100000,
+            "batch_size": 1000
           },
           "allOf": [
             {
@@ -7454,13 +8981,6 @@
         "conversations_deleted_days": {
           "description": "Days to keep soft-deleted conversations before hard deleting. Conversations are first soft-deleted, then permanently removed after this period. Default: 30 days",
           "default": 30,
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0.0
-        },
-        "daily_spend_days": {
-          "description": "Days to keep aggregated daily spend records. These are lower-volume summary records (one per API key per model per day). Default: 365 days",
-          "default": 365,
           "type": "integer",
           "format": "uint32",
           "minimum": 0.0
@@ -8010,8 +9530,8 @@
       "type": "object",
       "properties": {
         "content_security_policy": {
-          "description": "Content-Security-Policy header value. Controls resource loading to prevent XSS attacks.",
-          "default": "default-src 'self'; script-src 'self' blob: 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'",
+          "description": "Content-Security-Policy header value. Controls resource loading to prevent XSS attacks.\n\nWhen unset, the policy is rendered from `csp_preset`. Setting an explicit string here always wins.",
+          "default": null,
           "type": [
             "string",
             "null"
@@ -8021,6 +9541,15 @@
           "description": "X-Content-Type-Options header value. Prevents MIME-sniffing attacks. Default: \"nosniff\"",
           "default": "nosniff",
           "type": "string"
+        },
+        "csp_preset": {
+          "description": "Built-in CSP preset to use when `content_security_policy` is not set.\n\n- `strict` (default): no `'unsafe-eval'`, `connect-src 'self'`. Suitable for headless gateway deployments and any deployment that does not serve the bundled UI's WASM features (Pyodide / Vega charts / user-configured MCP server URLs). - `permissive`: enables `'unsafe-eval'` (Pyodide bytecode + Vega `Function()` evaluation), `script-src https://cdn.jsdelivr.net` (Pyodide / DuckDB WASM CDN), and `connect-src https: http: wss: ws:` (MCP servers configured at runtime). Required when serving the bundled UI with WASM-mode features enabled.",
+          "default": "strict",
+          "allOf": [
+            {
+              "$ref": "#/definitions/CspPreset"
+            }
+          ]
         },
         "enabled": {
           "description": "Enable security headers.",
@@ -8039,8 +9568,8 @@
           "description": "Strict-Transport-Security header configuration. Forces HTTPS connections. Only sent over HTTPS connections.",
           "default": {
             "enabled": true,
-            "include_subdomains": true,
             "max_age_secs": 31536000,
+            "include_subdomains": true,
             "preload": false
           },
           "allOf": [
@@ -8086,9 +9615,9 @@
         "embedding": {
           "description": "Embedding configuration for generating request embeddings.",
           "default": {
-            "dimensions": 0,
+            "provider": "",
             "model": "",
-            "provider": ""
+            "dimensions": 0
           },
           "allOf": [
             {
@@ -8226,8 +9755,15 @@
           "default": false,
           "type": "boolean"
         },
+        "audio_body_limit_bytes": {
+          "description": "Request body size limit in bytes for audio routes (`/v1/audio/transcriptions`, `/v1/audio/translations`). Whisper-style transcription requests can carry tens of megabytes of audio. Defaults to 100 MB.",
+          "default": 104857600,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
         "body_limit_bytes": {
-          "description": "Request body size limit in bytes.",
+          "description": "Request body size limit in bytes (the *global* cap, applied to every request that doesn't have a more specific override). The audio and file upload routes get a higher per-route limit because their payloads are inherently larger than chat completions.",
           "default": 10485760,
           "type": "integer",
           "format": "uint",
@@ -8236,12 +9772,8 @@
         "cors": {
           "description": "CORS configuration.",
           "default": {
-            "allow_credentials": false,
-            "allowed_headers": [
-              "Content-Type",
-              "Authorization",
-              "X-API-Key"
-            ],
+            "enabled": true,
+            "allowed_origins": [],
             "allowed_methods": [
               "GET",
               "POST",
@@ -8249,8 +9781,12 @@
               "DELETE",
               "OPTIONS"
             ],
-            "allowed_origins": [],
-            "enabled": true,
+            "allowed_headers": [
+              "Content-Type",
+              "Authorization",
+              "X-API-Key"
+            ],
+            "allow_credentials": false,
             "max_age_secs": 86400
           },
           "allOf": [
@@ -8258,6 +9794,13 @@
               "$ref": "#/definitions/CorsConfig"
             }
           ]
+        },
+        "files_body_limit_bytes": {
+          "description": "Request body size limit in bytes for `/v1/files` uploads. Defaults to 512 MB so multi-document RAG ingest works without manual tuning. Operators that don't use file uploads should drop this.",
+          "default": 536870912,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         },
         "host": {
           "description": "Host address to bind to.",
@@ -8268,22 +9811,29 @@
         "http_client": {
           "description": "HTTP client configuration for outbound requests to LLM providers.",
           "default": {
+            "timeout_secs": 300,
+            "verbose": false,
             "connect_timeout_secs": 10,
-            "http2_adaptive_window": true,
-            "http2_prior_knowledge": false,
-            "pool_idle_timeout_secs": 90,
             "pool_max_idle_per_host": 32,
+            "pool_idle_timeout_secs": 90,
+            "http2_prior_knowledge": false,
+            "http2_adaptive_window": true,
             "tcp_keepalive_secs": 60,
             "tcp_nodelay": true,
-            "timeout_secs": 300,
-            "user_agent": "hadrian/0.0.0-alpha.7",
-            "verbose": false
+            "user_agent": "hadrian/0.0.0-alpha.13"
           },
           "allOf": [
             {
               "$ref": "#/definitions/HttpClientConfig"
             }
           ]
+        },
+        "jwt_loader_concurrency": {
+          "description": "Maximum number of per-issuer JWKS endpoints fetched in parallel when warming the gateway JWT validator registry on startup. Higher values speed up startup but risk overwhelming individual IdPs.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         },
         "max_response_body_bytes": {
           "description": "Maximum response body size for buffering provider responses (in bytes). This prevents OOM from malicious or malformed provider responses.",
@@ -8302,25 +9852,45 @@
         "security_headers": {
           "description": "Security headers configuration.",
           "default": {
-            "content_security_policy": "default-src 'self'; script-src 'self' blob: 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'",
-            "content_type_options": "nosniff",
             "enabled": true,
+            "content_type_options": "nosniff",
             "frame_options": "DENY",
             "hsts": {
               "enabled": true,
-              "include_subdomains": true,
               "max_age_secs": 31536000,
+              "include_subdomains": true,
               "preload": false
             },
-            "permissions_policy": null,
+            "content_security_policy": null,
+            "csp_preset": "strict",
+            "xss_protection": null,
             "referrer_policy": "strict-origin-when-cross-origin",
-            "xss_protection": null
+            "permissions_policy": null
           },
           "allOf": [
             {
               "$ref": "#/definitions/SecurityHeadersConfig"
             }
           ]
+        },
+        "shutdown": {
+          "description": "Graceful shutdown timing.",
+          "default": {
+            "usage_buffer_flush_secs": 5,
+            "drain_secs": 30
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ShutdownConfig"
+            }
+          ]
+        },
+        "skills_body_limit_bytes": {
+          "description": "Maximum request body size for skill uploads (`POST /v1/skills` and version creates) in bytes. Covers zip bundles / multipart directories. Defaults to 64 MB.",
+          "default": 67108864,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         },
         "streaming_idle_timeout_secs": {
           "description": "Streaming response idle timeout in seconds.\n\nThis is the maximum time allowed between chunks in a streaming response. If no chunk is received from the upstream provider within this timeout, the stream is terminated.\n\nThis protects against: - Stalled upstream providers that stop sending data - Connection pool exhaustion from hung streams\n\nSet to 0 to disable idle timeout (not recommended). Default: 120 seconds (2 minutes)",
@@ -8351,8 +9921,8 @@
         "trusted_proxies": {
           "description": "Trusted proxy configuration for extracting real client IPs.",
           "default": {
-            "cidrs": [],
             "dangerously_trust_all": false,
+            "cidrs": [],
             "real_ip_header": ""
           },
           "allOf": [
@@ -8364,10 +9934,74 @@
       },
       "additionalProperties": false
     },
+    "ServerToolsConfig": {
+      "description": "Configuration shared by all server-executed tools.\n\nServer-executed tools (`file_search`, `web_search`, etc.) run inside the gateway in a multi-turn loop. This config gates the total number of iterations a single request can drive, across **all** tools — preventing runaway sessions where the model keeps requesting new tool calls.",
+      "type": "object",
+      "properties": {
+        "max_iterations": {
+          "description": "Maximum number of provider continuation requests in one response.\n\nCounts all server-executed tool iterations together (file_search + web_search + shell + …). On the final iteration the tools strip their own definitions from the continuation payload so the model is forced to produce a text response.\n\nDefault: 10.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "pricing": {
+          "description": "Pricing for runtime time consumed by the shell tool.\n\nLocal runtimes (microsandbox) are billed by wall-clock seconds. Passthrough mode (where the upstream provider runs the container) is billed by that provider and remains 0 here.",
+          "default": {
+            "microsandbox_microcents_per_second": 0
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ServerToolsPricingConfig"
+            }
+          ]
+        },
+        "shell_limits": {
+          "description": "Shell-tool execution limits.",
+          "default": {
+            "command_timeout_secs": 300,
+            "default_cpu_limit": null,
+            "default_mem_limit_mb": null,
+            "max_mem_limit_mb": null,
+            "allowed_egress_hosts": [],
+            "allowed_domain_secrets": {},
+            "max_output_chars": 8000,
+            "environment_description": "Alpine Linux (musl libc), minimal base image. Install what you need at the start of a session; nothing beyond busybox + a shell is guaranteed. **Always try `apk` first** — most tools are packaged and it's the fastest, most reliable option: `apk add --no-cache <pkg>`, e.g. `apk add --no-cache curl git python3 py3-pip nodejs npm build-base uv pnpm` (uv and pnpm are in the Alpine community repo on recent releases). Only if a package isn't available via apk, fall back to a language-specific installer: uv via `curl -LsSf https://astral.sh/uv/install.sh | sh`, pnpm via `npm install -g pnpm`, Python libs via `uv pip`/`pip`, Node libs via `pnpm`/`npm`, Rust crates via `cargo`. Installs need network egress to be allowed."
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ShellLimitsConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ServerToolsPricingConfig": {
+      "description": "Cost rates for billable server-tool runtimes.\n\nRates are in **microcents per second** (1/1,000,000 of a dollar per second, matching the precision used elsewhere in `pricing::PricingConfig`). Total cost per shell call is `runtime_seconds * rate`.",
+      "type": "object",
+      "properties": {
+        "microsandbox_microcents_per_second": {
+          "description": "Microcents per second of microsandbox VM wall-clock time. Default 0 (no charge until operator sets a rate).",
+          "default": 0,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "SessionConfig": {
       "description": "Session cookie configuration.",
       "type": "object",
       "properties": {
+        "auth_state_ttl_secs": {
+          "description": "How long an in-flight authorization request (PKCE state, SAML `relay_state`) remains valid, in seconds. Once exceeded, the user must restart the login. Defaults to 10 minutes.",
+          "default": 600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "cookie_name": {
           "description": "Cookie name.",
           "default": "__gw_session",
@@ -8383,11 +10017,11 @@
         "enhanced": {
           "description": "Enhanced session management configuration. Enables session listing, device tracking, and user-to-sessions indexing.",
           "default": {
-            "activity_update_interval_secs": 0,
             "enabled": false,
-            "inactivity_timeout_secs": 0,
+            "track_devices": false,
             "max_concurrent_sessions": 0,
-            "track_devices": false
+            "inactivity_timeout_secs": 0,
+            "activity_update_interval_secs": 0
           },
           "allOf": [
             {
@@ -8416,6 +10050,235 @@
           "description": "Secure cookie (HTTPS only).",
           "default": true,
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShellLimitsConfig": {
+      "description": "Limits enforced on every shell-tool invocation. Sets soft ceilings on wall-clock time and resource use so a runaway model can't pin VM resources indefinitely, and the upper bound for what a per-request `environment` block may ask for.",
+      "type": "object",
+      "properties": {
+        "allowed_domain_secrets": {
+          "description": "Operator-pre-configured secrets the request may reference by `placeholder` in `domain_secrets`. The raw value never leaves the gateway — the model sees only the placeholder, and the runtime substitutes the value at egress to the permitted hosts.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AllowedDomainSecret"
+          }
+        },
+        "allowed_egress_hosts": {
+          "description": "Hostnames (or `*.suffix` patterns) requests may put in `network_policy.domains`. Empty (the default) means requests cannot widen egress beyond whatever the runtime allows by default; use `[\"*\"]` to permit any host.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command_timeout_secs": {
+          "description": "Per-command timeout in seconds. The runtime aborts the exec once this elapses; the persister records the partial output. Default 300 (5 min).",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "default_cpu_limit": {
+          "description": "Default vCPU limit applied when the SessionSpec doesn't specify one. The runtime backend's own default applies when this is `None`.",
+          "default": null,
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "default_mem_limit_mb": {
+          "description": "Default memory limit (MB) applied when the request didn't supply a `container_auto.memory_limit`. The runtime backend's own default applies when this is `None`.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "environment_description": {
+          "description": "Free-text description of the container environment, appended to the shell tool's description the model sees. Use it to explain which toolchains are available and how to install packages, so the model doesn't waste turns probing. Defaults to instructions for the default `alpine` image (how to `apk add` curl, uv, pnpm, etc.); set to `\"\"` to append nothing, or override it to match a different image.",
+          "default": "Alpine Linux (musl libc), minimal base image. Install what you need at the start of a session; nothing beyond busybox + a shell is guaranteed. **Always try `apk` first** — most tools are packaged and it's the fastest, most reliable option: `apk add --no-cache <pkg>`, e.g. `apk add --no-cache curl git python3 py3-pip nodejs npm build-base uv pnpm` (uv and pnpm are in the Alpine community repo on recent releases). Only if a package isn't available via apk, fall back to a language-specific installer: uv via `curl -LsSf https://astral.sh/uv/install.sh | sh`, pnpm via `npm install -g pnpm`, Python libs via `uv pip`/`pip`, Node libs via `pnpm`/`npm`, Rust crates via `cargo`. Installs need network egress to be allowed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_mem_limit_mb": {
+          "description": "Hard ceiling for the per-request `container_auto.memory_limit` override. Requests asking for more than this are rejected with `400`. `None` (the default) means requests can ask for any value the backend supports.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_output_chars": {
+          "description": "Maximum number of characters of stdout/stderr fed back to the model per shell call. Output longer than this is head + tail trimmed with a `... N chars truncated ...` marker so the model still sees both ends. The full stream remains in the response event log; operators can raise this for token-rich models or lower it to bound context spend. Default 8000.",
+          "default": 8000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShellRuntimeConfig": {
+      "description": "Top-level configuration for the `shell` tool runtime.\n\nDefaults to `None`, which disables the shell tool entirely (any shell tool definition in a request is ignored, same as if the feature were not configured).\n\n# Examples\n\nPass-through to OpenAI (works with GPT-5.2+ that has built-in shell):\n\n```toml [features.shell] type = \"passthrough_openai\" ```\n\nClient fulfills shell calls itself (provider-agnostic equivalent of OpenAI's \"local shell\" mode — works behind Anthropic, Bedrock, Vertex, etc. as well as OpenAI):\n\n```toml [features.shell] type = \"client_passthrough\" ```\n\nLocal microVM via microsandbox:\n\n```toml [features.shell] type = \"microsandbox\" endpoint = \"http://localhost:5555\" ```",
+      "oneOf": [
+        {
+          "description": "Shell tool is not configured. Requests with shell tools fail with a clear error so it's obvious the gateway isn't set up.",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "none"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Forward `shell` tool specs to the upstream provider unchanged. Only meaningful when the upstream is OpenAI (the model itself runs the shell call in OpenAI's hosted container).",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "passthrough_open_a_i"
+              ]
+            }
+          }
+        },
+        {
+          "description": "The API client fulfills shell calls itself — Hadrian validates the request, keeps OpenAI's native `shell` spec intact, rewrites it to a function tool for non-OpenAI providers, and skips server-side execution. Wire format the client sees:\n\n- OpenAI: `shell_call` / `shell_call_output` (native). - Anthropic / Bedrock / Vertex: `function_call` with `name=\"shell\"` / `function_call_output` (because those providers have no native shell tool type).\n\nEquivalent to OpenAI's \"local shell\" mode but works behind any supported provider.",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "client_passthrough"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Local microVMs via microsandbox (<https://github.com/superradcompany/microsandbox>).",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "cpus": {
+              "description": "vCPUs per session. Default 1. Range 1..=255; values above 255 are clamped at the SDK boundary.",
+              "default": 1,
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0.0
+            },
+            "image": {
+              "description": "Container image to boot for each session. Default `alpine` — small and fast to pull/boot as a microVM. The base image is minimal; agents are told how to `apk add` toolchains via `[features.server_tools.shell_limits].environment_description`. Use a fatter image (e.g. `ghcr.io/openai/codex-universal`) if you'd rather trade boot time for pre-installed toolchains — and update the `environment_description` to match.",
+              "default": "alpine",
+              "type": "string"
+            },
+            "memory_mb": {
+              "description": "Memory per session in MB. Default 512.",
+              "default": 512,
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0.0
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "microsandbox"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Alibaba OpenSandbox Protocol over HTTP. (<https://github.com/alibaba/OpenSandbox>)",
+          "type": "object",
+          "required": [
+            "endpoint",
+            "type"
+          ],
+          "properties": {
+            "auth_token": {
+              "description": "Optional API key sent in the `OPEN-SANDBOX-API-KEY` header.",
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "default_image": {
+              "description": "Container image used when starting a sandbox. Default `python:3.11-slim`.",
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "endpoint": {
+              "description": "HTTP endpoint of the OpenSandbox Lifecycle API (e.g. `http://localhost:8080/v1`).",
+              "type": "string"
+            },
+            "sandbox_timeout_secs": {
+              "description": "Wall-clock cap, in seconds, the OpenSandbox control plane is asked to enforce on the sandbox lifecycle (`timeout` field on `POST /sandboxes`). Independent of `idle_ttl_secs` (which is Hadrian-side) and `command_timeout_secs` (per-exec). Default 3600 (1h); set lower for cost containment, higher for long agent sessions. Always at least `start_timeout_secs + 60` to keep startup polling under the lifecycle deadline.",
+              "default": 3600,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "start_timeout_secs": {
+              "description": "Maximum seconds to wait for a newly created sandbox to reach `Running` state. Default 60.",
+              "default": 60,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "open_sandbox"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ShutdownConfig": {
+      "description": "Graceful shutdown timing.\n\nThese values were previously hardcoded constants. They control how long the server waits for in-flight work to drain before exiting. The defaults match the prior hardcoded values; deployments with longer-running tasks (or with shorter `terminationGracePeriodSeconds`) should override them.",
+      "type": "object",
+      "properties": {
+        "drain_secs": {
+          "description": "Seconds to wait for outstanding background tasks (request handlers, usage logging, etc.) to complete after the close signal.",
+          "default": 30,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "usage_buffer_flush_secs": {
+          "description": "Seconds to wait for the usage-buffer worker to flush its final batch.",
+          "default": 5,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false
@@ -8476,16 +10339,126 @@
       },
       "additionalProperties": false
     },
+    "SovereigntyConfig": {
+      "description": "Top-level sovereignty configuration.\n\nDefines custom metadata fields that providers and models can set values for. ```toml [[sovereignty.custom_fields]] key = \"data_residency\" title = \"Data Residency\" description = \"Where customer data is physically stored\" ```",
+      "type": "object",
+      "properties": {
+        "custom_fields": {
+          "description": "Custom sovereignty field definitions available to all providers.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CustomSovereigntyFieldDef"
+          }
+        }
+      }
+    },
+    "SovereigntyMetadata": {
+      "description": "Sovereignty and compliance metadata for providers and models.\n\nWhen set at the provider level, these values apply to all models from that provider. Per-model overrides take precedence.",
+      "type": "object",
+      "properties": {
+        "certifications": {
+          "description": "Compliance certifications and regulatory frameworks. Well-known values: \"gdpr\", \"hipaa\", \"soc2\", \"soc2-type2\", \"iso27001\", \"fedramp\", \"fedramp-high\", \"pci-dss\", \"c5\", \"ismap\", \"hipaa-baa\", \"ccpa\", \"dpa\"",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "custom": {
+          "description": "Custom key-value metadata. Keys should match a defined custom field.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "data_retention": {
+          "description": "Provider's data retention policy for request/response data. Well-known values: \"none\", \"30d\", \"90d\", \"1y\", \"indefinite\"",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hq_country": {
+          "description": "ISO 3166-1 alpha-2 country code of the provider's headquarters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inference_countries": {
+          "description": "ISO 3166-1 alpha-2 country codes where model inference runs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "license": {
+          "description": "Model license identifier. Well-known values: \"proprietary\", \"apache-2.0\", \"mit\", \"llama-3.1\", \"gemma\", \"mistral\", \"cc-by-4.0\", \"cc-by-nc-4.0\"",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "description": "Free-form notes for additional context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_prem": {
+          "description": "Whether this provider/model runs on infrastructure operated by the org.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "trains_on_data": {
+          "description": "Whether the provider trains on customer data. None = unknown, true = yes, false = no (or opt-out available).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "StaticModelsCacheConfig": {
+      "description": "Configuration for the static models cache.\n\nModel lists from config-file providers are cached in memory and refreshed periodically so that `/v1/models` does not make upstream HTTP calls on every request.\n\n```toml [features.static_models_cache] refresh_interval_secs = 300 ```",
+      "type": "object",
+      "properties": {
+        "refresh_interval_secs": {
+          "description": "How often to refresh the cached model lists, in seconds. Set to 0 to disable caching (every request will query providers directly). Default: 300 (5 minutes).",
+          "default": 300,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
     "StorageConfig": {
       "description": "Storage configuration for files and other binary data.",
       "type": "object",
       "properties": {
-        "files": {
-          "description": "File storage configuration.",
+        "container_files": {
+          "description": "Storage for container output files — artifacts the agentic shell tool captures under `/mnt/data` and serves from `/v1/containers/{id}/files/{id}/content`.\n\nDefaults to the `database` backend (bytes inline in `container_files.file_data`), which is simple but scales poorly for large or numerous artifacts. Point it at `filesystem` or `s3` to offload the bytes. Independent from `[storage.files]` so operators can keep small uploaded files in the DB while routing bulky agent-generated artifacts to object storage.",
           "default": {
             "backend": "database",
-            "filesystem": null,
-            "s3": null
+            "s3": null,
+            "filesystem": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/FileStorageConfig"
+            }
+          ]
+        },
+        "files": {
+          "description": "Storage for the Files API (`/v1/files`) — the same resource that backs Knowledge Bases and Responses-API `input_file` references.",
+          "default": {
+            "backend": "database",
+            "s3": null,
+            "filesystem": null
           },
           "allOf": [
             {
@@ -8510,6 +10483,13 @@
         "max_output_buffer_chunks": {
           "description": "Maximum number of output chunks to buffer. Protects against slow consumers causing unbounded memory growth. Default: 1000 chunks",
           "default": 1000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_response_state_bytes": {
+          "description": "Maximum total bytes of accumulated response state (text and reasoning content) per stream. Bounds memory usage if a provider produces a runaway response. Bytes beyond this cap are silently dropped from the state buffer, but pass-through deltas are still emitted to the client. Default: 32 MB",
+          "default": 33554432,
           "type": "integer",
           "format": "uint",
           "minimum": 0.0
@@ -8853,13 +10833,18 @@
       ]
     },
     "TlsConfig": {
-      "description": "TLS configuration.",
+      "description": "TLS configuration.\n\nNative TLS termination is not yet implemented. Until it is, the gateway listens on plain HTTP and operators must terminate TLS upstream (reverse proxy / load balancer). Setting `[server.tls]` without `acknowledge_unsupported = true` is treated as a misconfiguration and refuses startup, so an operator following stale documentation can't silently expose plaintext.",
       "type": "object",
       "required": [
         "cert_path",
         "key_path"
       ],
       "properties": {
+        "acknowledge_unsupported": {
+          "description": "Set to `true` to acknowledge that native TLS termination is not yet implemented and the gateway will continue to listen on plain HTTP. When unset, the gateway refuses to start to avoid an operator accidentally exposing plaintext after copying TLS config from stale documentation.",
+          "default": false,
+          "type": "boolean"
+        },
         "cert_path": {
           "description": "Path to the certificate file (PEM format).",
           "type": "string"
@@ -8871,8 +10856,64 @@
       },
       "additionalProperties": false
     },
+    "ToolSearchConfig": {
+      "description": "Settings for Hadrian-side tool search over a deferred MCP catalog.\n\nEngages under `hadrian_hosted` when a request marks an `mcp` tool entry with `defer_loading: true` (and does not opt into native passthrough). Hadrian exposes a single `tool_search` function tool, keeps the catalog server-side, and injects matched per-tool function definitions as the model discovers them.",
+      "type": "object",
+      "properties": {
+        "embedding": {
+          "description": "Embedding configuration for semantic/hybrid ranking. When omitted, resolution falls back to the `file_search` then semantic-cache embedding config; if none resolve, `hybrid` degrades to `lexical`.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EmbeddingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_results": {
+          "description": "Maximum number of tools a single search returns.",
+          "default": 20,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "ranker": {
+          "description": "Deployment default ranking strategy. Overridable per-request via the `tool_search` tool's `ranker` extension field. `hybrid` (the default) fuses semantic + lexical relevance; `semantic` requires a resolvable embedding provider (validated at startup); `lexical` needs no embeddings.",
+          "default": "hybrid",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolSearchRankerKind"
+            }
+          ]
+        },
+        "rrf_k": {
+          "description": "RRF smoothing constant `k` for `hybrid` fusion (default 60, per the original RRF paper).",
+          "default": 60,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "score_threshold": {
+          "description": "Minimum relevance score (0.0–1.0) a tool must reach to be returned. Applies only to the `lexical` and `semantic` rankers, whose scores are normalized to this range. The default `hybrid` ranker fuses ranks via RRF and produces a small ranking-only score (not a 0–1 relevance), so the threshold is *ignored* for it — otherwise any non-zero value would drop every result. Use `max_results` to bound hybrid output.",
+          "default": 0.0,
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolSearchRankerKind": {
+      "description": "Ranking strategy for Hadrian-side tool search over a deferred MCP catalog. `Hybrid` fuses semantic + lexical relevance (RRF); `Semantic` is embedding cosine only; `Lexical` is token/substring scoring with no embedding dependency.",
+      "type": "string",
+      "enum": [
+        "hybrid",
+        "semantic",
+        "lexical"
+      ]
+    },
     "TracingConfig": {
-      "description": "Tracing configuration.",
+      "description": "Tracing configuration.\n\nNote: `Default` is implemented manually rather than derived because the auto-derived `String::default()` for `service_name` would be empty, which silently disables the `OTEL_SERVICE_NAME` env-var override path in `tracing_init` (it only honors the env var when `service_name` still equals the documented default \"hadrian\"). Keeping this default in sync with [`default_service_name`] makes the env override work whether the config is constructed via TOML (serde) or `Default::default()`.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -8920,8 +10961,8 @@
         "sampling": {
           "description": "Sampling configuration.",
           "default": {
-            "rate": 1.0,
-            "strategy": "always_on"
+            "strategy": "always_on",
+            "rate": 1.0
           },
           "allOf": [
             {
@@ -8989,10 +11030,10 @@
         "assets": {
           "description": "Static assets configuration.",
           "default": {
-            "cache_control": "public, max-age=31536000, immutable",
             "source": {
               "type": "embedded"
-            }
+            },
+            "cache_control": "public, max-age=31536000, immutable"
           },
           "allOf": [
             {
@@ -9003,19 +11044,19 @@
         "branding": {
           "description": "Branding customization.",
           "default": {
+            "title": null,
+            "tagline": null,
+            "logo_url": null,
+            "logo_dark_url": null,
+            "favicon_url": null,
             "colors": null,
             "colors_dark": null,
-            "custom_css_url": null,
-            "favicon_url": null,
             "fonts": null,
-            "footer_links": [],
+            "custom_css_url": null,
             "footer_text": null,
-            "login": null,
-            "logo_dark_url": null,
-            "logo_url": null,
+            "footer_links": [],
             "show_version": false,
-            "tagline": null,
-            "title": null
+            "login": null
           },
           "allOf": [
             {
@@ -9026,10 +11067,12 @@
         "chat": {
           "description": "Chat interface configuration.",
           "default": {
-            "available_models": [],
-            "default_model": null,
             "enabled": true,
+            "default_model": null,
+            "available_models": [],
             "file_uploads": {
+              "enabled": false,
+              "max_size_bytes": 10485760,
               "allowed_types": [
                 "image/png",
                 "image/jpeg",
@@ -9039,8 +11082,6 @@
                 "text/plain",
                 "text/markdown"
               ],
-              "enabled": false,
-              "max_size_bytes": 10485760,
               "storage": {
                 "type": "database"
               }
@@ -9056,6 +11097,79 @@
           "description": "Enable the UI.",
           "default": false,
           "type": "boolean"
+        },
+        "mcp": {
+          "description": "MCP (Model Context Protocol) UI configuration.",
+          "default": {
+            "favorites": [
+              {
+                "name": "Platter",
+                "url": "io.github.hadriangateway/platter"
+              },
+              {
+                "name": "Atlassian",
+                "url": "https://mcp.atlassian.com/v1/mcp"
+              },
+              {
+                "name": "Notion",
+                "url": "https://mcp.notion.com/mcp"
+              },
+              {
+                "name": "Hugging Face",
+                "url": "https://huggingface.co/mcp"
+              },
+              {
+                "name": "Miro",
+                "url": "https://mcp.miro.com/"
+              },
+              {
+                "name": "Vercel",
+                "url": "https://mcp.vercel.com"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpUiConfig"
+            }
+          ]
+        },
+        "pages": {
+          "description": "Per-page visibility configuration.",
+          "default": {
+            "chat": "enabled",
+            "studio": "enabled",
+            "projects": "enabled",
+            "teams": "enabled",
+            "knowledge_bases": "enabled",
+            "containers": "enabled",
+            "api_keys": "enabled",
+            "providers": "enabled",
+            "usage": "enabled",
+            "admin": {
+              "dashboard": "enabled",
+              "organizations": "enabled",
+              "projects": "enabled",
+              "teams": "enabled",
+              "service_accounts": "enabled",
+              "users": "enabled",
+              "sso": "enabled",
+              "session_info": "enabled",
+              "api_keys": "enabled",
+              "providers": "enabled",
+              "provider_health": "enabled",
+              "knowledge_bases": "enabled",
+              "pricing": "enabled",
+              "usage": "enabled",
+              "audit_logs": "enabled",
+              "settings": "enabled"
+            }
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PagesConfig"
+            }
+          ]
         },
         "path": {
           "description": "Path to serve the UI from (default: /).",
@@ -9182,9 +11296,9 @@
         "buffer": {
           "description": "Buffer configuration for batched writes.",
           "default": {
+            "max_size": 1000,
             "flush_interval_ms": 1000,
-            "max_pending_entries": 10000,
-            "max_size": 1000
+            "max_pending_entries": 10000
           },
           "allOf": [
             {
@@ -9198,16 +11312,12 @@
           "type": "boolean"
         },
         "otlp": {
-          "description": "OTLP exporter for usage data. Sends usage records as OTLP log records to any OpenTelemetry-compatible backend.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/UsageOtlpConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "description": "OTLP exporters for usage data. Sends usage records as OTLP log records to one or more OpenTelemetry-compatible backends. Each entry creates an independent exporter, allowing fan-out to multiple destinations.\n\n```toml [[observability.usage.otlp]] name = \"grafana\" endpoint = \"https://otlp-gateway.grafana.net/otlp\" headers = { Authorization = \"Basic xxx\" }\n\n[[observability.usage.otlp]] name = \"datadog\" endpoint = \"https://otel.datadoghq.com\" headers = { \"DD-API-KEY\" = \"xxx\" } ```",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UsageOtlpConfig"
+          }
         }
       },
       "additionalProperties": false
@@ -9241,6 +11351,14 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "name": {
+          "description": "Human-readable name for this endpoint (used in logs/metrics). Defaults to the endpoint URL if not specified.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "protocol": {
           "description": "Protocol (grpc or http).",
@@ -9358,6 +11476,120 @@
         }
       },
       "additionalProperties": false
+    },
+    "WebFetchConfig": {
+      "description": "Web fetch configuration for backend-proxied URL fetching.\n\n# Example Configuration\n\n```toml [features.web_fetch] max_response_bytes = 1048576 timeout_secs = 30 ```",
+      "type": "object",
+      "properties": {
+        "allowed_content_types": {
+          "description": "Allowed response content types.",
+          "default": [
+            "text/html",
+            "text/plain",
+            "application/json",
+            "application/xml",
+            "text/xml",
+            "text/csv",
+            "text/markdown"
+          ],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cost_microcents_per_request": {
+          "description": "Cost per fetch request in microcents (1/1,000,000 of a dollar). Default: 0 (free)",
+          "default": 0,
+          "type": "integer",
+          "format": "int64"
+        },
+        "enabled": {
+          "description": "Enable web fetch tool.",
+          "default": true,
+          "type": "boolean"
+        },
+        "max_response_bytes": {
+          "description": "Maximum response body size in bytes.",
+          "default": 1048576,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "timeout_secs": {
+          "description": "Timeout in seconds for fetch requests.",
+          "default": 30,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WebSearchConfig": {
+      "description": "Web search configuration for backend-proxied search.\n\n# Example Configuration\n\n```toml [features.web_search] provider = \"tavily\" api_key = \"${TAVILY_API_KEY}\" max_results = 10 timeout_secs = 30 ```",
+      "type": "object",
+      "required": [
+        "api_key",
+        "provider"
+      ],
+      "properties": {
+        "api_key": {
+          "description": "API key for the search provider. Supports `${ENV_VAR}` interpolation.",
+          "writeOnly": true,
+          "type": "string"
+        },
+        "cost_microcents_per_request": {
+          "description": "Cost per search request in microcents (1/1,000,000 of a dollar). Default: 10000 = $0.01",
+          "default": 10000,
+          "type": "integer",
+          "format": "int64"
+        },
+        "max_content_chars": {
+          "description": "Maximum characters of content text per search result. Applies to Exa's `text.maxCharacters` parameter. Tavily returns concise summaries by default so this is not needed there. Set to 0 to disable (return full text). Default: 2000.",
+          "default": 2000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_iterations": {
+          "description": "Maximum web search tool call iterations before forcing text completion. Lower than file_search since web search rarely needs multiple rounds.",
+          "default": 3,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "max_results": {
+          "description": "Maximum number of results to return per search.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "provider": {
+          "description": "Search provider backend.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/WebSearchProvider"
+            }
+          ]
+        },
+        "timeout_secs": {
+          "description": "Timeout in seconds for search requests.",
+          "default": 30,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WebSearchProvider": {
+      "description": "Supported web search providers.",
+      "type": "string",
+      "enum": [
+        "tavily",
+        "exa"
+      ]
     },
     "WebSocketConfig": {
       "description": "WebSocket configuration for real-time event subscriptions.\n\nWhen enabled, clients can connect to `/ws/events` to receive real-time notifications about server events such as audit logs, usage tracking, circuit breaker state changes, and budget alerts.\n\n# Authentication\n\nWebSocket connections can be authenticated via: - Query parameter `token` - API key for programmatic access - Session cookie - For browser-based access (requires prior OIDC login)\n\nIf `require_auth` is true, unauthenticated connections will be rejected.\n\n# Example Configuration\n\n```toml [features.websocket] enabled = true require_auth = true ping_interval_secs = 30 pong_timeout_secs = 60 ```",

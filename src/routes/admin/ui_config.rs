@@ -88,7 +88,11 @@ pub struct ColorPaletteResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_foreground: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_foreground: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -355,7 +359,9 @@ impl From<&ColorPalette> for ColorPaletteResponse {
     fn from(config: &ColorPalette) -> Self {
         Self {
             primary: config.primary.clone(),
+            primary_foreground: config.primary_foreground.clone(),
             secondary: config.secondary.clone(),
+            secondary_foreground: config.secondary_foreground.clone(),
             accent: config.accent.clone(),
             background: config.background.clone(),
             foreground: config.foreground.clone(),

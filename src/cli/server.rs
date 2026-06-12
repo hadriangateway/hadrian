@@ -96,6 +96,7 @@ pub(crate) async fn run_server(explicit_config_path: Option<&str>, no_browser: b
     if !config.auth.rbac.enabled {
         tracing::warn!("RBAC disabled — all authorization checks will pass");
     }
+    config.ui.log_startup_warnings();
 
     // Show welcome message for new configs
     if is_new_config {
