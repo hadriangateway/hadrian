@@ -166,6 +166,12 @@ pub struct AdminResponse {
 
 #[derive(Debug, Serialize)]
 pub struct AuthResponse {
+    /// Auth methods available to the SPA. Values: "none" (no auth),
+    /// "api_key" (key login form), "header" (IAP reverse proxy),
+    /// "session" (IdP mode — cookie sessions, probe /auth/me),
+    /// "per_org_sso" (email discovery for per-org OIDC/SAML). The frontend
+    /// treats "session", "per_org_sso", and legacy "oidc" as cookie-session
+    /// methods (`COOKIE_SESSION_METHODS` in ui/src/auth/types.ts).
     pub methods: Vec<String>,
     pub oidc: Option<OidcResponse>,
 }

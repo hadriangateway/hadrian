@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, waitFor, within } from "storybook/test";
 import { http, HttpResponse } from "msw";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -57,6 +58,24 @@ const mockPerOrgSsoConfig: UiConfig = {
   ...mockApiKeyConfig,
   auth: {
     methods: ["per_org_sso", "api_key"],
+    oidc: null,
+  },
+};
+
+// IdP mode: cookie sessions + per-org SSO discovery, no API key fallback
+const mockIdpConfig: UiConfig = {
+  ...mockApiKeyConfig,
+  auth: {
+    methods: ["session", "per_org_sso"],
+    oidc: null,
+  },
+};
+
+// IdP mode before any org SSO config is enabled (bootstrap state)
+const mockIdpNoOrgSsoConfig: UiConfig = {
+  ...mockApiKeyConfig,
+  auth: {
+    methods: ["session"],
     oidc: null,
   },
 };
@@ -180,6 +199,70 @@ export const WithPerOrgSso: Story = {
     msw: {
       handlers: createHandlers(mockPerOrgSsoConfig),
     },
+  },
+};
+
+/** IdP mode: email discovery only — the gateway advertises ["session", "per_org_sso"]. */
+export const IdpMode: Story = {
+  parameters: {
+    msw: {
+      handlers: createHandlers(mockIdpConfig),
+    },
+  },
+};
+
+/**
+ * IdP mode before any org SSO config is enabled. No login flow can succeed
+ * yet (discovery has nothing to find), so the page shows setup guidance
+ * instead of an email form that would dead-end on every submission.
+ */
+export const IdpModeNoOrgSso: Story = {
+  parameters: {
+    msw: {
+      handlers: createHandlers(mockIdpNoOrgSsoConfig),
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByText(/no identity provider has been configured/i)).toBeInTheDocument();
+    });
+    expect(canvas.queryByLabelText(/work email/i)).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * Regression: a user returning from per-org SSO holds a session cookie, so
+ * /auth/me succeeds. The session probe must run for IdP-mode method sets
+ * (["session", "per_org_sso"], no "oidc") and redirect away from the login
+ * page instead of bouncing the user back to the email form.
+ */
+export const IdpModeWithExistingSession: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/admin/v1/ui/config", () => {
+          return HttpResponse.json(mockIdpConfig);
+        }),
+        http.get("*/auth/me", () => {
+          return HttpResponse.json({
+            external_id: "okta|user-1",
+            email: "user@example.com",
+            name: "Example User",
+            user_id: "11111111-1111-1111-1111-111111111111",
+            roles: [],
+          });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.queryByText("Loading...")).not.toBeInTheDocument();
+    });
+    expect(canvas.queryByLabelText(/work email/i)).not.toBeInTheDocument();
+    expect(canvas.queryByText(/no authentication methods available/i)).not.toBeInTheDocument();
   },
 };
 

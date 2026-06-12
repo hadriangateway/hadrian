@@ -133,7 +133,7 @@ export interface AuthConfig {
   oidc: OidcConfig | null;
 }
 
-export type AuthMethod = "none" | "api_key" | "oidc" | "header" | "per_org_sso";
+export type AuthMethod = "none" | "api_key" | "oidc" | "header" | "session" | "per_org_sso";
 
 export interface SovereigntyUiConfig {
   custom_fields: CustomSovereigntyFieldDef[];

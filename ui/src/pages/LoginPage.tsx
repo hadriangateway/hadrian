@@ -91,6 +91,12 @@ export default function LoginPage() {
   const hasOidc = authMethods.includes("oidc") && config?.auth.oidc;
   const hasPerOrgSso = authMethods.includes("per_org_sso");
   const hasEmailDiscovery = hasOidc || hasPerOrgSso;
+  // "session" alone (IdP mode before any org SSO config is enabled) means the
+  // login page has no flow that can succeed — /auth/discover has nothing to
+  // find — so show setup guidance instead of a discovery form that always
+  // dead-ends.
+  const hasSession = authMethods.includes("session");
+  const ssoNotConfigured = hasSession && !hasEmailDiscovery && !hasApiKey;
 
   const onApiKeySubmit = async (data: LoginForm) => {
     setError(null);
@@ -352,7 +358,14 @@ export default function LoginPage() {
             </form>
           )}
 
-          {!hasApiKey && !hasEmailDiscovery && (
+          {ssoNotConfigured && (
+            <p className="text-center text-muted-foreground">
+              Single sign-on is enabled, but no identity provider has been configured yet. Contact
+              your administrator to complete the setup.
+            </p>
+          )}
+
+          {!hasApiKey && !hasEmailDiscovery && !ssoNotConfigured && (
             <p className="text-center text-muted-foreground">
               No authentication methods available. Please check your configuration.
             </p>
