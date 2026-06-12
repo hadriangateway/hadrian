@@ -5708,6 +5708,53 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn test_get_ui_config_pages_containers_default() {
+        let app = test_app_with_config(&unique_db_config()).await;
+        let (status, body) = get_json(&app, "/admin/v1/ui/config").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["pages"]["containers"]["status"], "enabled");
+    }
+
+    #[tokio::test]
+    async fn test_get_ui_config_pages_containers_feature_disabled() {
+        let config_str = format!(
+            r#"
+{}
+
+[features.containers]
+enabled = false
+"#,
+            unique_db_config()
+        );
+
+        let app = test_app_with_config(&config_str).await;
+        let (status, body) = get_json(&app, "/admin/v1/ui/config").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["pages"]["containers"]["status"], "disabled");
+    }
+
+    #[tokio::test]
+    async fn test_get_ui_config_pages_containers_page_disabled() {
+        let config_str = format!(
+            r#"
+{}
+
+[ui.pages]
+containers = "disabled"
+"#,
+            unique_db_config()
+        );
+
+        let app = test_app_with_config(&config_str).await;
+        let (status, body) = get_json(&app, "/admin/v1/ui/config").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["pages"]["containers"]["status"], "disabled");
+    }
+
+    #[tokio::test]
     async fn test_get_ui_config_auth_api_key() {
         let config_str = format!(
             r#"

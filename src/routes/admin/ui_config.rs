@@ -204,6 +204,7 @@ pub struct PagesResponse {
     pub projects: PageConfigResponse,
     pub teams: PageConfigResponse,
     pub knowledge_bases: PageConfigResponse,
+    pub containers: PageConfigResponse,
     pub api_keys: PageConfigResponse,
     pub providers: PageConfigResponse,
     pub usage: PageConfigResponse,
@@ -247,6 +248,7 @@ impl From<&PagesConfig> for PagesResponse {
             projects: PageConfigResponse::from(&config.projects),
             teams: PageConfigResponse::from(&config.teams),
             knowledge_bases: PageConfigResponse::from(&config.knowledge_bases),
+            containers: PageConfigResponse::from(&config.containers),
             api_keys: PageConfigResponse::from(&config.api_keys),
             providers: PageConfigResponse::from(&config.providers),
             usage: PageConfigResponse::from(&config.usage),
@@ -392,6 +394,16 @@ impl Default for AuthResponse {
 pub async fn get_ui_config(State(state): State<AppState>) -> Json<UiConfigResponse> {
     let ui_config = &state.config.ui;
     let mut response = UiConfigResponse::from(ui_config);
+
+    // With [features.containers] disabled the shell tool never persists
+    // containers, so the Containers page would only ever show an empty
+    // list — hide it regardless of [ui.pages] settings.
+    if !state.config.features.containers.enabled {
+        response.pages.containers = PageConfigResponse {
+            status: PageStatus::Disabled,
+            notice_message: None,
+        };
+    }
 
     // Add sovereignty custom field definitions
     response.sovereignty = SovereigntyUiResponse {
