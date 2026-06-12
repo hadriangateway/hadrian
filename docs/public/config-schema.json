@@ -1643,7 +1643,7 @@
       "type": "object",
       "properties": {
         "colors": {
-          "description": "Color palette for light mode.",
+          "description": "Color palette for light mode and brand identity. The identity keys `primary` and `primary_foreground` also apply in dark mode unless overridden in `colors_dark`; all other keys affect light mode only.",
           "default": null,
           "anyOf": [
             {
@@ -1655,7 +1655,7 @@
           ]
         },
         "colors_dark": {
-          "description": "Color palette overrides for dark mode.",
+          "description": "Per-key dark mode overrides. `primary` and `primary_foreground` fall back to `colors` when unset here. Surface keys (`background`, `foreground`, `border`, `muted`, `secondary`, `secondary_foreground`, `accent`) fall back to the built-in dark theme — never to `colors` — so set them here too when branding surfaces in light mode.",
           "default": null,
           "anyOf": [
             {
@@ -2138,7 +2138,7 @@
       "type": "object",
       "properties": {
         "accent": {
-          "description": "Accent color for highlights and CTAs (hex).",
+          "description": "Accent color for highlights and CTAs (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -2146,7 +2146,7 @@
           ]
         },
         "background": {
-          "description": "Background color (hex).",
+          "description": "Background color (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -2154,7 +2154,7 @@
           ]
         },
         "border": {
-          "description": "Border color (hex).",
+          "description": "Border color (hex). Mode-scoped: applies only to the palette it is set in. Also drives input borders.",
           "default": null,
           "type": [
             "string",
@@ -2162,7 +2162,7 @@
           ]
         },
         "foreground": {
-          "description": "Foreground/text color (hex).",
+          "description": "Foreground/text color (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -2170,7 +2170,7 @@
           ]
         },
         "muted": {
-          "description": "Muted color for subtle backgrounds (hex).",
+          "description": "Muted color for subtle backgrounds (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",
@@ -2178,7 +2178,7 @@
           ]
         },
         "primary": {
-          "description": "Primary brand color (hex, e.g., \"#3b82f6\").",
+          "description": "Primary brand color (hex, e.g., \"#3b82f6\"). Identity key: carries into dark mode unless overridden in `colors_dark`. Also drives the focus ring color and, in light mode, the accent text color.",
           "default": null,
           "type": [
             "string",
@@ -2186,7 +2186,7 @@
           ]
         },
         "primary_foreground": {
-          "description": "Text color on primary backgrounds (hex, e.g., \"#ffffff\"). Used for text on primary buttons like \"New Chat\".",
+          "description": "Text color on primary backgrounds (hex, e.g., \"#ffffff\"). Used for text on primary buttons like \"New Chat\". Identity key: carries into dark mode unless overridden. Defaults to `#ffffff` whenever the effective `primary` is set.",
           "default": null,
           "type": [
             "string",
@@ -2194,7 +2194,7 @@
           ]
         },
         "secondary": {
-          "description": "Secondary color for secondary actions (hex).",
+          "description": "Secondary color for secondary actions (hex). Mode-scoped: applies only to the palette it is set in (light `colors` / dark `colors_dark`).",
           "default": null,
           "type": [
             "string",
@@ -2202,7 +2202,7 @@
           ]
         },
         "secondary_foreground": {
-          "description": "Text color on secondary backgrounds (hex).",
+          "description": "Text color on secondary backgrounds (hex). Mode-scoped: applies only to the palette it is set in.",
           "default": null,
           "type": [
             "string",

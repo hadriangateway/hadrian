@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { UiConfig, ColorPalette, FontsConfig, CustomFont } from "./types";
+import { buildBrandingColorCss, normalizeFontWeight } from "./brandingCss";
 import { defaultConfig, defaultPagesConfig, getApiBaseUrl } from "./defaults";
 
 interface ConfigContextValue {
@@ -14,18 +15,6 @@ const ConfigContext = createContext<ConfigContextValue | null>(null);
 const BRANDING_STYLE_ID = "hadrian-branding-colors";
 const BRANDING_FONTS_STYLE_ID = "hadrian-branding-fonts";
 
-/** Permissive color literal: hex, rgb()/hsl()/oklch()/var(), CSS keyword.
- *  Rejects anything containing CSS control chars (`{`, `}`, `;`, `<`, etc.)
- *  so a misconfigured branding payload can't break out of the rule and
- *  inject arbitrary CSS into the page. */
-const COLOR_RE = /^[a-zA-Z0-9#%(),.\s\-/_]+$/;
-
-function isSafeColor(value: string | undefined): value is string {
-  return (
-    typeof value === "string" && value.length > 0 && value.length < 200 && COLOR_RE.test(value)
-  );
-}
-
 /** Validate a font-family name. Quotes/braces/semicolons in here would let
  *  an attacker close the `font-family` declaration and inject other rules. */
 const FONT_NAME_RE = /^[a-zA-Z0-9 \-_]+$/;
@@ -36,60 +25,25 @@ function isSafeFontName(value: string | undefined): value is string {
   );
 }
 
-/** Only accept absolute https/data URLs for font sources. */
-function isSafeFontUrl(value: string | undefined): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+/** Only accept absolute https/data URLs. Returns the normalized href (never
+ *  the raw input) so it can be interpolated into a double-quoted CSS url()
+ *  string. Quotes and backslashes could terminate that string; https hrefs
+ *  percent-encode them, but data: URLs have opaque paths where they survive
+ *  normalization, so reject any that remain. */
+function safeFontUrl(value: string | undefined): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return null;
   try {
     const url = new URL(value, window.location.origin);
-    return url.protocol === "https:" || url.protocol === "data:";
+    if (url.protocol !== "https:" && url.protocol !== "data:") return null;
+    if (/["\\\n\r]/.test(url.href)) return null;
+    return url.href;
   } catch {
-    return false;
+    return null;
   }
 }
 
-/**
- * Generates CSS variable overrides from a color palette
- */
-function generateColorCss(colors: ColorPalette, selector: string): string {
-  const rules: string[] = [];
-
-  if (isSafeColor(colors.primary)) {
-    rules.push(`--color-primary: ${colors.primary};`);
-    rules.push(`--color-ring: ${colors.primary};`);
-    // Set accent-foreground to primary color for consistent branding on selected items
-    rules.push(`--color-accent-foreground: ${colors.primary};`);
-  }
-  if (isSafeColor(colors.primary_foreground)) {
-    rules.push(`--color-primary-foreground: ${colors.primary_foreground};`);
-  } else if (isSafeColor(colors.primary)) {
-    // Default to white if primary is set but primary_foreground is not
-    rules.push(`--color-primary-foreground: #ffffff;`);
-  }
-  if (isSafeColor(colors.secondary)) {
-    rules.push(`--color-secondary: ${colors.secondary};`);
-  }
-  if (isSafeColor(colors.secondary_foreground)) {
-    rules.push(`--color-secondary-foreground: ${colors.secondary_foreground};`);
-  }
-  if (isSafeColor(colors.accent)) {
-    rules.push(`--color-accent: ${colors.accent};`);
-  }
-  if (isSafeColor(colors.background)) {
-    rules.push(`--color-background: ${colors.background};`);
-  }
-  if (isSafeColor(colors.foreground)) {
-    rules.push(`--color-foreground: ${colors.foreground};`);
-  }
-  if (isSafeColor(colors.muted)) {
-    rules.push(`--color-muted: ${colors.muted};`);
-  }
-  if (isSafeColor(colors.border)) {
-    rules.push(`--color-border: ${colors.border};`);
-    rules.push(`--color-input: ${colors.border};`);
-  }
-
-  if (rules.length === 0) return "";
-  return `${selector} { ${rules.join(" ")} }`;
+function isSafeFontUrl(value: string | undefined): value is string {
+  return safeFontUrl(value) !== null;
 }
 
 /**
@@ -102,10 +56,7 @@ function injectBrandingColors(colors: ColorPalette, colorsDark: ColorPalette | n
     existing.remove();
   }
 
-  const lightCss = generateColorCss(colors, ":root");
-  const darkCss = colorsDark ? generateColorCss(colorsDark, ".dark") : "";
-
-  const css = [lightCss, darkCss].filter(Boolean).join("\n");
+  const css = buildBrandingColorCss(colors, colorsDark);
   if (!css) return;
 
   const style = document.createElement("style");
@@ -121,23 +72,23 @@ function injectBrandingColors(colors: ColorPalette, colorsDark: ColorPalette | n
  */
 function generateFontFaceRules(customFonts: CustomFont[]): string {
   return customFonts
-    .filter((font) => {
-      const ok = isSafeFontName(font.name) && isSafeFontUrl(font.url);
-      if (!ok) {
+    .flatMap((font) => {
+      const url = safeFontUrl(font.url);
+      if (!isSafeFontName(font.name) || url === null) {
         console.warn("Ignoring branded custom font with unsafe name or URL", font);
+        return [];
       }
-      return ok;
-    })
-    .map((font) => {
-      const weight = Number.isFinite(Number(font.weight)) ? Number(font.weight) : 400;
+      const weight = normalizeFontWeight(font.weight);
       const style = font.style === "italic" || font.style === "oblique" ? font.style : "normal";
-      return `@font-face {
+      return [
+        `@font-face {
   font-family: "${font.name}";
-  src: url("${font.url}");
+  src: url("${url}");
   font-weight: ${weight};
   font-style: ${style};
   font-display: swap;
-}`;
+}`,
+      ];
     })
     .join("\n\n");
 }

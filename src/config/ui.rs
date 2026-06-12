@@ -53,6 +53,23 @@ impl Default for UiConfig {
     }
 }
 
+impl UiConfig {
+    /// Emit non-fatal warnings for misconfigured branding. Must be called
+    /// after tracing is initialized — config load/validation runs before the
+    /// subscriber exists, so warnings emitted there are silently dropped.
+    pub fn log_startup_warnings(&self) {
+        if let Some(ref colors) = self.branding.colors {
+            for key in missing_dark_surface_keys(colors, self.branding.colors_dark.as_ref()) {
+                tracing::warn!(
+                    "[ui.branding] colors.{key} is set but colors_dark.{key} is not; \
+                     dark mode will use the default dark {key}. Set \
+                     ui.branding.colors_dark.{key} to brand dark mode."
+                );
+            }
+        }
+    }
+}
+
 /// MCP (Model Context Protocol) UI configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
@@ -326,11 +343,17 @@ pub struct BrandingConfig {
     #[serde(default)]
     pub favicon_url: Option<String>,
 
-    /// Color palette for light mode.
+    /// Color palette for light mode and brand identity. The identity keys
+    /// `primary` and `primary_foreground` also apply in dark mode unless
+    /// overridden in `colors_dark`; all other keys affect light mode only.
     #[serde(default)]
     pub colors: Option<ColorPalette>,
 
-    /// Color palette overrides for dark mode.
+    /// Per-key dark mode overrides. `primary` and `primary_foreground` fall
+    /// back to `colors` when unset here. Surface keys (`background`,
+    /// `foreground`, `border`, `muted`, `secondary`, `secondary_foreground`,
+    /// `accent`) fall back to the built-in dark theme — never to `colors` —
+    /// so set them here too when branding surfaces in light mode.
     #[serde(default)]
     pub colors_dark: Option<ColorPalette>,
 
@@ -364,42 +387,104 @@ pub struct BrandingConfig {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ColorPalette {
-    /// Primary brand color (hex, e.g., "#3b82f6").
+    /// Primary brand color (hex, e.g., "#3b82f6"). Identity key: carries
+    /// into dark mode unless overridden in `colors_dark`. Also drives the
+    /// focus ring color and, in light mode, the accent text color.
     #[serde(default)]
     pub primary: Option<String>,
 
     /// Text color on primary backgrounds (hex, e.g., "#ffffff").
-    /// Used for text on primary buttons like "New Chat".
+    /// Used for text on primary buttons like "New Chat". Identity key:
+    /// carries into dark mode unless overridden. Defaults to `#ffffff`
+    /// whenever the effective `primary` is set.
     #[serde(default)]
     pub primary_foreground: Option<String>,
 
-    /// Secondary color for secondary actions (hex).
+    /// Secondary color for secondary actions (hex). Mode-scoped: applies
+    /// only to the palette it is set in (light `colors` / dark `colors_dark`).
     #[serde(default)]
     pub secondary: Option<String>,
 
-    /// Text color on secondary backgrounds (hex).
+    /// Text color on secondary backgrounds (hex). Mode-scoped: applies only
+    /// to the palette it is set in.
     #[serde(default)]
     pub secondary_foreground: Option<String>,
 
-    /// Accent color for highlights and CTAs (hex).
+    /// Accent color for highlights and CTAs (hex). Mode-scoped: applies only
+    /// to the palette it is set in.
     #[serde(default)]
     pub accent: Option<String>,
 
-    /// Background color (hex).
+    /// Background color (hex). Mode-scoped: applies only to the palette it
+    /// is set in.
     #[serde(default)]
     pub background: Option<String>,
 
-    /// Foreground/text color (hex).
+    /// Foreground/text color (hex). Mode-scoped: applies only to the palette
+    /// it is set in.
     #[serde(default)]
     pub foreground: Option<String>,
 
-    /// Muted color for subtle backgrounds (hex).
+    /// Muted color for subtle backgrounds (hex). Mode-scoped: applies only
+    /// to the palette it is set in.
     #[serde(default)]
     pub muted: Option<String>,
 
-    /// Border color (hex).
+    /// Border color (hex). Mode-scoped: applies only to the palette it is
+    /// set in. Also drives input borders.
     #[serde(default)]
     pub border: Option<String>,
+}
+
+/// Surface (mode-scoped) palette keys set in the light palette but absent
+/// from the dark palette. Identity keys (`primary`, `primary_foreground`)
+/// are excluded: they inherit from `colors` into dark mode in the UI.
+fn missing_dark_surface_keys(
+    light: &ColorPalette,
+    dark: Option<&ColorPalette>,
+) -> Vec<&'static str> {
+    let surface = [
+        (
+            "secondary",
+            light.secondary.is_some(),
+            dark.is_some_and(|d| d.secondary.is_some()),
+        ),
+        (
+            "secondary_foreground",
+            light.secondary_foreground.is_some(),
+            dark.is_some_and(|d| d.secondary_foreground.is_some()),
+        ),
+        (
+            "accent",
+            light.accent.is_some(),
+            dark.is_some_and(|d| d.accent.is_some()),
+        ),
+        (
+            "background",
+            light.background.is_some(),
+            dark.is_some_and(|d| d.background.is_some()),
+        ),
+        (
+            "foreground",
+            light.foreground.is_some(),
+            dark.is_some_and(|d| d.foreground.is_some()),
+        ),
+        (
+            "muted",
+            light.muted.is_some(),
+            dark.is_some_and(|d| d.muted.is_some()),
+        ),
+        (
+            "border",
+            light.border.is_some(),
+            dark.is_some_and(|d| d.border.is_some()),
+        ),
+    ];
+    surface
+        .into_iter()
+        .filter(|(_, in_light, in_dark)| *in_light && !*in_dark)
+        .map(|(key, _, _)| key)
+        .collect()
 }
 
 /// Typography/font configuration.
@@ -642,5 +727,61 @@ studio = "enabled"
     fn unknown_field_rejected() {
         let toml = r#"nonexistent_page = "enabled""#;
         assert!(toml::from_str::<PagesConfig>(toml).is_err());
+    }
+
+    fn palette(keys: &[&str]) -> ColorPalette {
+        let mut p = ColorPalette::default();
+        for key in keys {
+            let value = Some("#123456".to_string());
+            match *key {
+                "primary" => p.primary = value,
+                "primary_foreground" => p.primary_foreground = value,
+                "secondary" => p.secondary = value,
+                "secondary_foreground" => p.secondary_foreground = value,
+                "accent" => p.accent = value,
+                "background" => p.background = value,
+                "foreground" => p.foreground = value,
+                "muted" => p.muted = value,
+                "border" => p.border = value,
+                other => panic!("unknown palette key {other}"),
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn light_surface_keys_without_dark_palette_are_reported() {
+        let light = palette(&["background", "border", "primary"]);
+        assert_eq!(
+            missing_dark_surface_keys(&light, None),
+            vec!["background", "border"]
+        );
+    }
+
+    #[test]
+    fn identity_keys_never_reported() {
+        let light = palette(&["primary", "primary_foreground"]);
+        assert!(missing_dark_surface_keys(&light, None).is_empty());
+    }
+
+    #[test]
+    fn keys_covered_by_dark_are_not_reported() {
+        let light = palette(&["background", "accent"]);
+        let dark = palette(&["background"]);
+        assert_eq!(
+            missing_dark_surface_keys(&light, Some(&dark)),
+            vec!["accent"]
+        );
+    }
+
+    #[test]
+    fn empty_light_palette_reports_nothing() {
+        assert!(missing_dark_surface_keys(&ColorPalette::default(), None).is_empty());
+    }
+
+    #[test]
+    fn secondary_alone_does_not_report_secondary_foreground() {
+        let light = palette(&["secondary"]);
+        assert_eq!(missing_dark_surface_keys(&light, None), vec!["secondary"]);
     }
 }

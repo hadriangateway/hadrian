@@ -1,0 +1,131 @@
+---
+title: UI Branding
+description: Brand the gateway UI — colors, dark mode palettes, fonts, and logos
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `[ui.branding]` section customizes the gateway UI with your organization's name, logos, color palette, and fonts.
+
+## Overview
+
+```toml
+[ui.branding]
+title = "Acme AI Gateway"
+tagline = "LLM access for Acme engineering"
+logo_url = "https://cdn.acme-corp.com/brand/logo.svg"
+logo_dark_url = "https://cdn.acme-corp.com/brand/logo-dark.svg"
+favicon_url = "https://cdn.acme-corp.com/brand/favicon.png"
+footer_text = "© Acme Corp"
+
+[ui.branding.colors]
+primary = "#7c3aed"
+
+[ui.branding.colors_dark]
+primary = "#a78bfa"
+```
+
+| Setting         | Type   | Description                                                         |
+| --------------- | ------ | ------------------------------------------------------------------- |
+| `title`         | string | Application title, shown in the header and browser tab.             |
+| `tagline`       | string | Short line shown below the title.                                   |
+| `logo_url`      | string | Logo image URL.                                                     |
+| `logo_dark_url` | string | Logo used in dark mode. Falls back to `logo_url`.                   |
+| `favicon_url`   | string | Browser favicon URL.                                                |
+| `colors`        | table  | Light mode palette and brand identity. See below.                   |
+| `colors_dark`   | table  | Per-key dark mode overrides. See below.                             |
+| `fonts`         | table  | Typography configuration. See [Fonts](#fonts).                      |
+| `footer_text`   | string | Footer text.                                                        |
+| `footer_links`  | array  | Footer links (`{ label, url }`).                                    |
+| `show_version`  | bool   | Show the gateway version in the footer.                             |
+| `login`         | table  | Login page customization (`title`, `subtitle`, `background_image`). |
+
+## Color Palette Keys
+
+Every color accepts any CSS color literal (`#7c3aed`, `rgb(124, 58, 237)`, `oklch(0.54 0.25 293)`).
+
+| Key                    | Sets CSS variables                                       | Scope       |
+| ---------------------- | -------------------------------------------------------- | ----------- |
+| `primary`              | `--color-primary`, focus ring; accent text in light mode | Identity    |
+| `primary_foreground`   | `--color-primary-foreground` (text on primary buttons)   | Identity    |
+| `secondary`            | `--color-secondary`                                      | Mode-scoped |
+| `secondary_foreground` | `--color-secondary-foreground`                           | Mode-scoped |
+| `accent`               | `--color-accent`                                         | Mode-scoped |
+| `background`           | `--color-background`                                     | Mode-scoped |
+| `foreground`           | `--color-foreground`                                     | Mode-scoped |
+| `muted`                | `--color-muted`                                          | Mode-scoped |
+| `border`               | `--color-border`, `--color-input`                        | Mode-scoped |
+
+When `primary` is set without `primary_foreground`, text on primary surfaces defaults to white (`#ffffff`).
+
+## Light and Dark Palettes
+
+`colors` defines the light mode palette and your brand identity. `colors_dark` overrides individual keys for dark mode. The two tiers behave differently:
+
+- **Identity keys** (`primary`, `primary_foreground`) carry into dark mode automatically. Set them once in `colors` and both themes show your brand color; override them in `colors_dark` if your brand needs a brighter variant on dark surfaces.
+- **Mode-scoped keys** (everything else) apply only to the palette they are set in. A `background` or `border` in `colors` affects light mode only — dark mode keeps the built-in dark theme for any surface key you don't explicitly set in `colors_dark`.
+
+<Callout type="info">
+  If you set a surface key like `colors.border` without a matching `colors_dark.border`, the gateway
+  logs a startup warning: _"colors.border is set but colors_dark.border is not; dark mode will use
+  the default dark border."_ This is safe — dark mode falls back to the built-in dark theme — but
+  set the key in `colors_dark` if you want fully branded dark surfaces.
+</Callout>
+
+### Minimal: one brand color, both themes
+
+```toml
+[ui.branding.colors]
+primary = "#7c3aed"
+```
+
+Light and dark mode both use the brand purple for buttons, links, and focus rings. All surfaces keep the built-in palettes.
+
+### Full dark re-theme
+
+```toml
+[ui.branding.colors]
+primary = "#7c3aed"
+background = "#f8f7ff"
+foreground = "#1e1b2e"
+border = "#e2ddf5"
+muted = "#efecfa"
+
+[ui.branding.colors_dark]
+primary = "#a78bfa"     # brighter variant for contrast on dark surfaces
+background = "#13111c"
+foreground = "#ece9f8"
+border = "#2a2640"
+muted = "#1d1a2b"
+```
+
+Every surface key set in `colors` has a counterpart in `colors_dark`, so both themes are fully branded.
+
+## Fonts
+
+```toml
+[ui.branding.fonts]
+heading = "Archivo"
+body = "Inter"
+mono = "JetBrains Mono"
+
+[[ui.branding.fonts.custom]]
+name = "Archivo"
+url = "https://cdn.acme-corp.com/fonts/archivo.woff2"
+weight = "100 900"
+style = "normal"
+```
+
+| Setting   | Type   | Description                                                       |
+| --------- | ------ | ----------------------------------------------------------------- |
+| `heading` | string | Font family for headings.                                         |
+| `body`    | string | Font family for body text.                                        |
+| `mono`    | string | Font family for code.                                             |
+| `custom`  | array  | Fonts loaded via `@font-face` (`name`, `url`, `weight`, `style`). |
+
+Custom font URLs must be `https:` or `data:` URLs. Named families fall back to the built-in system font stacks.
+
+## Next Steps
+
+- [Server Configuration](/docs/configuration/server) — paths, TLS, and CORS for serving the UI
+- [Authentication](/docs/configuration/auth) — login methods shown on the branded login page

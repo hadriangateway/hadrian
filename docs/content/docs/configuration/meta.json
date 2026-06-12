@@ -1,4 +1,15 @@
 {
   "title": "Configuration",
-  "pages": ["index", "builder", "server", "database", "providers", "auth", "features", "storage", "observability"]
+  "pages": [
+    "index",
+    "builder",
+    "server",
+    "database",
+    "providers",
+    "auth",
+    "features",
+    "branding",
+    "storage",
+    "observability"
+  ]
 }
