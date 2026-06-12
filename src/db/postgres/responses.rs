@@ -305,10 +305,13 @@ impl ResponsesRepo for PostgresResponsesRepo {
         // atomic, contention-free claim semantics across N workers.
         // Worker runs gateway-wide (not per principal), so no scope
         // filter — every queued row is claimable.
+        // The CTE column is aliased `claim_id`: RETURNING in
+        // UPDATE...FROM resolves names across both relations, so an
+        // unqualified `id` would be ambiguous against RESPONSE_COLUMNS.
         let sql = format!(
             r#"
             WITH claimed AS (
-                SELECT id FROM responses
+                SELECT id AS claim_id FROM responses
                 WHERE status = 'queued'
                 ORDER BY created_at ASC
                 FOR UPDATE SKIP LOCKED
@@ -317,7 +320,7 @@ impl ResponsesRepo for PostgresResponsesRepo {
             UPDATE responses
             SET status = 'in_progress', started_at = $1
             FROM claimed
-            WHERE responses.id = claimed.id
+            WHERE responses.id = claimed.claim_id
             RETURNING {cols}
             "#,
             cols = RESPONSE_COLUMNS,
