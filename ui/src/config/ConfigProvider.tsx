@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { UiConfig, ColorPalette, FontsConfig, CustomFont } from "./types";
-import { buildBrandingColorCss } from "./brandingCss";
+import { buildBrandingColorCss, normalizeFontWeight } from "./brandingCss";
 import { defaultConfig, defaultPagesConfig, getApiBaseUrl } from "./defaults";
 
 interface ConfigContextValue {
@@ -25,15 +25,25 @@ function isSafeFontName(value: string | undefined): value is string {
   );
 }
 
-/** Only accept absolute https/data URLs for font sources. */
-function isSafeFontUrl(value: string | undefined): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+/** Only accept absolute https/data URLs. Returns the normalized href (never
+ *  the raw input) so it can be interpolated into a double-quoted CSS url()
+ *  string. Quotes and backslashes could terminate that string; https hrefs
+ *  percent-encode them, but data: URLs have opaque paths where they survive
+ *  normalization, so reject any that remain. */
+function safeFontUrl(value: string | undefined): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return null;
   try {
     const url = new URL(value, window.location.origin);
-    return url.protocol === "https:" || url.protocol === "data:";
+    if (url.protocol !== "https:" && url.protocol !== "data:") return null;
+    if (/["\\\n\r]/.test(url.href)) return null;
+    return url.href;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function isSafeFontUrl(value: string | undefined): value is string {
+  return safeFontUrl(value) !== null;
 }
 
 /**
@@ -62,23 +72,23 @@ function injectBrandingColors(colors: ColorPalette, colorsDark: ColorPalette | n
  */
 function generateFontFaceRules(customFonts: CustomFont[]): string {
   return customFonts
-    .filter((font) => {
-      const ok = isSafeFontName(font.name) && isSafeFontUrl(font.url);
-      if (!ok) {
+    .flatMap((font) => {
+      const url = safeFontUrl(font.url);
+      if (!isSafeFontName(font.name) || url === null) {
         console.warn("Ignoring branded custom font with unsafe name or URL", font);
+        return [];
       }
-      return ok;
-    })
-    .map((font) => {
-      const weight = Number.isFinite(Number(font.weight)) ? Number(font.weight) : 400;
+      const weight = normalizeFontWeight(font.weight);
       const style = font.style === "italic" || font.style === "oblique" ? font.style : "normal";
-      return `@font-face {
+      return [
+        `@font-face {
   font-family: "${font.name}";
-  src: url("${font.url}");
+  src: url("${url}");
   font-weight: ${weight};
   font-style: ${style};
   font-display: swap;
-}`;
+}`,
+      ];
     })
     .join("\n\n");
 }

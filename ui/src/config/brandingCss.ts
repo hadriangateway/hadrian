@@ -3,7 +3,8 @@ import type { ColorPalette } from "./types";
 /** Permissive color literal: hex, rgb()/hsl()/oklch()/var(), CSS keyword.
  *  Rejects anything containing CSS control chars (`{`, `}`, `;`, `<`, etc.)
  *  so a misconfigured branding payload can't break out of the rule and
- *  inject arbitrary CSS into the page. */
+ *  inject arbitrary CSS into the page. Underscore is allowed because custom
+ *  property names in var() references may contain it (var(--brand_primary)). */
 const COLOR_RE = /^[a-zA-Z0-9#%(),.\s\-/_]+$/;
 
 export function isSafeColor(value: string | undefined): value is string {
@@ -87,6 +88,26 @@ export function generateColorCss(
   return `${selector} { ${rules.join(" ")} }`;
 }
 
+/** font-weight for @font-face: a single weight or a variable-font
+ *  "min max" range like "100 900". Falls back to 400 so an invalid value
+ *  can't break out of the rule. */
+const FONT_WEIGHT_RE = /^\d{1,4}(?:\s+\d{1,4})?$/;
+
+export function normalizeFontWeight(weight: string | undefined): string {
+  const trimmed = typeof weight === "string" ? weight.trim() : "";
+  if (!FONT_WEIGHT_RE.test(trimmed)) return "400";
+  return trimmed.replace(/\s+/g, " ");
+}
+
+function warnUnsafeColors(palette: ColorPalette | null, section: string): void {
+  if (!palette) return;
+  for (const [key, value] of Object.entries(palette)) {
+    if (typeof value === "string" && !isSafeColor(value)) {
+      console.warn(`Ignoring unsafe branding color ${section}.${key}:`, value);
+    }
+  }
+}
+
 /** Full branding stylesheet body: light rule scoped to :root:not(.dark) so
  *  it can't leak into dark mode, dark rule under .dark from the merged dark
  *  palette. Returns "" if nothing passes validation. */
@@ -94,6 +115,8 @@ export function buildBrandingColorCss(
   colors: ColorPalette,
   colorsDark: ColorPalette | null
 ): string {
+  warnUnsafeColors(colors, "colors");
+  warnUnsafeColors(colorsDark, "colors_dark");
   const lightCss = generateColorCss(colors, ":root:not(.dark)", {
     deriveAccentForeground: true,
   });

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBrandingColorCss, isSafeColor, mergeDarkPalette } from "../brandingCss";
+import {
+  buildBrandingColorCss,
+  isSafeColor,
+  mergeDarkPalette,
+  normalizeFontWeight,
+} from "../brandingCss";
 
 describe("isSafeColor", () => {
   it("accepts common color literals", () => {
@@ -16,6 +21,25 @@ describe("isSafeColor", () => {
     expect(isSafeColor("")).toBe(false);
     expect(isSafeColor(undefined)).toBe(false);
     expect(isSafeColor("a".repeat(200))).toBe(false);
+  });
+});
+
+describe("normalizeFontWeight", () => {
+  it("accepts single weights", () => {
+    expect(normalizeFontWeight("400")).toBe("400");
+    expect(normalizeFontWeight("700")).toBe("700");
+  });
+
+  it("accepts variable-font ranges", () => {
+    expect(normalizeFontWeight("100 900")).toBe("100 900");
+    expect(normalizeFontWeight(" 100   900 ")).toBe("100 900");
+  });
+
+  it("falls back to 400 for invalid values", () => {
+    expect(normalizeFontWeight("bold")).toBe("400");
+    expect(normalizeFontWeight("400; } body { color: red")).toBe("400");
+    expect(normalizeFontWeight("")).toBe("400");
+    expect(normalizeFontWeight(undefined)).toBe("400");
   });
 });
 
