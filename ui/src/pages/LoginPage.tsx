@@ -90,7 +90,11 @@ export default function LoginPage() {
   const hasApiKey = authMethods.includes("api_key");
   const hasOidc = authMethods.includes("oidc") && config?.auth.oidc;
   const hasPerOrgSso = authMethods.includes("per_org_sso");
-  const hasEmailDiscovery = hasOidc || hasPerOrgSso;
+  // "session" is advertised in IdP mode, where email discovery is the only
+  // way to sign in — show it even before any org SSO config is enabled so
+  // the page never renders without a login affordance.
+  const hasSession = authMethods.includes("session");
+  const hasEmailDiscovery = hasOidc || hasPerOrgSso || hasSession;
 
   const onApiKeySubmit = async (data: LoginForm) => {
     setError(null);
@@ -300,7 +304,7 @@ export default function LoginPage() {
           )}
 
           {/* Per-org SSO not found message (when only per-org SSO is available, no global OIDC) */}
-          {hasPerOrgSso && !hasOidc && discoveredOrg === null && discoveryEmail && (
+          {(hasPerOrgSso || hasSession) && !hasOidc && discoveredOrg === null && discoveryEmail && (
             <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
               No SSO configuration found for this email domain.
               <button

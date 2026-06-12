@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useConfig } from "@/config/ConfigProvider";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 
+import { hasCookieSessionMethod } from "./types";
 import type { AuthContextValue, AuthMethod, AuthState, LoginCredentials, User } from "./types";
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -154,17 +155,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Check for OIDC session by calling /auth/me
-      // This works after the backend's /auth/callback sets the session cookie
-      if (config?.auth.methods.includes("oidc")) {
+      // Check for a cookie session by calling /auth/me. Every SSO flow
+      // (global OIDC, IdP-mode per-org OIDC, SAML) ends with /auth/callback
+      // or /auth/saml/acs setting an httpOnly cookie the SPA cannot read, so
+      // the probe must run whenever ANY cookie-session method is advertised
+      // (IdP mode advertises ["session", "per_org_sso"], never "oidc").
+      if (hasCookieSessionMethod(config?.auth.methods)) {
         const user = await fetchMe();
         if (user) {
           setState({
             isAuthenticated: true,
             isLoading: false,
             user,
-            method: "oidc",
-            token: null, // Session is cookie-based
+            method: "session",
+            token: null, // Credential is the httpOnly cookie
           });
           return;
         }
@@ -245,6 +249,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(() => {
+    const hadCookieSession = state.method === "session";
     setStoredAuth(null);
     setState({
       isAuthenticated: false,
@@ -254,15 +259,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token: null,
     });
 
-    // For OIDC, hand off to the backend logout endpoint. The previous
-    // `authorization_url.replace("/auth", "/logout")` trick produced a wrong
-    // URL for any provider whose authorization endpoint isn't of the form
-    // `https://idp/.../auth` (Keycloak, dex, generic providers, etc). The
-    // backend already deletes the session, redirects to
-    // `end_session_endpoint` from OIDC discovery when configured, and falls
-    // back to "/", so we just navigate there.
-    if (state.method === "oidc") {
-      window.location.href = "/auth/logout";
+    // Cookie sessions must be revoked server-side. The backend mounts
+    // /auth/logout as POST only (CSRF-safe), so a plain navigation would
+    // 405 and leave the session alive — POST first, then hard-navigate to
+    // /login to drop user-scoped in-memory caches. If the request fails the
+    // navigation still happens and the login page's session probe reports
+    // the truth (a surviving cookie re-authenticates).
+    if (hadCookieSession) {
+      void fetch("/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
+        window.location.href = "/login";
+      });
     }
   }, [setStoredAuth, state.method]);
 

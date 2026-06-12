@@ -1,6 +1,32 @@
 import type { OidcConfig as UiOidcConfig } from "@/config/types";
 
-export type AuthMethod = "none" | "api_key" | "oidc" | "header" | "per_org_sso";
+/**
+ * Auth method identifiers. These name three related but distinct things:
+ *
+ * - Capabilities the backend advertises in `config.auth.methods` ("none",
+ *   "api_key", "header", "session", "per_org_sso", legacy "oidc").
+ * - The login flow passed to `login()` ("api_key", "oidc").
+ * - The authenticated state of the SPA in `AuthState.method` ("none",
+ *   "api_key", "header", "session") — how the *current* credential works,
+ *   not the flow that produced it. Any SSO flow (global OIDC, per-org OIDC,
+ *   SAML) ends in a cookie session, so all of them resolve to "session".
+ */
+export type AuthMethod = "none" | "api_key" | "oidc" | "header" | "session" | "per_org_sso";
+
+/**
+ * Advertised methods whose credential is an httpOnly session cookie set by
+ * the backend (`/auth/callback` or `/auth/saml/acs`). The SPA cannot read the
+ * cookie, so the only way to detect such a session is to probe `/auth/me`
+ * with `credentials: "include"`. The gateway advertises "session" in IdP
+ * mode and "per_org_sso" when org SSO configs exist; "oidc" is the legacy
+ * global-OIDC value kept for compatibility.
+ */
+export const COOKIE_SESSION_METHODS: readonly AuthMethod[] = ["oidc", "session", "per_org_sso"];
+
+/** Whether the advertised method set implies the user may hold a cookie session. */
+export function hasCookieSessionMethod(methods: readonly string[] | undefined): boolean {
+  return COOKIE_SESSION_METHODS.some((method) => methods?.includes(method));
+}
 
 export interface User {
   id: string;
