@@ -22,6 +22,7 @@ import {
   Server,
   ShieldAlert,
   ShieldCheck,
+  Square,
   Terminal,
   User,
   Wallet,
@@ -1886,50 +1887,53 @@ export function GatewayDiagram() {
           }
         `}</style>
 
-        <div className="relative w-full overflow-x-auto">
-          <div
-            id={`gw-panel-${scene.id}`}
-            role="tabpanel"
-            aria-label={scene.pill}
-            key={reduced ? undefined : scene.id}
-            style={reduced ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
-          >
-            <svg
-              viewBox={`0 0 ${VB_W} ${VB_H}`}
-              aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
-              className={`mx-auto h-auto w-full min-w-[720px] max-w-3xl${
-                forceMotion ? " hadrian-force-motion" : ""
-              }`}
+        <div className="w-full overflow-x-auto">
+          <div className="relative mx-auto w-full min-w-[720px] max-w-3xl">
+            <div
+              id={`gw-panel-${scene.id}`}
+              role="tabpanel"
+              aria-label={scene.pill}
+              key={reduced ? undefined : scene.id}
+              style={reduced ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
             >
-              <defs>
-                <filter id="hadrian-dot-glow" x="-200%" y="-200%" width="500%" height="500%">
-                  <feGaussianBlur stdDeviation="2.5" result="blur" />
-                  <feMerge>
-                    <feMergeNode in="blur" />
-                    <feMergeNode in="SourceGraphic" />
-                  </feMerge>
-                </filter>
-                <filter id="hadrian-node-glow" x="-100%" y="-100%" width="300%" height="300%">
-                  <feGaussianBlur stdDeviation="7" />
-                </filter>
-              </defs>
-              {scene.render()}
-            </svg>
+              <svg
+                viewBox={`0 0 ${VB_W} ${VB_H}`}
+                aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
+                className={`h-auto w-full${forceMotion ? " hadrian-force-motion" : ""}`}
+              >
+                <defs>
+                  <filter id="hadrian-dot-glow" x="-200%" y="-200%" width="500%" height="500%">
+                    <feGaussianBlur stdDeviation="2.5" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  <filter id="hadrian-node-glow" x="-100%" y="-100%" width="300%" height="300%">
+                    <feGaussianBlur stdDeviation="7" />
+                  </filter>
+                </defs>
+                {scene.render()}
+              </svg>
+            </div>
+            {/* Reduced-motion users see a static frame; the toggle opts into the
+              animation and lets them stop it again. */}
+            {reducedMotion && (
+              <button
+                type="button"
+                onClick={() => setForceMotion((on) => !on)}
+                aria-label={forceMotion ? "Stop animation" : "Play animation"}
+                className="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-foreground shadow-sm backdrop-blur transition-colors hover:border-fd-primary/60 hover:text-fd-primary"
+              >
+                {forceMotion ? (
+                  <Square className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <Play className="h-3 w-3" aria-hidden="true" />
+                )}
+                {forceMotion ? "Stop animation" : "Play animation"}
+              </button>
+            )}
           </div>
-          {/* Reduced-motion users see a static frame; one click opts into the animation. */}
-          {reducedMotion && !forceMotion && (
-            <button
-              type="button"
-              onClick={() => setForceMotion(true)}
-              aria-label="Play animation"
-              className="absolute inset-0 z-10 flex items-center justify-center"
-            >
-              <span className="flex items-center gap-2 rounded-full border border-fd-border bg-fd-card/90 px-5 py-2.5 text-sm font-medium text-fd-foreground shadow-lg backdrop-blur transition-colors hover:border-fd-primary/60 hover:text-fd-primary">
-                <Play className="h-4 w-4" aria-hidden="true" />
-                Play animation
-              </span>
-            </button>
-          )}
         </div>
 
         <p className="flex min-h-[2.5rem] max-w-2xl flex-wrap items-center justify-center gap-x-1.5 text-center text-sm text-fd-muted-foreground">
