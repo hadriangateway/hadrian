@@ -16,6 +16,7 @@ import {
   Fingerprint,
   Gauge,
   Globe,
+  Play,
   Plug,
   ScrollText,
   Server,
@@ -484,11 +485,27 @@ type Provider = {
   href: string;
 };
 
+// =====================================================================
+// Region flags — emoji, bumped up from the 11px tag text for legibility.
+// =====================================================================
+
+function FlagEmoji({ children }: { children: string }) {
+  return (
+    <span className="text-[15px] leading-none" aria-hidden="true">
+      {children}
+    </span>
+  );
+}
+
+const UsFlag = () => <FlagEmoji>🇺🇸</FlagEmoji>;
+const EuFlag = () => <FlagEmoji>🇪🇺</FlagEmoji>;
+
 function Chip({
   provider,
   y,
   tag,
   tagColor,
+  flag,
   region,
   unhealthy,
 }: {
@@ -496,6 +513,7 @@ function Chip({
   y: number;
   tag?: string;
   tagColor?: string;
+  flag?: React.ReactNode;
   region?: string;
   unhealthy?: boolean;
 }) {
@@ -533,10 +551,12 @@ function Chip({
             <span className="flex items-center gap-1.5 text-[11px]">
               {tag && (
                 <span className="flex items-center gap-1 uppercase tracking-wide text-fd-muted-foreground/70">
-                  <span
-                    className="inline-block h-2 w-2 rounded-full"
-                    style={{ background: tagColor }}
-                  />
+                  {flag ?? (
+                    <span
+                      className="inline-block h-2 w-2 rounded-full"
+                      style={{ background: tagColor }}
+                    />
+                  )}
                   {tag}
                 </span>
               )}
@@ -1117,22 +1137,18 @@ const scenes: Scene[] = [
       "Health checks flag unhealthy providers, so the gateway routes around them to healthy ones.",
     href: `${PROVIDERS_DOCS}#health-checks`,
     render: () => {
-      const ys = providerYs(3);
-      // The unhealthy provider sits in the middle; its lane stays dark while
-      // traffic flows to the healthy providers above and below it.
+      // Several regional copies of each provider. Health checks dark out the
+      // unhealthy regions, so the gateway routes around them to a healthy copy.
       const providers = [
-        { p: ALL.bedrock, region: "US West", tag: "Healthy", tagColor: "#22c55e" },
-        {
-          p: ALL.openai,
-          region: "US East",
-          tag: "Unhealthy",
-          tagColor: "#ef4444",
-          unhealthy: true,
-        },
-        { p: ALL.azure, region: "EU West", tag: "Healthy", tagColor: "#22c55e" },
+        { p: ALL.bedrock, region: "us-east-1", healthy: true },
+        { p: ALL.bedrock, region: "eu-central-1", healthy: true },
+        { p: ALL.openai, region: "US", healthy: false },
+        { p: ALL.openai, region: "EU", healthy: true },
+        { p: ALL.azure, region: "swedencentral", healthy: true },
+        { p: ALL.azure, region: "francecentral", healthy: false },
       ];
-      const DEAD = 1;
-      const healthyRows = [0, 2];
+      const ys = providerYs(providers.length);
+      const healthyRows = providers.map((h, i) => (h.healthy ? i : -1)).filter((i) => i >= 0);
       const n = 8;
       const { C, cycle } = sceneTiming(
         healthyRows.map((i) => ys[i]),
@@ -1142,19 +1158,19 @@ const scenes: Scene[] = [
         <>
           <g fill="none" aria-hidden="true" strokeWidth={1.5}>
             <path d={userPath} className="stroke-fd-border" />
-            {ys.map((y, i) => (
+            {providers.map((h, i) => (
               <path
                 key={i}
-                d={providerPath(y)}
-                className={i === DEAD ? "stroke-red-500/40" : "stroke-fd-border"}
-                strokeDasharray={i === DEAD ? "4 4" : undefined}
+                d={providerPath(ys[i])}
+                className={h.healthy ? "stroke-fd-border" : "stroke-red-500/40"}
+                strokeDasharray={h.healthy ? undefined : "4 4"}
               />
             ))}
           </g>
           {Array.from({ length: n }, (_, k) => (
             <ForwardDot
               key={k}
-              y={ys[healthyRows[k % healthyRows.length]]}
+              y={ys[healthyRows[laneOf(k, healthyRows.length)]]}
               begin={k * C}
               cycle={cycle}
             />
@@ -1163,13 +1179,13 @@ const scenes: Scene[] = [
           <GatewayNode />
           {providers.map((h, i) => (
             <Chip
-              key={h.p.name}
+              key={`${h.p.name}-${h.region}`}
               provider={h.p}
               y={ys[i]}
-              tag={h.tag}
-              tagColor={h.tagColor}
+              tag={h.healthy ? "Healthy" : "Unhealthy"}
+              tagColor={h.healthy ? "#22c55e" : "#ef4444"}
               region={h.region}
-              unhealthy={h.unhealthy}
+              unhealthy={!h.healthy}
             />
           ))}
         </>
@@ -1197,14 +1213,14 @@ const scenes: Scene[] = [
             <path d={loginPath} strokeDasharray="4 4" className="stroke-fd-border" />
             <path d={idpToGw} strokeDasharray="4 4" className="stroke-emerald-500/70" />
           </g>
-          {/* Requests turn green as they pass the gateway (authenticated). */}
+          {/* Authenticated requests are green from the user onward. */}
           {Array.from({ length: n }, (_, k) => (
             <ForwardDot
               key={k}
               y={ys[laneOf(k, LEAN_SET.length)]}
               begin={k * C}
               cycle={cycle}
-              outClass="fill-emerald-500"
+              className="fill-emerald-500"
             />
           ))}
           {/* Occasional, irregular login traffic to the IdP. */}
@@ -1547,10 +1563,12 @@ const scenes: Scene[] = [
                 <Database className="h-5 w-5 text-teal-600 dark:text-teal-400" />
               </span>
               <span className="flex flex-col leading-tight">
-                <span className="font-medium text-fd-foreground" style={{ fontSize: 14 }}>
+                <span
+                  className="font-medium text-emerald-700 dark:text-emerald-400"
+                  style={{ fontSize: 14 }}
+                >
                   Cache
                 </span>
-                <span className="text-[11px] text-teal-600 dark:text-teal-400">instant hit</span>
               </span>
             </Link>
           </foreignObject>
@@ -1617,30 +1635,30 @@ const scenes: Scene[] = [
         {
           p: ALL.openai,
           region: "US",
-          fill: "fill-amber-500",
-          stroke: "stroke-amber-500/70",
-          dot: "#f59e0b",
+          flag: <UsFlag />,
+          fill: "fill-red-500",
+          stroke: "stroke-red-500/70",
         },
         {
           p: ALL.anthropic,
           region: "US",
-          fill: "fill-amber-500",
-          stroke: "stroke-amber-500/70",
-          dot: "#f59e0b",
+          flag: <UsFlag />,
+          fill: "fill-red-500",
+          stroke: "stroke-red-500/70",
         },
         {
           p: ALL.azure,
           region: "EU",
+          flag: <EuFlag />,
           fill: "fill-blue-500",
           stroke: "stroke-blue-500/70",
-          dot: "#3b82f6",
         },
         {
           p: ALL.onprem,
           region: "EU",
+          flag: <EuFlag />,
           fill: "fill-blue-500",
           stroke: "stroke-blue-500/70",
-          dot: "#3b82f6",
         },
       ];
       const ys = providerYs(rows.length);
@@ -1670,7 +1688,7 @@ const scenes: Scene[] = [
           <UserNode />
           <GatewayNode />
           {rows.map((r, i) => (
-            <Chip key={r.p.name} provider={r.p} y={ys[i]} tag={r.region} tagColor={r.dot} />
+            <Chip key={r.p.name} provider={r.p} y={ys[i]} tag={r.region} flag={r.flag} />
           ))}
         </>
       );
@@ -1772,7 +1790,11 @@ const CYCLE_MS = 6500;
 export function GatewayDiagram() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
+  // When the OS prefers reduced motion the diagram renders a static frame; a
+  // single click on the Play overlay opts back in to the full animation.
+  const [forceMotion, setForceMotion] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
+  const reduced = reducedMotion && !forceMotion;
   const tablistRef = useRef<HTMLDivElement>(null);
 
   const go = useCallback(
@@ -1781,10 +1803,10 @@ export function GatewayDiagram() {
   );
 
   useEffect(() => {
-    if (paused || reducedMotion) return;
+    if (paused || reduced) return;
     const id = window.setInterval(() => setActive((i) => (i + 1) % scenes.length), CYCLE_MS);
     return () => window.clearInterval(id);
-  }, [paused, reducedMotion]);
+  }, [paused, reduced]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
@@ -1805,7 +1827,7 @@ export function GatewayDiagram() {
   const scene = scenes[active];
 
   return (
-    <ReducedMotionContext.Provider value={reducedMotion}>
+    <ReducedMotionContext.Provider value={reduced}>
       <div
         className="flex flex-col items-center gap-5"
         onMouseEnter={() => setPaused(true)}
@@ -1815,20 +1837,25 @@ export function GatewayDiagram() {
       >
         <style>{`
           @keyframes hadrian-scene-fade { from { opacity: 0 } to { opacity: 1 } }
+          @media (prefers-reduced-motion: reduce) {
+            .hadrian-force-motion .motion-reduce\\:hidden { display: revert; }
+          }
         `}</style>
 
-        <div className="w-full overflow-x-auto">
+        <div className="relative w-full overflow-x-auto">
           <div
             id={`gw-panel-${scene.id}`}
             role="tabpanel"
             aria-label={scene.pill}
-            key={reducedMotion ? undefined : scene.id}
-            style={reducedMotion ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
+            key={reduced ? undefined : scene.id}
+            style={reduced ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
           >
             <svg
               viewBox={`0 0 ${VB_W} ${VB_H}`}
               aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
-              className="mx-auto h-auto w-full min-w-[720px] max-w-3xl"
+              className={`mx-auto h-auto w-full min-w-[720px] max-w-3xl${
+                forceMotion ? " hadrian-force-motion" : ""
+              }`}
             >
               <defs>
                 <filter id="hadrian-dot-glow" x="-200%" y="-200%" width="500%" height="500%">
@@ -1845,6 +1872,20 @@ export function GatewayDiagram() {
               {scene.render()}
             </svg>
           </div>
+          {/* Reduced-motion users see a static frame; one click opts into the animation. */}
+          {reducedMotion && !forceMotion && (
+            <button
+              type="button"
+              onClick={() => setForceMotion(true)}
+              aria-label="Play animation"
+              className="absolute inset-0 z-10 flex items-center justify-center"
+            >
+              <span className="flex items-center gap-2 rounded-full border border-fd-border bg-fd-card/90 px-5 py-2.5 text-sm font-medium text-fd-foreground shadow-lg backdrop-blur transition-colors hover:border-fd-primary/60 hover:text-fd-primary">
+                <Play className="h-4 w-4" aria-hidden="true" />
+                Play animation
+              </span>
+            </button>
+          )}
         </div>
 
         <p className="flex min-h-[2.5rem] max-w-2xl flex-wrap items-center justify-center gap-x-1.5 text-center text-sm text-fd-muted-foreground">
