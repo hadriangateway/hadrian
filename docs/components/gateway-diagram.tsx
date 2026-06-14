@@ -1159,8 +1159,7 @@ const scenes: Scene[] = [
   {
     id: "routing",
     pill: "Routing",
-    caption:
-      "One OpenAI-compatible API routes to any provider, with automatic fallbacks and health checks.",
+    caption: "One OpenAI-compatible API routes to any provider.",
     href: PROVIDERS_DOCS,
     render: () => {
       const ys = providerYs(ROUTING_SET.length);
@@ -1644,7 +1643,7 @@ const scenes: Scene[] = [
   {
     id: "usage",
     pill: "Usage logging",
-    caption: "Every request is logged with tokens, cost, latency, and finish reason.",
+    caption: "Every request is logged with detailed usage metadata.",
     href: "/docs/configuration/observability",
     render: () => {
       const ys = providerYs(LEAN_SET.length);
@@ -1825,7 +1824,7 @@ const scenes: Scene[] = [
     id: "tools",
     pill: "Server-side tools",
     caption:
-      "The gateway runs MCP tools, shell commands, file search, and web search as server-side tools in an agentic loop with the model.",
+      "The gateway runs MCP tools, shell commands, file search, and web search server-side in an agentic loop with the model.",
     href: "/docs/features/agents",
     render: () => {
       const ys = providerYs(LEAN_SET.length);
