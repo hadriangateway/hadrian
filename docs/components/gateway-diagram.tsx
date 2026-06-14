@@ -11,6 +11,7 @@ import {
 } from "react";
 import Link from "next/link";
 import {
+  Activity,
   Database,
   FileSearch,
   Fingerprint,
@@ -22,10 +23,12 @@ import {
   Server,
   ShieldAlert,
   ShieldCheck,
+  Split,
   Square,
   Terminal,
   User,
   Wallet,
+  Wrench,
 } from "lucide-react";
 import { Anthropic, AzureAI, Bedrock, Gemini, Ollama, OpenAI, OpenRouter } from "@lobehub/icons";
 
@@ -1914,6 +1917,83 @@ const CYCLE_MS = 6500;
 // it fades out, so it doesn't sit on top of the running scene indefinitely.
 const CONTROLS_HIDE_MS = 600;
 
+// =====================================================================
+// Scene picker
+//
+// One row of tabs that switches the diagram. Each tab is an icon + label, the
+// active tab tinted with the primary colour.
+// =====================================================================
+
+const SCENE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  routing: Split,
+  failover: Activity,
+  auth: Fingerprint,
+  authz: ShieldCheck,
+  "rate-limits": Gauge,
+  guardrails: ShieldAlert,
+  budgets: Wallet,
+  caching: Database,
+  usage: ScrollText,
+  sovereignty: Globe,
+  tools: Wrench,
+};
+
+function ScenePicker({
+  active,
+  onSelect,
+  onKeyDown,
+  tablistRef,
+}: {
+  active: number;
+  onSelect: (i: number) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  tablistRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div
+      ref={tablistRef}
+      role="tablist"
+      aria-label="Gateway capabilities"
+      onKeyDown={onKeyDown}
+      className="flex max-w-3xl flex-wrap justify-center gap-2"
+    >
+      {scenes.map((scene, i) => {
+        const isActive = i === active;
+        const Icon = SCENE_ICONS[scene.id];
+        return (
+          <button
+            key={scene.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            aria-controls={`gw-panel-${scene.id}`}
+            tabIndex={isActive ? 0 : -1}
+            onClick={() => onSelect(i)}
+            onFocus={() => onSelect(i)}
+            className={`group inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              isActive
+                ? "bg-fd-primary/10 text-fd-primary ring-1 ring-inset ring-fd-primary/25"
+                : "text-fd-muted-foreground hover:bg-fd-muted hover:text-fd-foreground"
+            }`}
+          >
+            {Icon && (
+              <Icon
+                aria-hidden="true"
+                className={`h-3.5 w-3.5 shrink-0 transition-colors ${
+                  isActive
+                    ? "text-fd-primary"
+                    : "text-fd-muted-foreground/60 group-hover:text-fd-foreground"
+                }`}
+              />
+            )}
+            <span>{scene.pill}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function GatewayDiagram() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -2068,34 +2148,13 @@ export function GatewayDiagram() {
           </Link>
         </div>
 
-        {/* Pill tabs switch the diagram (they do not navigate away). */}
-        <div
-          ref={tablistRef}
-          role="tablist"
-          aria-label="Gateway capabilities"
+        {/* Tabs switch the diagram (they do not navigate away). */}
+        <ScenePicker
+          active={active}
+          onSelect={setActive}
           onKeyDown={onKeyDown}
-          className="flex max-w-3xl flex-wrap justify-center gap-2"
-        >
-          {scenes.map((s, i) => (
-            <button
-              key={s.id}
-              type="button"
-              role="tab"
-              aria-selected={i === active}
-              aria-controls={`gw-panel-${s.id}`}
-              tabIndex={i === active ? 0 : -1}
-              onClick={() => setActive(i)}
-              onFocus={() => setActive(i)}
-              className={`cursor-pointer rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors ${
-                i === active
-                  ? "border-fd-primary bg-fd-primary text-fd-primary-foreground"
-                  : "border-fd-border bg-fd-card text-fd-muted-foreground hover:border-fd-primary/50 hover:text-fd-foreground"
-              }`}
-            >
-              {s.pill}
-            </button>
-          ))}
-        </div>
+          tablistRef={tablistRef}
+        />
       </div>
     </ReducedMotionContext.Provider>
   );
