@@ -85,7 +85,7 @@ const sinkPath = `M${GX},${GW_BOTTOM} L${GX},${SINK_TOP}`;
 // lock-step; nothing runs on the independent CSS-animation clock any more.
 // =====================================================================
 
-const SPEED = 170; // viewBox units per second — the one speed used everywhere
+const SPEED = 255; // viewBox units per second — the one speed used everywhere
 const IN_FLIGHT = 3; // target number of requests visible at once, per scene
 
 // Length of an "M L … C …" path (straight segments exact, curves sampled).
@@ -1041,7 +1041,7 @@ function budgetSchedule(costs: number[], budget: number, C: number, cycle: numbe
   const shed: boolean[] = [];
   const events: { f: number; level: number }[] = [];
   const balanceSteps: { from: number; to: number; text: string }[] = [];
-  const fmt = (v: number) => `$${v} / $${budget.toLocaleString("en-US")}`;
+  const fmt = (v: number) => `$${v.toFixed(2)} / $${budget.toLocaleString("en-US")}`;
   for (let k = 0; k < costs.length; k++) {
     const f = (k * C + T_GATE) / cycle;
     balanceSteps.push({ from: segFrom, to: f, text: fmt(spent) });
@@ -1304,13 +1304,13 @@ const scenes: Scene[] = [
     href: "/docs/features/budgets",
     render: () => {
       const ys = providerYs(LEAN_SET.length);
-      const costs = [150, 90, 230, 120, 180, 260, 140];
-      const budget = 1000;
+      const costs = [1.5, 0.9, 2.3, 1.2, 1.8, 2.6, 1.4];
+      const budget = 10;
       const n = costs.length;
       const { C } = sceneTiming(ys, n);
       const cycle = meterCycle(C, n);
       const sim = budgetSchedule(costs, budget, C, cycle);
-      const radiusFor = (c: number) => 3.2 + (c / 260) * 3.6; // cost → dot size
+      const radiusFor = (c: number) => 3.2 + (c / 2.6) * 3.6; // cost → dot size
       return (
         <>
           <Wires ys={ys} />
@@ -1340,7 +1340,7 @@ const scenes: Scene[] = [
             values={sim.values}
             balanceSteps={sim.balanceSteps}
             staticFrac={0.6}
-            staticBalance={`$600 / $${budget.toLocaleString("en-US")}`}
+            staticBalance={`$6.00 / $${budget.toLocaleString("en-US")}`}
           />
         </>
       );
@@ -1366,12 +1366,12 @@ const scenes: Scene[] = [
       const n = items.length;
       const { C, cycle } = sceneTiming(ys, n);
       const cachePath = fullPath(cacheY);
-      // Gateway → cache leg runs at 2× speed (instant hit); the user → gateway
+      // Gateway → cache leg runs at 5× speed (instant hit); the user → gateway
       // leg matches every other request.
       const g = gateFrac(cachePath);
       const L = pathLength(cachePath);
       const t1 = (g * L) / SPEED;
-      const t2 = ((1 - g) * L) / (2 * SPEED);
+      const t2 = ((1 - g) * L) / (5 * SPEED);
       return (
         <>
           <g fill="none" aria-hidden="true" className="stroke-fd-border" strokeWidth={1.5}>
@@ -1384,8 +1384,21 @@ const scenes: Scene[] = [
             const begin = k * C;
             if (!it.hit)
               return <ForwardDot key={k} y={llmYs[it.lane ?? 0]} begin={begin} cycle={cycle} />;
-            const f1 = (t1 / cycle).toFixed(3);
-            const f2 = ((t1 + t2) / cycle).toFixed(3);
+            // f1 = gateway centre (cache is checked here, so the colour changes);
+            // f2 = arrival at the cache after the fast 5× hop.
+            const f1 = t1 / cycle;
+            const f2 = (t1 + t2) / cycle;
+            const motion = (
+              <animateMotion
+                path={cachePath}
+                dur={`${cycle}s`}
+                begin={`${begin}s`}
+                repeatCount="indefinite"
+                calcMode="linear"
+                keyPoints={`0;${g.toFixed(3)};1;1`}
+                keyTimes={`0;${f1.toFixed(3)};${f2.toFixed(3)};1`}
+              />
+            );
             return (
               <g key={k}>
                 <NodeGlow
@@ -1394,27 +1407,37 @@ const scenes: Scene[] = [
                   size={56}
                   dur={cycle}
                   begin={begin}
-                  at={Math.min(0.985, (t1 + t2) / cycle)}
+                  at={Math.min(0.985, f2)}
                 />
+                {/* Primary until it passes the gateway… */}
+                <circle
+                  r="4.5"
+                  className="fill-fd-primary motion-reduce:hidden"
+                  opacity={0}
+                  style={DOT_FILTER}
+                >
+                  {motion}
+                  <animate
+                    attributeName="opacity"
+                    values="0;1;1;0;0"
+                    keyTimes={`0;0.03;${(f1 - 0.01).toFixed(3)};${f1.toFixed(3)};1`}
+                    dur={`${cycle}s`}
+                    begin={`${begin}s`}
+                    repeatCount="indefinite"
+                  />
+                </circle>
+                {/* …then teal on the instant hop to the cache. */}
                 <circle
                   r="4.5"
                   className="fill-teal-500 motion-reduce:hidden"
                   opacity={0}
                   style={DOT_FILTER}
                 >
-                  <animateMotion
-                    path={cachePath}
-                    dur={`${cycle}s`}
-                    begin={`${begin}s`}
-                    repeatCount="indefinite"
-                    calcMode="linear"
-                    keyPoints={`0;${g.toFixed(3)};1;1`}
-                    keyTimes={`0;${f1};${f2};1`}
-                  />
+                  {motion}
                   <animate
                     attributeName="opacity"
-                    values="0;1;1;0;0"
-                    keyTimes={`0;0.03;${(Number(f2) - 0.02).toFixed(3)};${(Number(f2) + 0.01).toFixed(3)};1`}
+                    values="0;0;1;1;0;0"
+                    keyTimes={`0;${f1.toFixed(3)};${(f1 + 0.01).toFixed(3)};${(f2 - 0.02).toFixed(3)};${f2.toFixed(3)};1`}
                     dur={`${cycle}s`}
                     begin={`${begin}s`}
                     repeatCount="indefinite"
@@ -1603,6 +1626,7 @@ const scenes: Scene[] = [
           </g>
           <UserNode />
           <GatewayNode />
+          <ProviderChips providers={LEAN_SET} ys={ys} />
           {Array.from({ length: n }, (_, k) => {
             const ti = (k * 3) % tools.length; // a different tool per request
             const tx = startX + ti * gap;
