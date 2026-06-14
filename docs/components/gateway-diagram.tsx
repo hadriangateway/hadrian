@@ -1421,7 +1421,15 @@ const scenes: Scene[] = [
                   outClass="fill-amber-500"
                 />
               );
-            return <ForwardDot key={k} y={ys[it.lane ?? 0]} begin={k * C} cycle={cycle} />;
+            return (
+              <ForwardDot
+                key={k}
+                y={ys[it.lane ?? 0]}
+                begin={k * C}
+                cycle={cycle}
+                outClass="fill-emerald-500"
+              />
+            );
           })}
           <UserNode />
           <GatewayNode />
