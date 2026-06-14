@@ -631,9 +631,11 @@ function SatelliteNode({
 const LOG_ROW_H = 16;
 const LOG_VISIBLE = 3;
 
-// A live log pinned under the gateway. The strip scrolls upward at a constant
-// LOG_ROW_H-per-cadence, phased so row k lands in the bottom slot at the exact
-// instant slot k's dot crosses the gateway. Row content therefore *is* the
+// A live log pinned under the gateway. Each entry *pops in* at the top the
+// instant its request crosses the gateway (row k begins at k·C + T_GATE — the
+// same crossing time its dot rides), the older entries step down one slot, and
+// the oldest leaves off the bottom. The list therefore advances as a discrete
+// event per request, not a continuous marquee, and the row that appears *is* the
 // request you just watched pass through.
 function EventLog({
   id,
@@ -663,13 +665,6 @@ function EventLog({
   const rowsW = w - 24;
   const rowsTopY = cardY + headerH;
   const cardH = headerH + LOG_VISIBLE * LOG_ROW_H + 12;
-
-  // Strip translate: at the gateway-crossing time of slot k the bottom slot must
-  // hold row k. A constant-velocity scroll satisfies that for every k at once;
-  // the −n·LOG_ROW_H offset centres the indices inside the triplicated strip.
-  const A = (LOG_VISIBLE - 1) * LOG_ROW_H + (LOG_ROW_H / C) * T_GATE - n * LOG_ROW_H;
-  const ty0 = rowsTopY + A;
-  const ty1 = ty0 - n * LOG_ROW_H;
   const clipId = `hadrian-logclip-${id}`;
 
   const header = (
@@ -739,22 +734,67 @@ function EventLog({
             <rect x={rowsX} y={rowsTopY} width={rowsW} height={LOG_VISIBLE * LOG_ROW_H} />
           </clipPath>
           <g clipPath={`url(#${clipId})`} aria-hidden="true">
-            <g transform={`translate(0 ${ty0.toFixed(2)})`}>
-              <animateTransform
-                attributeName="transform"
-                type="translate"
-                calcMode="linear"
-                values={`0 ${ty0.toFixed(2)};0 ${ty1.toFixed(2)}`}
-                keyTimes="0;1"
-                dur={`${cycle}s`}
-                repeatCount="indefinite"
-              />
-              <foreignObject x={rowsX} y={0} width={rowsW} height={3 * n * LOG_ROW_H}>
-                <div className="font-mono text-[10.5px]">
-                  {[0, 1, 2].flatMap((c) => rows.map((row, j) => rowDiv(`${c}-${j}`, row)))}
-                </div>
-              </foreignObject>
-            </g>
+            {rows.map((row, e) => {
+              // Slot 0 is the top row, slot LOG_VISIBLE-1 the freshest at the bottom.
+              const slotY = (slot: number) => rowsTopY + slot * LOG_ROW_H;
+              const cad = 1 / n; // one cadence as a fraction of the cycle
+              const pop = 0.16 / cycle; // pop-in / step / fade-out durations
+              const life = LOG_VISIBLE * cad; // visible for LOG_VISIBLE cadences
+              const bottom = LOG_VISIBLE - 1;
+              const RISE = 7; // px the row rises while popping in from below
+              const clamp = (t: number) => Math.min(1, Math.max(0, t));
+
+              // Pop in at the top, then step down one slot per cadence, then exit
+              // off the bottom — each move a quick ease the moment the next row lands.
+              const move: [number, number][] = [
+                [0, slotY(0) - RISE],
+                [pop, slotY(0)],
+              ];
+              for (let s = 1; s < LOG_VISIBLE; s++) {
+                move.push([s * cad, slotY(s - 1)]);
+                move.push([s * cad + pop, slotY(s)]);
+              }
+              move.push([life, slotY(bottom)]);
+              move.push([clamp(life + pop), slotY(bottom) + LOG_ROW_H]);
+              move.push([1, slotY(bottom) + LOG_ROW_H]);
+
+              const fade: [number, number][] = [
+                [0, 0],
+                [pop, 1],
+                [life, 1],
+                [clamp(life + pop), 0],
+                [1, 0],
+              ];
+
+              const begin = (e - n) * C + T_GATE; // already running, periodic at t≥0
+              const kt = (kf: [number, number][]) => kf.map(([t]) => clamp(t).toFixed(4)).join(";");
+              return (
+                <g key={e} opacity={0}>
+                  <animateTransform
+                    attributeName="transform"
+                    type="translate"
+                    calcMode="linear"
+                    values={move.map(([, y]) => `0 ${y.toFixed(2)}`).join(";")}
+                    keyTimes={kt(move)}
+                    dur={`${cycle}s`}
+                    begin={`${begin}s`}
+                    repeatCount="indefinite"
+                  />
+                  <animate
+                    attributeName="opacity"
+                    calcMode="linear"
+                    values={fade.map(([, o]) => o).join(";")}
+                    keyTimes={kt(fade)}
+                    dur={`${cycle}s`}
+                    begin={`${begin}s`}
+                    repeatCount="indefinite"
+                  />
+                  <foreignObject x={rowsX} y={0} width={rowsW} height={LOG_ROW_H}>
+                    <div className="font-mono text-[10.5px]">{rowDiv(`r-${e}`, row)}</div>
+                  </foreignObject>
+                </g>
+              );
+            })}
           </g>
         </>
       )}
