@@ -504,6 +504,7 @@ function FlagEmoji({ children }: { children: string }) {
 
 const UsFlag = () => <FlagEmoji>🇺🇸</FlagEmoji>;
 const EuFlag = () => <FlagEmoji>🇪🇺</FlagEmoji>;
+const AuFlag = () => <FlagEmoji>🇦🇺</FlagEmoji>;
 
 function Chip({
   provider,
@@ -1246,10 +1247,38 @@ const scenes: Scene[] = [
     id: "sovereignty",
     pill: "Sovereignty",
     caption:
-      "Requests route only to providers in compliant regions, based on their sovereignty rules.",
+      "Requests route only to providers in compliant regions, based on the sovereignty rules you define.",
     href: "/docs/features/data-sovereignty",
     render: () => {
       const rows = [
+        {
+          p: ALL.bedrock,
+          region: "AU",
+          flag: <AuFlag />,
+          fill: "fill-[#FFCD00]",
+          stroke: "stroke-[#FFCD00]/70",
+        },
+        {
+          p: ALL.onprem,
+          region: "AU",
+          flag: <AuFlag />,
+          fill: "fill-[#FFCD00]",
+          stroke: "stroke-[#FFCD00]/70",
+        },
+        {
+          p: ALL.azure,
+          region: "EU",
+          flag: <EuFlag />,
+          fill: "fill-blue-500",
+          stroke: "stroke-blue-500/70",
+        },
+        {
+          p: ALL.gemini,
+          region: "EU",
+          flag: <EuFlag />,
+          fill: "fill-blue-500",
+          stroke: "stroke-blue-500/70",
+        },
         {
           p: ALL.openai,
           region: "US",
@@ -1263,20 +1292,6 @@ const scenes: Scene[] = [
           flag: <UsFlag />,
           fill: "fill-red-500",
           stroke: "stroke-red-500/70",
-        },
-        {
-          p: ALL.azure,
-          region: "EU",
-          flag: <EuFlag />,
-          fill: "fill-blue-500",
-          stroke: "stroke-blue-500/70",
-        },
-        {
-          p: ALL.onprem,
-          region: "EU",
-          flag: <EuFlag />,
-          fill: "fill-blue-500",
-          stroke: "stroke-blue-500/70",
         },
       ];
       const ys = providerYs(rows.length);
@@ -1306,7 +1321,13 @@ const scenes: Scene[] = [
           <UserNode />
           <GatewayNode />
           {rows.map((r, i) => (
-            <Chip key={r.p.name} provider={r.p} y={ys[i]} tag={r.region} flag={r.flag} />
+            <Chip
+              key={`${r.p.name}-${r.region}`}
+              provider={r.p}
+              y={ys[i]}
+              tag={r.region}
+              flag={r.flag}
+            />
           ))}
         </>
       );
