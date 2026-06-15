@@ -16,9 +16,14 @@ interface StoryEmbedProps {
  * Stories are served from /storybook/ (symlinked to ui/storybook-static).
  */
 export function StoryEmbed({ storyId, height = 200, title }: StoryEmbedProps) {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  // `null` until the real theme is read on the client. While it's null the iframe
+  // gets no `src`, so it loads exactly once — already in the correct theme —
+  // rather than loading `theme:light` first and then reloading `theme:dark`. That
+  // double load showed up as a light-mode flash, or a stuck-light embed when a
+  // tab was switched mid-reload, since the theme comes solely from the URL global.
+  const [theme, setTheme] = useState<"light" | "dark" | null>(null);
 
-  // Sync with Fumadocs theme
+  // Sync with the Fumadocs theme (a class on <html>) on mount and on every change.
   useEffect(() => {
     const root = document.documentElement;
     const updateTheme = () => {
@@ -34,7 +39,10 @@ export function StoryEmbed({ storyId, height = 200, title }: StoryEmbedProps) {
   }, []);
 
   const basePath = process.env.DOCS_BASE_PATH || "";
-  const src = `${basePath}/storybook/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme}`;
+  const src =
+    theme === null
+      ? undefined
+      : `${basePath}/storybook/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme}`;
 
   return (
     <iframe
@@ -45,7 +53,9 @@ export function StoryEmbed({ storyId, height = 200, title }: StoryEmbedProps) {
         height: typeof height === "number" ? `${height}px` : height,
         border: "1px solid var(--fd-border)",
         borderRadius: "8px",
-        background: theme === "dark" ? "#09090b" : "#fafafa",
+        // `--fd-card` adapts to the active theme, so the placeholder box matches
+        // before `theme` resolves; then we pin Storybook's own canvas colours.
+        background: theme === null ? "var(--fd-card)" : theme === "dark" ? "#09090b" : "#fafafa",
       }}
       loading="lazy"
     />
