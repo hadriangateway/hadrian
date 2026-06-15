@@ -4,7 +4,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -17,6 +16,7 @@ import {
   Fingerprint,
   Gauge,
   Globe,
+  Pause,
   Play,
   Plug,
   ScrollText,
@@ -38,6 +38,10 @@ const PROVIDERS_DOCS = "/docs/configuration/providers";
 // --- Geometry (viewBox units) ---
 const VB_W = 960;
 const VB_H = 560;
+// Headroom added above the scene (negative viewBox min-y) so the top-corner badges
+// — the animation toggle and "Slideshow paused" — clear the top provider row, which
+// in the busiest scene sits near y=34.
+const VB_TOP_PAD = 40;
 const UX = 110; // user node center x
 const UY = 280; // shared vertical center
 const GX = 470; // gateway center x
@@ -95,8 +99,11 @@ const SPEED = 255; // viewBox units per second — the one speed used everywhere
 const IN_FLIGHT = 3; // target number of requests visible at once, per scene
 
 // Length of an "M L … C …" path (straight segments exact, curves sampled).
+// Only absolute M/L/C are supported. The token regex matches *any* letter so
+// an unsupported command (Q/A, relative m/l/c, …) surfaces as an explicit
+// throw below rather than being silently dropped and desyncing dot timing.
 function pathLength(d: string): number {
-  const t = d.match(/[MLC]|-?\d+(?:\.\d+)?/g);
+  const t = d.match(/[A-Za-z]|-?\d+(?:\.\d+)?/g);
   if (!t) return 0;
   let i = 0;
   const num = () => parseFloat(t[i++]);
@@ -136,6 +143,8 @@ function pathLength(d: string): number {
       }
       cx = x;
       cy = y;
+    } else {
+      throw new Error(`pathLength: unsupported SVG path command "${cmd}" (only M/L/C are handled)`);
     }
   }
   return len;
@@ -157,9 +166,16 @@ function sceneTiming(ys: number[], n: number, inFlight = IN_FLIGHT) {
 }
 
 // Low-discrepancy lane assignment so a regular launch cadence never reads as a
-// top-to-bottom sweep (consecutive slots land on well-separated rows).
+// top-to-bottom sweep (consecutive slots land on well-separated rows). A coprime
+// multiplicative step scatters most lane counts, but some n (notably 6) have no
+// coprime step other than ±1 — every such step is just a forward or reverse
+// sweep — so those list an explicit scattered order instead.
 const LANE_STEP: Record<number, number> = { 3: 2, 4: 3, 9: 4 };
-const laneOf = (k: number, n: number) => (k * (LANE_STEP[n] ?? 1)) % n;
+const LANE_ORDER: Record<number, number[]> = { 6: [0, 3, 1, 4, 2, 5] };
+const laneOf = (k: number, n: number) => {
+  const order = LANE_ORDER[n];
+  return order ? order[k % order.length] : (k * (LANE_STEP[n] ?? 1)) % n;
+};
 
 // =====================================================================
 // Reduced motion
@@ -503,6 +519,7 @@ function FlagEmoji({ children }: { children: string }) {
 
 const UsFlag = () => <FlagEmoji>🇺🇸</FlagEmoji>;
 const EuFlag = () => <FlagEmoji>🇪🇺</FlagEmoji>;
+const AuFlag = () => <FlagEmoji>🇦🇺</FlagEmoji>;
 
 function Chip({
   provider,
@@ -1245,10 +1262,38 @@ const scenes: Scene[] = [
     id: "sovereignty",
     pill: "Sovereignty",
     caption:
-      "Requests route only to providers in compliant regions, based on their sovereignty rules.",
+      "Requests route only to providers in compliant regions, based on the sovereignty rules you define.",
     href: "/docs/features/data-sovereignty",
     render: () => {
       const rows = [
+        {
+          p: ALL.bedrock,
+          region: "AU",
+          flag: <AuFlag />,
+          fill: "fill-[#FFCD00]",
+          stroke: "stroke-[#FFCD00]/70",
+        },
+        {
+          p: ALL.onprem,
+          region: "AU",
+          flag: <AuFlag />,
+          fill: "fill-[#FFCD00]",
+          stroke: "stroke-[#FFCD00]/70",
+        },
+        {
+          p: ALL.azure,
+          region: "EU",
+          flag: <EuFlag />,
+          fill: "fill-blue-500",
+          stroke: "stroke-blue-500/70",
+        },
+        {
+          p: ALL.gemini,
+          region: "EU",
+          flag: <EuFlag />,
+          fill: "fill-blue-500",
+          stroke: "stroke-blue-500/70",
+        },
         {
           p: ALL.openai,
           region: "US",
@@ -1262,20 +1307,6 @@ const scenes: Scene[] = [
           flag: <UsFlag />,
           fill: "fill-red-500",
           stroke: "stroke-red-500/70",
-        },
-        {
-          p: ALL.azure,
-          region: "EU",
-          flag: <EuFlag />,
-          fill: "fill-blue-500",
-          stroke: "stroke-blue-500/70",
-        },
-        {
-          p: ALL.onprem,
-          region: "EU",
-          flag: <EuFlag />,
-          fill: "fill-blue-500",
-          stroke: "stroke-blue-500/70",
         },
       ];
       const ys = providerYs(rows.length);
@@ -1305,7 +1336,13 @@ const scenes: Scene[] = [
           <UserNode />
           <GatewayNode />
           {rows.map((r, i) => (
-            <Chip key={r.p.name} provider={r.p} y={ys[i]} tag={r.region} flag={r.flag} />
+            <Chip
+              key={`${r.p.name}-${r.region}`}
+              provider={r.p}
+              y={ys[i]}
+              tag={r.region}
+              flag={r.flag}
+            />
           ))}
         </>
       );
@@ -1899,22 +1936,26 @@ const scenes: Scene[] = [
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
+// Hoisted to module scope so the references are stable across renders;
+// otherwise useSyncExternalStore re-subscribes the matchMedia listener on
+// every re-render of GatewayDiagram (each tab click, pause/stop toggle).
+function subscribeReducedMotion(onChange: () => void) {
+  const mq = window.matchMedia(REDUCED_MOTION_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+const getReducedMotionSnapshot = () => window.matchMedia(REDUCED_MOTION_QUERY).matches;
+const getReducedMotionServerSnapshot = () => false;
+
 function usePrefersReducedMotion() {
   return useSyncExternalStore(
-    (onChange) => {
-      const mq = window.matchMedia(REDUCED_MOTION_QUERY);
-      mq.addEventListener("change", onChange);
-      return () => mq.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
-    () => false
+    subscribeReducedMotion,
+    getReducedMotionSnapshot,
+    getReducedMotionServerSnapshot
   );
 }
 
 const CYCLE_MS = 6500;
-// How long the "Stop animation" toggle lingers after the last interaction before
-// it fades out, so it doesn't sit on top of the running scene indefinitely.
-const CONTROLS_HIDE_MS = 2500;
 
 // =====================================================================
 // Scene picker
@@ -1942,11 +1983,23 @@ function ScenePicker({
   onSelect,
   onKeyDown,
   tablistRef,
+  paused,
+  onAdvance,
+  pauseHandlers,
 }: {
   active: number;
   onSelect: (i: number) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   tablistRef: React.RefObject<HTMLDivElement | null>;
+  // The active tab carries a progress bar that fills over one slideshow cycle and,
+  // on completion, advances to the next scene — so the bar and the auto-advance are
+  // the same clock. It freezes (not resets) while `paused`, preserving remaining
+  // time. This is the slideshow itself, independent of the in-scene dot animation,
+  // so it keeps cycling even under prefers-reduced-motion.
+  paused: boolean;
+  onAdvance: () => void;
+  // Hovering or focusing the chips pauses the slideshow, same as the scene/caption.
+  pauseHandlers: React.DOMAttributes<HTMLDivElement>;
 }) {
   return (
     <div
@@ -1955,6 +2008,7 @@ function ScenePicker({
       aria-label="Gateway capabilities"
       onKeyDown={onKeyDown}
       className="flex max-w-3xl flex-wrap justify-center gap-2"
+      {...pauseHandlers}
     >
       {scenes.map((scene, i) => {
         const isActive = i === active;
@@ -1969,7 +2023,7 @@ function ScenePicker({
             tabIndex={isActive ? 0 : -1}
             onClick={() => onSelect(i)}
             onFocus={() => onSelect(i)}
-            className={`group inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+            className={`group relative inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 pb-2.5 pt-1.5 text-sm font-medium transition-colors ${
               isActive
                 ? "bg-fd-primary/10 text-fd-primary ring-1 ring-inset ring-fd-primary/25"
                 : "text-fd-muted-foreground hover:bg-fd-muted hover:text-fd-foreground"
@@ -1986,6 +2040,21 @@ function ScenePicker({
               />
             )}
             <span>{scene.pill}</span>
+            {isActive && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-2 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-fd-primary/20"
+              >
+                <span
+                  onAnimationEnd={onAdvance}
+                  className="block h-full w-full origin-left bg-fd-primary"
+                  style={{
+                    animation: `hadrian-tab-progress ${CYCLE_MS}ms linear`,
+                    animationPlayState: paused ? "paused" : "running",
+                  }}
+                />
+              </span>
+            )}
           </button>
         );
       })}
@@ -1996,57 +2065,17 @@ function ScenePicker({
 export function GatewayDiagram() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
-  // When the OS prefers reduced motion the diagram renders a static frame; a
-  // single click on the Play overlay opts back in to the full animation.
-  const [forceMotion, setForceMotion] = useState(false);
-  // While the animation is playing the "Stop animation" toggle auto-hides after a
-  // beat of inactivity and reappears the moment the user interacts with the scene.
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const hideTimer = useRef<number | null>(null);
   const reducedMotion = usePrefersReducedMotion();
-  const reduced = reducedMotion && !forceMotion;
+  // The dot/glow animation plays by default for everyone. Reduced-motion users
+  // get a toggle to stop it, which falls back to the static frame.
+  const [stopped, setStopped] = useState(false);
+  const reduced = reducedMotion && stopped;
   const tablistRef = useRef<HTMLDivElement>(null);
 
   const go = useCallback(
     (i: number) => setActive(((i % scenes.length) + scenes.length) % scenes.length),
     []
   );
-
-  // Reveal the toggle and (re)arm its auto-hide. The timer only runs while the
-  // animation is playing — the "Play animation" call-to-action never hides, or a
-  // reduced-motion user would have no way to start the scene.
-  const wakeControls = useCallback(() => {
-    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    setControlsVisible(true);
-    if (forceMotion) {
-      hideTimer.current = window.setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
-    }
-  }, [forceMotion]);
-
-  // Flip play/stop and seed the visibility timeline for the new state: starting
-  // the animation shows the toggle and arms its fade-out; stopping pins it back on.
-  const toggleMotion = useCallback(() => {
-    const next = !forceMotion;
-    setForceMotion(next);
-    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    setControlsVisible(true);
-    if (next) {
-      hideTimer.current = window.setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
-    }
-  }, [forceMotion]);
-
-  useEffect(
-    () => () => {
-      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (paused || reduced) return;
-    const id = window.setInterval(() => setActive((i) => (i + 1) % scenes.length), CYCLE_MS);
-    return () => window.clearInterval(id);
-  }, [paused, reduced]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     let next: number | null = null;
@@ -2065,31 +2094,33 @@ export function GatewayDiagram() {
 
   const scene = scenes[active];
 
+  // Pausing the slideshow is opt-in per content region — the scene, the caption,
+  // and the tab chips each carry these — so the empty side gutters beside the
+  // centred content (the column is full-width) never freeze the slideshow.
+  const pauseHandlers = {
+    onMouseEnter: () => setPaused(true),
+    onMouseLeave: () => setPaused(false),
+    onFocusCapture: () => setPaused(true),
+    onBlurCapture: () => setPaused(false),
+  };
+
   return (
     <ReducedMotionContext.Provider value={reduced}>
-      <div
-        className="flex flex-col items-center gap-5"
-        onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
-        onFocusCapture={() => setPaused(true)}
-        onBlurCapture={() => setPaused(false)}
-      >
+      <div className="flex flex-col items-center gap-5">
         <style>{`
           @keyframes hadrian-scene-fade { from { opacity: 0 } to { opacity: 1 } }
+          @keyframes hadrian-tab-progress { from { transform: scaleX(0) } to { transform: scaleX(1) } }
           @media (prefers-reduced-motion: reduce) {
             .hadrian-force-motion .motion-reduce\\:hidden { display: revert; }
           }
         `}</style>
 
         <div className="w-full overflow-x-auto">
-          {/* Interacting with the scene itself (not the caption or tab pills)
-              wakes the auto-hiding "Stop animation" toggle. */}
-          <div
-            className="relative mx-auto w-full max-w-3xl sm:min-w-[720px]"
-            onPointerMove={wakeControls}
-            onPointerDown={wakeControls}
-            onFocus={wakeControls}
-          >
+          {/* Hovering or focusing the scene pauses the slideshow and reveals the
+              animation toggle (as do the caption and tab chips below). Keeping pause
+              on the content regions — not the full-width column — means hovering an
+              empty side gutter no longer freezes it. */}
+          <div className="relative mx-auto w-full max-w-3xl sm:min-w-[720px]" {...pauseHandlers}>
             <div
               id={`gw-panel-${scene.id}`}
               role="tabpanel"
@@ -2098,9 +2129,9 @@ export function GatewayDiagram() {
               style={reduced ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
             >
               <svg
-                viewBox={`0 0 ${VB_W} ${VB_H}`}
+                viewBox={`0 ${-VB_TOP_PAD} ${VB_W} ${VB_H + VB_TOP_PAD}`}
                 aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
-                className={`h-auto w-full${forceMotion ? " hadrian-force-motion" : ""}`}
+                className={`h-auto w-full${reduced ? "" : " hadrian-force-motion"}`}
               >
                 <defs>
                   <filter id="hadrian-dot-glow" x="-200%" y="-200%" width="500%" height="500%">
@@ -2117,29 +2148,44 @@ export function GatewayDiagram() {
                 {scene.render()}
               </svg>
             </div>
-            {/* Reduced-motion users see a static frame; the toggle opts into the
-              animation and lets them stop it again. */}
+            {/* The animation plays by default; reduced-motion users get a toggle to
+              stop it and fall back to the static frame. Like the "Slideshow paused"
+              badge, it surfaces on hover/focus so it doesn't sit on the scene. */}
             {reducedMotion && (
               <button
                 type="button"
-                onClick={toggleMotion}
-                aria-label={forceMotion ? "Stop animation" : "Play animation"}
-                className={`absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-foreground shadow-sm backdrop-blur transition duration-300 hover:border-fd-primary/60 hover:text-fd-primary ${
-                  forceMotion && !controlsVisible ? "pointer-events-none opacity-0" : "opacity-100"
+                onClick={() => setStopped((s) => !s)}
+                aria-label={stopped ? "Play animation" : "Stop animation"}
+                className={`absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-muted-foreground shadow-sm backdrop-blur transition duration-300 hover:border-fd-primary/60 hover:text-fd-primary ${
+                  paused ? "opacity-100" : "pointer-events-none opacity-0"
                 }`}
               >
-                {forceMotion ? (
-                  <Square className="h-3 w-3" aria-hidden="true" />
-                ) : (
+                {stopped ? (
                   <Play className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <Square className="h-3 w-3" aria-hidden="true" />
                 )}
-                {forceMotion ? "Stop animation" : "Play animation"}
+                {stopped ? "Play animation" : "Stop animation"}
               </button>
             )}
+            {/* Hovering or focusing the diagram pauses the slideshow; this badge
+                makes that explicit so the frozen progress bar isn't read as a stall. */}
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-muted-foreground shadow-sm backdrop-blur transition-opacity duration-300 ${
+                paused ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              <Pause className="h-3 w-3" aria-hidden="true" />
+              Slideshow paused. Move away to resume.
+            </div>
           </div>
         </div>
 
-        <div className="flex min-h-[4.25rem] max-w-2xl flex-col items-center justify-center gap-1.5 text-center text-sm text-fd-muted-foreground">
+        <div
+          className="flex min-h-[4.25rem] max-w-2xl flex-col items-center justify-center gap-1.5 text-center text-sm text-fd-muted-foreground"
+          {...pauseHandlers}
+        >
           <p>{scene.caption}</p>
           <Link href={scene.href} className="whitespace-nowrap font-medium text-fd-primary">
             Learn more →
@@ -2152,6 +2198,9 @@ export function GatewayDiagram() {
           onSelect={setActive}
           onKeyDown={onKeyDown}
           tablistRef={tablistRef}
+          paused={paused}
+          onAdvance={() => go(active + 1)}
+          pauseHandlers={pauseHandlers}
         />
       </div>
     </ReducedMotionContext.Provider>

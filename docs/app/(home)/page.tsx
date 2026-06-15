@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Brain, Code, Eye, Server, Shield, Users, Zap } from "lucide-react";
 import { QuickStartSelector } from "@/components/quick-start-selector";
@@ -100,12 +100,97 @@ const demos = [
   },
 ];
 
+// One-shot "is this element near the viewport yet" gate. Returns true once the
+// observed element comes within `rootMargin` of the viewport, then stops
+// observing. SSR-safe: starts false and only flips client-side, so there's no
+// hydration mismatch.
+function useInView<T extends Element>(rootMargin = "400px") {
+  const ref = useRef<T | null>(null);
+  const [inView, setInView] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || inView) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [inView, rootMargin]);
+
+  return { ref, inView };
+}
+
 function DemoGallery() {
   const [active, setActive] = useState("chat");
   const current = demos.find((d) => d.id === active) ?? demos[0];
 
+  // Don't mount any Storybook iframe until the gallery nears the viewport: each
+  // is a full app bundle whose load saturates the main thread, and the hero's
+  // diagram animation runs on that same thread (SMIL/CSS are not composited).
+  // Gating the load until the hero has scrolled away keeps that animation smooth.
+  const { ref: galleryRef, inView } = useInView<HTMLDivElement>();
+
+  // Within the gallery, only ever load a panel that's been requested, and keep it
+  // warm afterwards. The first paint loads just the active panel — turning the
+  // nine-bundle burst into a single load — and later loads are paced (see below).
+  const [mounted, setMounted] = useState<Set<string>>(() => new Set([active]));
+  const warm = useCallback((id: string) => {
+    setMounted((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, []);
+
+  // Whether the visitor has engaged with the gallery (hovered or picked a tab).
+  const [interacted, setInteracted] = useState(false);
+  const select = (id: string) => {
+    setActive(id);
+    warm(id);
+    setInteracted(true);
+  };
+
+  // Once engaged, trickle the remaining panels in during idle time so subsequent
+  // tab switches are instant — one iframe per idle slice, never the whole set at
+  // once, so we don't recreate the main-thread contention the active-only first
+  // paint avoids. requestIdleCallback yields to the diagram/scroll; the timeout
+  // guarantees forward progress on a busy thread.
+  useEffect(() => {
+    if (!interacted) return;
+    const queue = demos.map((d) => d.id);
+    let cancelled = false;
+    let handle: number | undefined;
+    const schedule =
+      "requestIdleCallback" in window
+        ? (cb: () => void) => window.requestIdleCallback(cb, { timeout: 2000 })
+        : (cb: () => void) => window.setTimeout(cb, 250);
+    const cancel =
+      "cancelIdleCallback" in window
+        ? (h: number) => window.cancelIdleCallback(h)
+        : (h: number) => window.clearTimeout(h);
+    const pump = () => {
+      if (cancelled) return;
+      const id = queue.shift();
+      if (id === undefined) return;
+      warm(id);
+      handle = schedule(pump);
+    };
+    handle = schedule(pump);
+    return () => {
+      cancelled = true;
+      if (handle !== undefined) cancel(handle);
+    };
+  }, [interacted, warm]);
+
   return (
-    <div className="mx-auto max-w-screen-2xl px-4">
+    <div
+      ref={galleryRef}
+      onPointerEnter={() => setInteracted(true)}
+      className="mx-auto max-w-screen-2xl px-4"
+    >
       <div className="flex flex-col gap-6 lg:flex-row lg:gap-10">
         <ol className="lg:w-72 lg:shrink-0" role="tablist" aria-label="Demo gallery">
           {demos.map((demo, i) => (
@@ -114,7 +199,7 @@ function DemoGallery() {
                 role="tab"
                 aria-selected={active === demo.id}
                 aria-controls={`demo-panel-${demo.id}`}
-                onClick={() => setActive(demo.id)}
+                onClick={() => select(demo.id)}
                 className={`group flex w-full cursor-pointer items-baseline gap-4 border-b border-fd-border py-3 text-left transition-colors ${
                   active === demo.id
                     ? "text-fd-foreground"
@@ -151,7 +236,9 @@ function DemoGallery() {
                 key={demo.id}
                 className={active === demo.id ? "h-full" : "invisible absolute inset-0"}
               >
-                <StoryEmbed storyId={demo.storyId} height="100%" />
+                {inView && mounted.has(demo.id) && (
+                  <StoryEmbed storyId={demo.storyId} height="100%" />
+                )}
               </div>
             ))}
           </div>
@@ -316,7 +403,7 @@ export default function HomePage() {
           </div>
 
           {/* Gateway capabilities diagram */}
-          <div className="mt-16">
+          <div className="mt-4">
             <GatewayDiagram />
           </div>
 
