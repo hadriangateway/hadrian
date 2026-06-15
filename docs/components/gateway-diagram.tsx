@@ -39,6 +39,10 @@ const PROVIDERS_DOCS = "/docs/configuration/providers";
 // --- Geometry (viewBox units) ---
 const VB_W = 960;
 const VB_H = 560;
+// Headroom added above the scene (negative viewBox min-y) so the top-corner badges
+// — "Play animation" and "Slideshow paused" — clear the top provider row, which in
+// the busiest scene sits near y=34.
+const VB_TOP_PAD = 40;
 const UX = 110; // user node center x
 const UY = 280; // shared vertical center
 const GX = 470; // gateway center x
@@ -1966,6 +1970,7 @@ function ScenePicker({
   tablistRef,
   paused,
   onAdvance,
+  pauseHandlers,
 }: {
   active: number;
   onSelect: (i: number) => void;
@@ -1978,6 +1983,8 @@ function ScenePicker({
   // so it keeps cycling even under prefers-reduced-motion.
   paused: boolean;
   onAdvance: () => void;
+  // Hovering or focusing the chips pauses the slideshow, same as the scene/caption.
+  pauseHandlers: React.DOMAttributes<HTMLDivElement>;
 }) {
   return (
     <div
@@ -1986,6 +1993,7 @@ function ScenePicker({
       aria-label="Gateway capabilities"
       onKeyDown={onKeyDown}
       className="flex max-w-3xl flex-wrap justify-center gap-2"
+      {...pauseHandlers}
     >
       {scenes.map((scene, i) => {
         const isActive = i === active;
@@ -2105,15 +2113,19 @@ export function GatewayDiagram() {
 
   const scene = scenes[active];
 
+  // Pausing the slideshow is opt-in per content region — the scene, the caption,
+  // and the tab chips each carry these — so the empty side gutters beside the
+  // centred content (the column is full-width) never freeze the slideshow.
+  const pauseHandlers = {
+    onMouseEnter: () => setPaused(true),
+    onMouseLeave: () => setPaused(false),
+    onFocusCapture: () => setPaused(true),
+    onBlurCapture: () => setPaused(false),
+  };
+
   return (
     <ReducedMotionContext.Provider value={reduced}>
-      <div
-        className="flex flex-col items-center gap-5"
-        onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
-        onFocusCapture={() => setPaused(true)}
-        onBlurCapture={() => setPaused(false)}
-      >
+      <div className="flex flex-col items-center gap-5">
         <style>{`
           @keyframes hadrian-scene-fade { from { opacity: 0 } to { opacity: 1 } }
           @keyframes hadrian-tab-progress { from { transform: scaleX(0) } to { transform: scaleX(1) } }
@@ -2123,13 +2135,16 @@ export function GatewayDiagram() {
         `}</style>
 
         <div className="w-full overflow-x-auto">
-          {/* Interacting with the scene itself (not the caption or tab pills)
-              wakes the auto-hiding "Stop animation" toggle. */}
+          {/* Interacting with the scene wakes the auto-hiding "Stop animation"
+              toggle; it also pauses the slideshow (as do the caption and tab chips
+              below). Keeping pause on the content regions — not the full-width
+              column — means hovering an empty side gutter no longer freezes it. */}
           <div
             className="relative mx-auto w-full max-w-3xl sm:min-w-[720px]"
             onPointerMove={wakeControls}
             onPointerDown={wakeControls}
             onFocus={wakeControls}
+            {...pauseHandlers}
           >
             <div
               id={`gw-panel-${scene.id}`}
@@ -2139,7 +2154,7 @@ export function GatewayDiagram() {
               style={reduced ? undefined : { animation: "hadrian-scene-fade 420ms ease" }}
             >
               <svg
-                viewBox={`0 0 ${VB_W} ${VB_H}`}
+                viewBox={`0 ${-VB_TOP_PAD} ${VB_W} ${VB_H + VB_TOP_PAD}`}
                 aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
                 className={`h-auto w-full${forceMotion ? " hadrian-force-motion" : ""}`}
               >
@@ -2191,7 +2206,10 @@ export function GatewayDiagram() {
           </div>
         </div>
 
-        <div className="flex min-h-[4.25rem] max-w-2xl flex-col items-center justify-center gap-1.5 text-center text-sm text-fd-muted-foreground">
+        <div
+          className="flex min-h-[4.25rem] max-w-2xl flex-col items-center justify-center gap-1.5 text-center text-sm text-fd-muted-foreground"
+          {...pauseHandlers}
+        >
           <p>{scene.caption}</p>
           <Link href={scene.href} className="whitespace-nowrap font-medium text-fd-primary">
             Learn more →
@@ -2206,6 +2224,7 @@ export function GatewayDiagram() {
           tablistRef={tablistRef}
           paused={paused}
           onAdvance={() => go(active + 1)}
+          pauseHandlers={pauseHandlers}
         />
       </div>
     </ReducedMotionContext.Provider>
