@@ -99,8 +99,11 @@ const SPEED = 255; // viewBox units per second — the one speed used everywhere
 const IN_FLIGHT = 3; // target number of requests visible at once, per scene
 
 // Length of an "M L … C …" path (straight segments exact, curves sampled).
+// Only absolute M/L/C are supported. The token regex matches *any* letter so
+// an unsupported command (Q/A, relative m/l/c, …) surfaces as an explicit
+// throw below rather than being silently dropped and desyncing dot timing.
 function pathLength(d: string): number {
-  const t = d.match(/[MLC]|-?\d+(?:\.\d+)?/g);
+  const t = d.match(/[A-Za-z]|-?\d+(?:\.\d+)?/g);
   if (!t) return 0;
   let i = 0;
   const num = () => parseFloat(t[i++]);
@@ -140,6 +143,8 @@ function pathLength(d: string): number {
       }
       cx = x;
       cy = y;
+    } else {
+      throw new Error(`pathLength: unsupported SVG path command "${cmd}" (only M/L/C are handled)`);
     }
   }
   return len;
@@ -1931,15 +1936,22 @@ const scenes: Scene[] = [
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
+// Hoisted to module scope so the references are stable across renders;
+// otherwise useSyncExternalStore re-subscribes the matchMedia listener on
+// every re-render of GatewayDiagram (each tab click, pause/stop toggle).
+function subscribeReducedMotion(onChange: () => void) {
+  const mq = window.matchMedia(REDUCED_MOTION_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+const getReducedMotionSnapshot = () => window.matchMedia(REDUCED_MOTION_QUERY).matches;
+const getReducedMotionServerSnapshot = () => false;
+
 function usePrefersReducedMotion() {
   return useSyncExternalStore(
-    (onChange) => {
-      const mq = window.matchMedia(REDUCED_MOTION_QUERY);
-      mq.addEventListener("change", onChange);
-      return () => mq.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
-    () => false
+    subscribeReducedMotion,
+    getReducedMotionSnapshot,
+    getReducedMotionServerSnapshot
   );
 }
 
