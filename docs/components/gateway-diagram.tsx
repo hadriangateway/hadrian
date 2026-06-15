@@ -4,7 +4,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -40,8 +39,8 @@ const PROVIDERS_DOCS = "/docs/configuration/providers";
 const VB_W = 960;
 const VB_H = 560;
 // Headroom added above the scene (negative viewBox min-y) so the top-corner badges
-// — "Play animation" and "Slideshow paused" — clear the top provider row, which in
-// the busiest scene sits near y=34.
+// — the animation toggle and "Slideshow paused" — clear the top provider row, which
+// in the busiest scene sits near y=34.
 const VB_TOP_PAD = 40;
 const UX = 110; // user node center x
 const UY = 280; // shared vertical center
@@ -1938,9 +1937,6 @@ function usePrefersReducedMotion() {
 }
 
 const CYCLE_MS = 6500;
-// How long the "Stop animation" toggle lingers after the last interaction before
-// it fades out, so it doesn't sit on top of the running scene indefinitely.
-const CONTROLS_HIDE_MS = 2500;
 
 // =====================================================================
 // Scene picker
@@ -2050,49 +2046,15 @@ function ScenePicker({
 export function GatewayDiagram() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
-  // When the OS prefers reduced motion the diagram renders a static frame; a
-  // single click on the Play overlay opts back in to the full animation.
-  const [forceMotion, setForceMotion] = useState(false);
-  // While the animation is playing the "Stop animation" toggle auto-hides after a
-  // beat of inactivity and reappears the moment the user interacts with the scene.
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const hideTimer = useRef<number | null>(null);
   const reducedMotion = usePrefersReducedMotion();
-  const reduced = reducedMotion && !forceMotion;
+  // The dot/glow animation plays by default for everyone. Reduced-motion users
+  // get a toggle to stop it, which falls back to the static frame.
+  const [stopped, setStopped] = useState(false);
+  const reduced = reducedMotion && stopped;
   const tablistRef = useRef<HTMLDivElement>(null);
 
   const go = useCallback(
     (i: number) => setActive(((i % scenes.length) + scenes.length) % scenes.length),
-    []
-  );
-
-  // Reveal the toggle and (re)arm its auto-hide. The timer only runs while the
-  // animation is playing — the "Play animation" call-to-action never hides, or a
-  // reduced-motion user would have no way to start the scene.
-  const wakeControls = useCallback(() => {
-    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    setControlsVisible(true);
-    if (forceMotion) {
-      hideTimer.current = window.setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
-    }
-  }, [forceMotion]);
-
-  // Flip play/stop and seed the visibility timeline for the new state: starting
-  // the animation shows the toggle and arms its fade-out; stopping pins it back on.
-  const toggleMotion = useCallback(() => {
-    const next = !forceMotion;
-    setForceMotion(next);
-    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    setControlsVisible(true);
-    if (next) {
-      hideTimer.current = window.setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
-    }
-  }, [forceMotion]);
-
-  useEffect(
-    () => () => {
-      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
-    },
     []
   );
 
@@ -2135,17 +2097,11 @@ export function GatewayDiagram() {
         `}</style>
 
         <div className="w-full overflow-x-auto">
-          {/* Interacting with the scene wakes the auto-hiding "Stop animation"
-              toggle; it also pauses the slideshow (as do the caption and tab chips
-              below). Keeping pause on the content regions — not the full-width
-              column — means hovering an empty side gutter no longer freezes it. */}
-          <div
-            className="relative mx-auto w-full max-w-3xl sm:min-w-[720px]"
-            onPointerMove={wakeControls}
-            onPointerDown={wakeControls}
-            onFocus={wakeControls}
-            {...pauseHandlers}
-          >
+          {/* Hovering or focusing the scene pauses the slideshow and reveals the
+              animation toggle (as do the caption and tab chips below). Keeping pause
+              on the content regions — not the full-width column — means hovering an
+              empty side gutter no longer freezes it. */}
+          <div className="relative mx-auto w-full max-w-3xl sm:min-w-[720px]" {...pauseHandlers}>
             <div
               id={`gw-panel-${scene.id}`}
               role="tabpanel"
@@ -2156,7 +2112,7 @@ export function GatewayDiagram() {
               <svg
                 viewBox={`0 ${-VB_TOP_PAD} ${VB_W} ${VB_H + VB_TOP_PAD}`}
                 aria-label={`Hadrian Gateway, ${scene.pill}. ${scene.caption}`}
-                className={`h-auto w-full${forceMotion ? " hadrian-force-motion" : ""}`}
+                className={`h-auto w-full${reduced ? "" : " hadrian-force-motion"}`}
               >
                 <defs>
                   <filter id="hadrian-dot-glow" x="-200%" y="-200%" width="500%" height="500%">
@@ -2173,23 +2129,24 @@ export function GatewayDiagram() {
                 {scene.render()}
               </svg>
             </div>
-            {/* Reduced-motion users see a static frame; the toggle opts into the
-              animation and lets them stop it again. */}
+            {/* The animation plays by default; reduced-motion users get a toggle to
+              stop it and fall back to the static frame. Like the "Slideshow paused"
+              badge, it surfaces on hover/focus so it doesn't sit on the scene. */}
             {reducedMotion && (
               <button
                 type="button"
-                onClick={toggleMotion}
-                aria-label={forceMotion ? "Stop animation" : "Play animation"}
-                className={`absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-foreground shadow-sm backdrop-blur transition duration-300 hover:border-fd-primary/60 hover:text-fd-primary ${
-                  forceMotion && !controlsVisible ? "pointer-events-none opacity-0" : "opacity-100"
+                onClick={() => setStopped((s) => !s)}
+                aria-label={stopped ? "Play animation" : "Stop animation"}
+                className={`absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-muted-foreground shadow-sm backdrop-blur transition duration-300 hover:border-fd-primary/60 hover:text-fd-primary ${
+                  paused ? "opacity-100" : "pointer-events-none opacity-0"
                 }`}
               >
-                {forceMotion ? (
-                  <Square className="h-3 w-3" aria-hidden="true" />
-                ) : (
+                {stopped ? (
                   <Play className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <Square className="h-3 w-3" aria-hidden="true" />
                 )}
-                {forceMotion ? "Stop animation" : "Play animation"}
+                {stopped ? "Play animation" : "Stop animation"}
               </button>
             )}
             {/* Hovering or focusing the diagram pauses the slideshow; this badge
