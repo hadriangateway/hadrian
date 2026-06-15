@@ -316,7 +316,7 @@ export default function HomePage() {
           </div>
 
           {/* Gateway capabilities diagram */}
-          <div className="mt-16">
+          <div className="mt-4">
             <GatewayDiagram />
           </div>
 

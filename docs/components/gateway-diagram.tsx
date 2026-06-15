@@ -17,6 +17,7 @@ import {
   Fingerprint,
   Gauge,
   Globe,
+  Pause,
   Play,
   Plug,
   ScrollText,
@@ -1942,11 +1943,20 @@ function ScenePicker({
   onSelect,
   onKeyDown,
   tablistRef,
+  paused,
+  onAdvance,
 }: {
   active: number;
   onSelect: (i: number) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   tablistRef: React.RefObject<HTMLDivElement | null>;
+  // The active tab carries a progress bar that fills over one slideshow cycle and,
+  // on completion, advances to the next scene — so the bar and the auto-advance are
+  // the same clock. It freezes (not resets) while `paused`, preserving remaining
+  // time. This is the slideshow itself, independent of the in-scene dot animation,
+  // so it keeps cycling even under prefers-reduced-motion.
+  paused: boolean;
+  onAdvance: () => void;
 }) {
   return (
     <div
@@ -1969,7 +1979,7 @@ function ScenePicker({
             tabIndex={isActive ? 0 : -1}
             onClick={() => onSelect(i)}
             onFocus={() => onSelect(i)}
-            className={`group inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+            className={`group relative inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 pb-2.5 pt-1.5 text-sm font-medium transition-colors ${
               isActive
                 ? "bg-fd-primary/10 text-fd-primary ring-1 ring-inset ring-fd-primary/25"
                 : "text-fd-muted-foreground hover:bg-fd-muted hover:text-fd-foreground"
@@ -1986,6 +1996,21 @@ function ScenePicker({
               />
             )}
             <span>{scene.pill}</span>
+            {isActive && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-2 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-fd-primary/20"
+              >
+                <span
+                  onAnimationEnd={onAdvance}
+                  className="block h-full w-full origin-left bg-fd-primary"
+                  style={{
+                    animation: `hadrian-tab-progress ${CYCLE_MS}ms linear`,
+                    animationPlayState: paused ? "paused" : "running",
+                  }}
+                />
+              </span>
+            )}
           </button>
         );
       })}
@@ -2042,12 +2067,6 @@ export function GatewayDiagram() {
     []
   );
 
-  useEffect(() => {
-    if (paused || reduced) return;
-    const id = window.setInterval(() => setActive((i) => (i + 1) % scenes.length), CYCLE_MS);
-    return () => window.clearInterval(id);
-  }, [paused, reduced]);
-
   const onKeyDown = (e: React.KeyboardEvent) => {
     let next: number | null = null;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") next = active + 1;
@@ -2076,6 +2095,7 @@ export function GatewayDiagram() {
       >
         <style>{`
           @keyframes hadrian-scene-fade { from { opacity: 0 } to { opacity: 1 } }
+          @keyframes hadrian-tab-progress { from { transform: scaleX(0) } to { transform: scaleX(1) } }
           @media (prefers-reduced-motion: reduce) {
             .hadrian-force-motion .motion-reduce\\:hidden { display: revert; }
           }
@@ -2136,6 +2156,17 @@ export function GatewayDiagram() {
                 {forceMotion ? "Stop animation" : "Play animation"}
               </button>
             )}
+            {/* Hovering or focusing the diagram pauses the slideshow; this badge
+                makes that explicit so the frozen progress bar isn't read as a stall. */}
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full border border-fd-border bg-fd-card/90 px-2 py-1 text-[11px] font-medium text-fd-muted-foreground shadow-sm backdrop-blur transition-opacity duration-300 ${
+                paused ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              <Pause className="h-3 w-3" aria-hidden="true" />
+              Slideshow paused. Move away to resume.
+            </div>
           </div>
         </div>
 
@@ -2152,6 +2183,8 @@ export function GatewayDiagram() {
           onSelect={setActive}
           onKeyDown={onKeyDown}
           tablistRef={tablistRef}
+          paused={paused}
+          onAdvance={() => go(active + 1)}
         />
       </div>
     </ReducedMotionContext.Provider>
