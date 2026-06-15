@@ -161,9 +161,16 @@ function sceneTiming(ys: number[], n: number, inFlight = IN_FLIGHT) {
 }
 
 // Low-discrepancy lane assignment so a regular launch cadence never reads as a
-// top-to-bottom sweep (consecutive slots land on well-separated rows).
+// top-to-bottom sweep (consecutive slots land on well-separated rows). A coprime
+// multiplicative step scatters most lane counts, but some n (notably 6) have no
+// coprime step other than ±1 — every such step is just a forward or reverse
+// sweep — so those list an explicit scattered order instead.
 const LANE_STEP: Record<number, number> = { 3: 2, 4: 3, 9: 4 };
-const laneOf = (k: number, n: number) => (k * (LANE_STEP[n] ?? 1)) % n;
+const LANE_ORDER: Record<number, number[]> = { 6: [0, 3, 1, 4, 2, 5] };
+const laneOf = (k: number, n: number) => {
+  const order = LANE_ORDER[n];
+  return order ? order[k % order.length] : (k * (LANE_STEP[n] ?? 1)) % n;
+};
 
 // =====================================================================
 // Reduced motion
