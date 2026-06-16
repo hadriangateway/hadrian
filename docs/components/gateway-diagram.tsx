@@ -1585,6 +1585,10 @@ const scenes: Scene[] = [
       // the rate-limit scene, where shedding only begins once the bar tops out.
       const costs = [1.4, 2.1, 1.8, 2.4, 2.3, 2.0, 1.5];
       const budget = 10;
+      // Representative snapshot for the reduced-motion frame: cumulative spend
+      // after the first four accepted requests (1.4 + 2.1 + 1.8 + 2.4). Both the
+      // bar fill and the balance label derive from it so they can't drift.
+      const staticSpent = 7.7;
       const n = costs.length;
       const { C } = sceneTiming(ys, n);
       const cycle = meterCycle(C, n);
@@ -1618,8 +1622,8 @@ const scenes: Scene[] = [
             keyTimes={sim.keyTimes}
             values={sim.values}
             balanceSteps={sim.balanceSteps}
-            staticFrac={0.77}
-            staticBalance={`$7.70 / $${usd(budget)}`}
+            staticFrac={staticSpent / budget}
+            staticBalance={`$${usd(staticSpent)} / $${usd(budget)}`}
           />
         </>
       );
