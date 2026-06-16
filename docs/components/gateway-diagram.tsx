@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -356,17 +357,23 @@ function ReturnDot({
 function NodeGlow({
   x,
   y,
-  size,
+  w,
+  h = w,
   dur,
   begin,
   at,
+  className = "fill-fd-primary",
 }: {
   x: number;
   y: number;
-  size: number;
+  w: number;
+  // Defaults to a square (h = w); pass h to match a rectangular node so the halo
+  // spreads evenly past all four edges, not just the top and bottom.
+  h?: number;
   dur: number;
   begin: number;
   at: number;
+  className?: string;
 }) {
   // A fixed ~0.55s pulse that peaks exactly as the dot arrives (`at`), so the
   // glow stays in step whatever the lane period is.
@@ -375,13 +382,13 @@ function NodeGlow({
   const a3 = Math.min(1, at + 0.4 / dur).toFixed(4);
   return (
     <rect
-      x={x - size / 2}
-      y={y - size / 2}
-      width={size}
-      height={size}
-      rx={size / 3}
+      x={x - w / 2}
+      y={y - h / 2}
+      width={w}
+      height={h}
+      rx={Math.min(w, h) / 3}
       aria-hidden="true"
-      className="fill-fd-primary motion-reduce:hidden"
+      className={`${className} motion-reduce:hidden`}
       opacity={0}
       style={{ filter: "url(#hadrian-node-glow)" }}
     >
@@ -418,7 +425,7 @@ function ForwardDot({
   const at = Math.min(0.985, travelTime(path) / cycle);
   return (
     <g>
-      <NodeGlow x={PX} y={y} size={56} dur={cycle} begin={begin} at={at} />
+      <NodeGlow x={PX} y={y} w={56} dur={cycle} begin={begin} at={at} />
       {outClass ? (
         <TwoColorFlow
           path={path}
@@ -1126,8 +1133,8 @@ function stepMeter(
 // Rate limiting: load climbs as requests arrive, tops out, and the requests
 // that arrive while full are shed (bounced). It leaks back down over the tail.
 function rateSchedule(C: number, cycle: number) {
-  const acceptLevels = [0.28, 0.45, 0.6, 0.74, 0.87, 1.0];
-  const shed = [false, false, false, false, false, false, true, true];
+  const acceptLevels = [0.32, 0.52, 0.7, 0.86, 1.0];
+  const shed = [false, false, false, false, false, true, true, true];
   let prev = 0.1;
   let li = 0;
   const events = shed.map((isShed, k) => {
@@ -1138,6 +1145,10 @@ function rateSchedule(C: number, cycle: number) {
   return { ...stepMeter(events, 0.1, 0.1), shed };
 }
 
+// A dollar amount with cents and thousands separators (e.g. 10 → "10.00").
+const usd = (v: number) =>
+  v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 // Cumulative spend against a fixed budget; a slot whose cost would overflow the
 // budget is shed. The bar holds the running total, then resets at the boundary.
 function budgetSchedule(costs: number[], budget: number, C: number, cycle: number) {
@@ -1146,7 +1157,7 @@ function budgetSchedule(costs: number[], budget: number, C: number, cycle: numbe
   const shed: boolean[] = [];
   const events: { f: number; level: number }[] = [];
   const balanceSteps: { from: number; to: number; text: string }[] = [];
-  const fmt = (v: number) => `$${v.toFixed(2)} / $${budget.toLocaleString("en-US")}`;
+  const fmt = (v: number) => `$${usd(v)} / $${usd(budget)}`;
   for (let k = 0; k < costs.length; k++) {
     const f = (k * C + T_GATE) / cycle;
     balanceSteps.push({ from: segFrom, to: f, text: fmt(spent) });
@@ -1574,6 +1585,10 @@ const scenes: Scene[] = [
       // the rate-limit scene, where shedding only begins once the bar tops out.
       const costs = [1.4, 2.1, 1.8, 2.4, 2.3, 2.0, 1.5];
       const budget = 10;
+      // Representative snapshot for the reduced-motion frame: cumulative spend
+      // after the first four accepted requests (1.4 + 2.1 + 1.8 + 2.4). Both the
+      // bar fill and the balance label derive from it so they can't drift.
+      const staticSpent = 7.7;
       const n = costs.length;
       const { C } = sceneTiming(ys, n);
       const cycle = meterCycle(C, n);
@@ -1607,8 +1622,8 @@ const scenes: Scene[] = [
             keyTimes={sim.keyTimes}
             values={sim.values}
             balanceSteps={sim.balanceSteps}
-            staticFrac={0.77}
-            staticBalance={`$7.70 / $${budget.toLocaleString("en-US")}`}
+            staticFrac={staticSpent / budget}
+            staticBalance={`$${usd(staticSpent)} / $${usd(budget)}`}
           />
         </>
       );
@@ -1672,7 +1687,7 @@ const scenes: Scene[] = [
                 <NodeGlow
                   x={PX}
                   y={cacheY}
-                  size={56}
+                  w={56}
                   dur={cycle}
                   begin={begin}
                   at={Math.min(0.985, f2)}
@@ -1866,10 +1881,14 @@ const scenes: Scene[] = [
     render: () => {
       const ys = providerYs(LEAN_SET.length);
       const tools = [
-        { icon: <Plug className="h-4 w-4" />, label: "MCP" },
-        { icon: <Terminal className="h-4 w-4" />, label: "Shell" },
-        { icon: <FileSearch className="h-4 w-4" />, label: "Files" },
-        { icon: <Globe className="h-4 w-4" />, label: "Web" },
+        { icon: <Plug className="h-4 w-4" />, label: "MCP", href: "/docs/features/mcp-tool" },
+        { icon: <Terminal className="h-4 w-4" />, label: "Shell", href: "/docs/features/agents" },
+        {
+          icon: <FileSearch className="h-4 w-4" />,
+          label: "Files",
+          href: "/docs/configuration/features/file-search",
+        },
+        { icon: <Globe className="h-4 w-4" />, label: "Web", href: "/docs/features/web-tools" },
       ];
       const n = 6;
       const { C, cycle } = sceneTiming(ys, n);
@@ -1896,31 +1915,42 @@ const scenes: Scene[] = [
             const ti = (k * 3) % tools.length; // a different tool per request
             const tx = startX + ti * gap;
             const loop = `M${GX},${GW_BOTTOM} L${tx},${ty - 18} L${GX},${GW_BOTTOM}`;
+            const begin = k * C + T_GATE;
+            // The loop is symmetric (down to the tool, then back), so the dot
+            // reaches the tool — and the box glows — at the midpoint of its travel.
+            const at = Math.min(0.985, travelTime(loop) / cycle) / 2;
             return (
-              <Flow
-                key={k}
-                path={loop}
-                dur={cycle}
-                begin={k * C + T_GATE}
-                className="fill-violet-500"
-              />
+              <g key={k}>
+                <NodeGlow
+                  x={tx}
+                  y={ty + 1}
+                  w={92}
+                  h={42}
+                  dur={cycle}
+                  begin={begin}
+                  at={at}
+                  className="fill-violet-500"
+                />
+                <Flow path={loop} dur={cycle} begin={begin} className="fill-violet-500" />
+              </g>
             );
           })}
           {tools.map((t, i) => {
             const tx = startX + i * gap;
             return (
-              <foreignObject
-                key={t.label}
-                x={tx - 42}
-                y={ty - 16}
-                width={84}
-                height={34}
-                aria-hidden="true"
-              >
-                <div className="flex h-full w-full items-center justify-center gap-1.5 rounded-lg border border-fd-border bg-fd-card text-[12px] font-medium text-fd-foreground shadow-sm">
-                  <span className="text-fd-muted-foreground">{t.icon}</span>
-                  {t.label}
-                </div>
+              <foreignObject key={t.label} x={tx - 42} y={ty - 16} width={84} height={34}>
+                <Link
+                  href={t.href}
+                  aria-label={`${t.label} tool documentation`}
+                  className="group flex h-full w-full no-underline"
+                >
+                  <span className="flex h-full w-full items-center justify-center gap-1.5 rounded-lg border border-fd-border bg-fd-card text-[12px] font-medium text-fd-foreground shadow-sm transition-colors group-hover:border-fd-primary/60">
+                    <span className="text-fd-muted-foreground transition-colors group-hover:text-fd-primary">
+                      {t.icon}
+                    </span>
+                    {t.label}
+                  </span>
+                </Link>
               </foreignObject>
             );
           })}
@@ -2071,6 +2101,24 @@ export function GatewayDiagram() {
   const [stopped, setStopped] = useState(false);
   const reduced = reducedMotion && stopped;
   const tablistRef = useRef<HTMLDivElement>(null);
+
+  // Pause is derived from paired pointer-enter/leave (and focus/blur) events.
+  // Switching browser tabs or apps while the pointer is over the diagram drops the
+  // matching leave event, so the pause — and its badge — can stick until the next
+  // enter/leave. Clearing it whenever the window loses focus or the tab is hidden
+  // guarantees the slideshow resumes by the time the user returns.
+  useEffect(() => {
+    const resume = () => setPaused(false);
+    const onVisibility = () => {
+      if (document.hidden) resume();
+    };
+    window.addEventListener("blur", resume);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", resume);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   const go = useCallback(
     (i: number) => setActive(((i % scenes.length) + scenes.length) % scenes.length),
