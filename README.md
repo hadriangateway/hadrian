@@ -12,6 +12,13 @@
   <a href="https://hadriangateway.com/docs"><strong>Documentation</strong></a> | <a href="https://app.hadriangateway.com"><strong>Try in Browser</strong></a> | <a href="https://hadriangateway.com/docs/api"><strong>API Reference</strong></a> | <a href="https://openrouter.ai/apps?url=https%3A%2F%2Fhadriangateway.com"><strong>OpenRouter</strong></a> | <a href="https://openresponses.org"><strong>OpenResponses</strong></a>
 </p>
 
+
+<p align="center">
+  <a href="https://hadriangateway.com">
+    <img src="https://gist.githubusercontent.com/ScriptSmith/8753264ab8f007f724c80d9791965000/raw/slideshow.svg" alt="Slideshow of diagrams showing hadrian features" style="max-width: 100%;">
+  </a>
+</p>
+
 <p align="center">
   <video width="100%" poster="https://github.com/user-attachments/assets/ab0768fd-859b-4cf7-8be7-c77cb20018d5" src="https://github.com/user-attachments/assets/6bb8d08b-17c2-484a-a2d2-c701564ad1e8" />
 </p>
