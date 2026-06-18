@@ -84,6 +84,7 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/responses", "POST", "request", "effort"): "OpenAI-specific effort parameter",
     ("/responses", "POST", "request", "summary"): "OpenAI-specific summary parameter",
     ("/responses", "POST", "request", "generate_summary"): "OpenAI-specific summary generation",
+    ("/responses", "POST", "request", "context"): "OpenAI reasoning context mode (which reasoning items render on later turns) - not implemented",
     ("/responses", "POST", "request", "id"): "OpenAI-specific ID parameter",
     ("/responses", "POST", "request", "version"): "OpenAI-specific version parameter",
     ("/responses", "POST", "request", "variables"): "OpenAI-specific variables parameter",
@@ -98,6 +99,8 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/responses", "POST", "request", "tools[local_shell]"): "OpenAI hosted local shell — Hadrian uses the `shell` variant",
     ("/responses", "POST", "request", "tools[namespace]"): "OpenAI namespace tool",
     ("/responses", "POST", "request", "tools[tool_search]"): "OpenAI tool-search feature",
+    # /responses tools[mcp] field - OpenAI-hosted MCP feature
+    ("/responses", "POST", "request", "tunnel_id"): "OpenAI Secure MCP Tunnel ID for tools[mcp] - hosted MCP feature not relevant to a gateway",
     # /responses/compact - OpenAI-specific fields
     ("/responses/compact", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
     ("/responses/compact", "POST", "request", "service_tier"): "OpenAI service tier selection (auto/default)",
