@@ -193,12 +193,16 @@ const useReduced = () => useContext(ReducedMotionContext);
 // Request-dot primitives (all on the SMIL clock)
 // =====================================================================
 
+// Request dots and their arrival glow read as a soft grey in light mode —
+// near-black (fd-primary) is too harsh there — and stay near-white in dark.
+const REQUEST_FILL = "fill-[#666] dark:fill-fd-primary";
+
 // A constant-speed request dot: travels `path` once per `dur`, then idles.
 function Flow({
   path,
   dur,
   begin,
-  className = "fill-fd-primary",
+  className = REQUEST_FILL,
   r = 4.5,
 }: {
   path: string;
@@ -238,7 +242,7 @@ function TwoColorFlow({
   path,
   dur,
   begin,
-  inClass = "fill-fd-primary",
+  inClass = REQUEST_FILL,
   outClass,
 }: {
   path: string;
@@ -298,7 +302,7 @@ function ReturnDot({
   dur,
   begin,
   at,
-  inClass = "fill-fd-primary",
+  inClass = REQUEST_FILL,
   outClass,
 }: {
   path: string;
@@ -362,7 +366,7 @@ function NodeGlow({
   dur,
   begin,
   at,
-  className = "fill-fd-primary",
+  className = REQUEST_FILL,
 }: {
   x: number;
   y: number;
@@ -410,7 +414,7 @@ function ForwardDot({
   y,
   begin,
   cycle,
-  className = "fill-fd-primary",
+  className = REQUEST_FILL,
   outClass,
   r,
 }: {
@@ -1695,7 +1699,7 @@ const scenes: Scene[] = [
                 {/* Primary until it passes the gateway… */}
                 <circle
                   r="4.5"
-                  className="fill-fd-primary motion-reduce:hidden"
+                  className={`${REQUEST_FILL} motion-reduce:hidden`}
                   opacity={0}
                   style={DOT_FILTER}
                 >
