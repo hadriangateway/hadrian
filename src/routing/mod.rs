@@ -87,8 +87,10 @@ const MAX_MODEL_STRING_LENGTH: usize = 512;
 
 /// Validate that a model string contains only safe characters and is within length limits.
 ///
-/// Allowed characters: alphanumeric, hyphens, dots, slashes, colons, underscores, at signs, and spaces.
-/// This prevents injection of control characters or other unexpected content.
+/// Allowed characters: alphanumeric plus the RFC 3986 "unreserved" punctuation (hyphen, dot,
+/// underscore, tilde) and the routing separators (slash, colon, at sign). Tildes appear in some
+/// provider model slugs, so they must pass through. This prevents injection of control characters
+/// or other unexpected content.
 fn validate_model_string(model: &str) -> Result<(), RoutingError> {
     if model.is_empty() {
         return Err(RoutingError::NoModel);
@@ -101,7 +103,7 @@ fn validate_model_string(model: &str) -> Result<(), RoutingError> {
     }
     if !model
         .chars()
-        .all(|c| c.is_alphanumeric() || "-._/:@".contains(c))
+        .all(|c| c.is_alphanumeric() || "-._~/:@".contains(c))
     {
         return Err(RoutingError::InvalidModelFormat(
             "Model string contains invalid characters".to_string(),
@@ -489,6 +491,29 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_model_string_allows_unreserved_chars() {
+        // RFC 3986 unreserved punctuation plus routing separators.
+        validate_model_string("openrouter/~openai/gpt-latest").unwrap();
+        validate_model_string("anthropic/claude-3.5-sonnet:beta").unwrap();
+        validate_model_string(":org/acme/my-provider/gpt-4").unwrap();
+        validate_model_string("vendor/model_name@v1").unwrap();
+    }
+
+    #[test]
+    fn test_validate_model_string_rejects_unsafe_chars() {
+        // Control characters and other unexpected content stay rejected.
+        for bad in ["gpt 4", "gpt\n4", "gpt\t4", "model;rm", "model$(x)", "a*b"] {
+            assert!(
+                matches!(
+                    validate_model_string(bad),
+                    Err(RoutingError::InvalidModelFormat(_))
+                ),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn test_route_model_extended_static() {
         let providers = make_test_providers();
         let result = route_model_extended(Some("openrouter/gpt-4"), &providers).unwrap();
@@ -496,6 +521,21 @@ mod tests {
             RoutedProvider::Static(route) => {
                 assert_eq!(route.provider_name, "openrouter");
                 assert_eq!(route.model, "gpt-4");
+            }
+            RoutedProvider::Dynamic(_) => panic!("Expected static route"),
+        }
+    }
+
+    #[test]
+    fn test_route_model_extended_static_with_tilde() {
+        // End-to-end: a tilde must survive validation and prefix stripping into the model field.
+        let providers = make_test_providers();
+        let result =
+            route_model_extended(Some("openrouter/~openai/gpt-latest"), &providers).unwrap();
+        match result {
+            RoutedProvider::Static(route) => {
+                assert_eq!(route.provider_name, "openrouter");
+                assert_eq!(route.model, "~openai/gpt-latest");
             }
             RoutedProvider::Dynamic(_) => panic!("Expected static route"),
         }
