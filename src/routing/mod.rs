@@ -527,6 +527,21 @@ mod tests {
     }
 
     #[test]
+    fn test_route_model_extended_static_with_tilde() {
+        // End-to-end: a tilde must survive validation and prefix stripping into the model field.
+        let providers = make_test_providers();
+        let result =
+            route_model_extended(Some("openrouter/~openai/gpt-latest"), &providers).unwrap();
+        match result {
+            RoutedProvider::Static(route) => {
+                assert_eq!(route.provider_name, "openrouter");
+                assert_eq!(route.model, "~openai/gpt-latest");
+            }
+            RoutedProvider::Dynamic(_) => panic!("Expected static route"),
+        }
+    }
+
+    #[test]
     fn test_route_model_extended_dynamic() {
         let providers = make_test_providers();
         let result = route_model_extended(Some(":org/acme/my-llm/llama3"), &providers).unwrap();
