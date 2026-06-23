@@ -523,14 +523,16 @@ pub struct SecurityHeadersConfig {
     /// Built-in CSP preset to use when `content_security_policy` is not set.
     ///
     /// - `strict` (default): no `'unsafe-eval'`, `connect-src 'self'`. Suitable
-    ///   for headless gateway deployments and any deployment that does not
-    ///   serve the bundled UI's WASM features (Pyodide / Vega charts /
-    ///   user-configured MCP server URLs).
-    /// - `permissive`: enables `'unsafe-eval'` (Pyodide bytecode + Vega
-    ///   `Function()` evaluation), `script-src https://cdn.jsdelivr.net`
-    ///   (Pyodide / DuckDB WASM CDN), and `connect-src https: http: wss: ws:`
-    ///   (MCP servers configured at runtime). Required when serving the
-    ///   bundled UI with WASM-mode features enabled.
+    ///   for headless gateway deployments and any deployment that does not serve
+    ///   the bundled UI's in-browser WASM tools (Pyodide / DuckDB / Vega charts).
+    /// - `self_hosted`: enables `'unsafe-eval'` + blob workers for the bundled
+    ///   UI's WASM tools (served same-origin), but keeps `connect-src 'self'` —
+    ///   no third-party origins. Use for UI deployments that do NOT use MCP or
+    ///   the external browser tools (web search / Wikipedia).
+    /// - `permissive`: like `self_hosted` but also widens `connect-src`
+    ///   (`https: http: wss: ws:`) for runtime-configured MCP servers and
+    ///   external browser tools. Required when the UI talks to MCP or fetches
+    ///   external URLs.
     #[serde(default)]
     pub csp_preset: CspPreset,
 
@@ -585,13 +587,19 @@ impl SecurityHeadersConfig {
 /// Built-in CSP presets selectable via `[server.security_headers].csp_preset`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum CspPreset {
     /// Locked-down CSP. No `'unsafe-eval'`, `connect-src 'self'`. Default.
     #[default]
     Strict,
-    /// Allows the bundled UI's WASM features (Pyodide, Vega chart eval,
-    /// CDN-loaded modules) and runtime-configured MCP server URLs.
+    /// Same-origin WASM runtimes (self-hosted Pyodide/DuckDB). Enables
+    /// `'unsafe-eval'` + blob workers for the bundled UI's WASM tools but keeps
+    /// `connect-src 'self'` — no third-party origins at all. Use for UI
+    /// deployments that do NOT use MCP or the external browser tools (web search
+    /// / Wikipedia), which need outbound connections.
+    SelfHosted,
+    /// Like `self_hosted` but also widens `connect-src` for runtime-configured
+    /// MCP server URLs and external browser tools.
     Permissive,
 }
 
@@ -599,6 +607,7 @@ impl CspPreset {
     fn render(self) -> String {
         match self {
             CspPreset::Strict => default_csp_strict(),
+            CspPreset::SelfHosted => default_csp_self_hosted(),
             CspPreset::Permissive => default_csp_permissive(),
         }
     }
@@ -627,6 +636,29 @@ fn default_csp_permissive() -> String {
     default_csp().expect("permissive CSP is always Some")
 }
 
+/// CSP for deployments that serve the bundled UI's WASM tools from the gateway's
+/// own origin (self-hosted Pyodide/DuckDB). Identical to `permissive` except
+/// `connect-src` is narrowed to `'self'` — no third-party origins. This breaks
+/// MCP and the external browser tools (web search / Wikipedia), which need
+/// outbound connections; use `permissive` for those.
+///
+/// `'unsafe-eval'` is still required: Pyodide executes Python bytecode and Vega
+/// compiles expressions via `Function()`. Self-hosting removes the CDN, not eval.
+fn default_csp_self_hosted() -> String {
+    "default-src 'self'; \
+     script-src 'self' blob: 'unsafe-eval'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data: blob:; \
+     font-src 'self' data:; \
+     media-src 'self' blob:; \
+     connect-src 'self'; \
+     worker-src 'self' blob:; \
+     frame-src 'self' blob:; \
+     object-src 'none'; \
+     base-uri 'self'"
+        .to_string()
+}
+
 fn default_security_headers_enabled() -> bool {
     true
 }
@@ -642,9 +674,9 @@ fn default_frame_options() -> Option<String> {
 /// Default Content-Security-Policy for the web UI.
 ///
 /// Directives:
-/// - `script-src blob: 'unsafe-eval' https://cdn.jsdelivr.net` — WASM workers loaded as blob
-///   URLs; `unsafe-eval` required by Pyodide for Python bytecode execution and Vega `Function()`
-///   evaluation; CDN for Pyodide modules and DuckDB WASM bundles
+/// - `script-src 'self' blob: 'unsafe-eval'` — WASM workers loaded as blob URLs; `unsafe-eval`
+///   required by Pyodide for Python bytecode execution and Vega `Function()` evaluation. The
+///   WASM runtimes (Pyodide/DuckDB) are served same-origin, so no CDN origin is needed
 /// - `style-src 'unsafe-inline'` — Tailwind CSS dynamic styling
 /// - `worker-src blob:` — Web Worker sandboxed execution
 /// - `frame-src blob:` — HTML artifact preview iframes
@@ -652,11 +684,11 @@ fn default_frame_options() -> Option<String> {
 /// - `media-src blob:` — Audio playback from generated TTS blob URLs
 /// - `connect-src https: http: wss: ws:` — MCP servers are user-configured at arbitrary URLs
 ///   and discovered at runtime (stored in localStorage), so connect-src must allow all schemes.
-///   Also covers Pyodide/DuckDB CDN fetches and Wikipedia/Wikidata tool queries.
+///   Also covers Wikipedia/Wikidata tool queries. (Pyodide/DuckDB assets are served same-origin.)
 /// - `object-src 'none'` — Blocks plugins (Flash, Java applets)
 /// - `base-uri 'self'` — Prevents `<base>` tag injection
 fn default_csp() -> Option<String> {
-    Some("default-src 'self'; script-src 'self' blob: 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'".to_string())
+    Some("default-src 'self'; script-src 'self' blob: 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'".to_string())
 }
 
 fn default_xss_protection() -> Option<String> {
@@ -892,6 +924,64 @@ fn default_user_agent() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_csp_preset_self_hosted_no_cdn_narrow_connect() {
+        let csp = default_csp_self_hosted();
+        assert!(csp.contains("'unsafe-eval'"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(!csp.contains("jsdelivr"));
+        // connect-src is narrowed to 'self' — no wide schemes for MCP/external tools.
+        assert!(csp.contains("connect-src 'self';"));
+        assert!(!csp.contains("connect-src 'self' https:"));
+    }
+
+    #[test]
+    fn test_csp_preset_permissive_drops_cdn_keeps_wide_connect() {
+        let csp = default_csp_permissive();
+        assert!(!csp.contains("jsdelivr"));
+        assert!(csp.contains("'unsafe-eval'"));
+        // MCP servers and external browser tools still need a wide connect-src.
+        assert!(csp.contains("connect-src 'self' https: http: wss: ws:"));
+    }
+
+    #[test]
+    fn test_csp_preset_strict_has_no_eval() {
+        let csp = default_csp_strict();
+        assert!(!csp.contains("'unsafe-eval'"));
+        assert!(!csp.contains("jsdelivr"));
+        assert!(csp.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn test_csp_preset_serde_snake_case_roundtrip() {
+        #[derive(serde::Deserialize)]
+        struct W {
+            p: CspPreset,
+        }
+        assert_eq!(
+            toml::from_str::<W>("p = \"strict\"").unwrap().p,
+            CspPreset::Strict
+        );
+        assert_eq!(
+            toml::from_str::<W>("p = \"self_hosted\"").unwrap().p,
+            CspPreset::SelfHosted
+        );
+        assert_eq!(
+            toml::from_str::<W>("p = \"permissive\"").unwrap().p,
+            CspPreset::Permissive
+        );
+    }
+
+    #[test]
+    fn test_resolved_csp_explicit_string_overrides_preset() {
+        let config = SecurityHeadersConfig {
+            content_security_policy: Some("default-src 'none'".to_string()),
+            csp_preset: CspPreset::Permissive,
+            ..Default::default()
+        };
+        assert_eq!(config.resolved_csp().as_deref(), Some("default-src 'none'"));
+    }
 
     #[test]
     fn test_http_client_config_defaults() {

@@ -27,6 +27,10 @@ WORKDIR /app
 COPY Cargo.toml ./Cargo.toml
 COPY ui ./ui
 COPY docs ./docs
+# Needed by the UI's `prebuild` hook: scripts/vendor-wasm.mjs self-hosts the
+# Pyodide/DuckDB WASM runtimes into ui/public/wasm/ (verified against the
+# committed scripts/pyodide-*.sha256 manifest) before `pnpm build`.
+COPY scripts ./scripts
 COPY openapi/hadrian.openapi.json ./openapi/hadrian.openapi.json
 
 ENV NEXT_TELEMETRY_DISABLED=1

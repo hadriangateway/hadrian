@@ -13,6 +13,25 @@
 import * as duckdb from "@duckdb/duckdb-wasm";
 
 import { formatApiError } from "@/utils/formatApiError";
+
+// DuckDB WASM bundles are self-hosted same-origin (vendored by
+// scripts/vendor-wasm.mjs into ui/public/wasm/duckdb/) so the CSP needs no
+// third-party script-src. Only mvp + eh are shipped: Hadrian sets no COOP/COEP
+// headers, so the browser is never cross-origin-isolated and selectBundle never
+// picks the `coi` bundle. Overridable at build time to point back at a CDN.
+const DUCKDB_BASE_URL = import.meta.env.VITE_DUCKDB_BASE_URL ?? "/wasm/duckdb/";
+
+const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
+  mvp: {
+    mainModule: `${DUCKDB_BASE_URL}duckdb-mvp.wasm`,
+    mainWorker: `${DUCKDB_BASE_URL}duckdb-browser-mvp.worker.js`,
+  },
+  eh: {
+    mainModule: `${DUCKDB_BASE_URL}duckdb-eh.wasm`,
+    mainWorker: `${DUCKDB_BASE_URL}duckdb-browser-eh.worker.js`,
+  },
+};
+
 /** Message types from main thread to worker */
 interface ExecuteMessage {
   type: "execute";
@@ -174,9 +193,9 @@ async function initDuckDB(): Promise<duckdb.AsyncDuckDB> {
   sendMessage({ type: "loading", message: "Loading DuckDB WASM..." });
 
   try {
-    // Select the best bundle for the current browser
-    const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-    const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+    // Select the best self-hosted bundle for the current browser
+    // (eh on modern browsers, mvp as fallback).
+    const bundle = await duckdb.selectBundle(MANUAL_BUNDLES);
 
     sendMessage({ type: "loading", message: "Initializing database..." });
 
