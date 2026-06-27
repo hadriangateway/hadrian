@@ -689,8 +689,10 @@ fn default_frame_options() -> Option<String> {
 ///   Also covers Wikipedia/Wikidata tool queries. (Pyodide/DuckDB assets are served same-origin.)
 /// - `object-src 'none'` — Blocks plugins (Flash, Java applets)
 /// - `base-uri 'self'` — Prevents `<base>` tag injection
+/// - `form-action 'self'` — Restricts form submission targets (not covered by `default-src`)
+/// - `frame-ancestors 'none'` — Blocks cross-origin framing (takes precedence over `X-Frame-Options`)
 fn default_csp() -> Option<String> {
-    Some("default-src 'self'; script-src 'self' blob: 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'".to_string())
+    Some("default-src 'self'; script-src 'self' blob: 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: http: wss: ws:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'".to_string())
 }
 
 fn default_xss_protection() -> Option<String> {
