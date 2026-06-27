@@ -12,7 +12,7 @@ import { formatApiError } from "@/utils/formatApiError";
  * - Errors are sent as { type: "error", id, error: string }
  */
 
-// Pyodide interface type (we load from CDN, not from npm)
+// Pyodide interface type (the runtime is loaded from the self-hosted path, not from npm)
 interface PyProxy {
   toJs(): unknown;
   destroy(): void;
@@ -33,8 +33,10 @@ interface PyodideInterface {
   setStderr(options: { batched?: (msg: string) => void }): void;
 }
 
-// CDN URL for Pyodide
-const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/";
+// Pyodide runtime assets are self-hosted same-origin (vendored by
+// scripts/vendor-wasm.mjs into ui/public/wasm/pyodide/) so the CSP needs no
+// third-party script-src. Overridable at build time to point back at a CDN.
+const PYODIDE_BASE_URL = import.meta.env.VITE_PYODIDE_BASE_URL ?? "/wasm/pyodide/";
 
 /** Message types from main thread to worker */
 interface ExecuteMessage {
@@ -119,7 +121,7 @@ function sendMessage(message: WorkerResponse) {
 }
 
 /**
- * Initialize Pyodide by loading from CDN
+ * Initialize Pyodide by loading the self-hosted runtime
  */
 async function initPyodide(): Promise<PyodideInterface> {
   if (pyodide) return pyodide;
@@ -136,11 +138,11 @@ async function initPyodide(): Promise<PyodideInterface> {
   sendMessage({ type: "loading", stage: "pyodide", message: "Loading Python runtime..." });
 
   try {
-    // Dynamically import Pyodide from CDN
-    const pyodideModule = await import(/* @vite-ignore */ `${PYODIDE_CDN}pyodide.mjs`);
+    // Dynamically import the same-origin Pyodide loader.
+    const pyodideModule = await import(/* @vite-ignore */ `${PYODIDE_BASE_URL}pyodide.mjs`);
 
     const py: PyodideInterface = await pyodideModule.loadPyodide({
-      indexURL: PYODIDE_CDN,
+      indexURL: PYODIDE_BASE_URL,
     });
 
     // Load matplotlib first (required before importing)

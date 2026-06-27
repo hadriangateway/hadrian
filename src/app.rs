@@ -49,6 +49,9 @@ use crate::{middleware, routes};
 #[cfg(feature = "embed-ui")]
 #[derive(Embed)]
 #[folder = "ui/dist"]
+// Source maps are built (vite `sourcemap: true`) but have no business in the
+// shipped binary — excluding them drops tens of MB of embedded weight.
+#[exclude = "**/*.map"]
 #[allow_missing = true]
 struct UiAssets;
 
@@ -57,6 +60,8 @@ struct UiAssets;
 #[cfg(feature = "embed-docs")]
 #[derive(Embed)]
 #[folder = "docs/out"]
+// Exclude source maps from the embedded docs site (see UiAssets).
+#[exclude = "**/*.map"]
 #[allow_missing = true]
 struct DocsAssets;
 

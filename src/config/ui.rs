@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::server::{CspPreset, SecurityHeadersConfig};
+
 /// UI configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
@@ -54,10 +56,10 @@ impl Default for UiConfig {
 }
 
 impl UiConfig {
-    /// Emit non-fatal warnings for misconfigured branding. Must be called
+    /// Emit non-fatal warnings for misconfigured branding and CSP. Must be called
     /// after tracing is initialized — config load/validation runs before the
     /// subscriber exists, so warnings emitted there are silently dropped.
-    pub fn log_startup_warnings(&self) {
+    pub fn log_startup_warnings(&self, security_headers: &SecurityHeadersConfig) {
         if let Some(ref colors) = self.branding.colors {
             for key in missing_dark_surface_keys(colors, self.branding.colors_dark.as_ref()) {
                 tracing::warn!(
@@ -66,6 +68,24 @@ impl UiConfig {
                      ui.branding.colors_dark.{key} to brand dark mode."
                 );
             }
+        }
+
+        // The bundled UI's in-browser tools (Pyodide/DuckDB/Vega) require a CSP
+        // that permits 'unsafe-eval' and blob workers. The default `strict` preset
+        // blocks them, surfacing only as cryptic CSP errors in the browser console.
+        // Skip when security headers are disabled (no CSP is sent) or an explicit
+        // policy string is set (the operator owns it).
+        if self.enabled
+            && security_headers.enabled
+            && security_headers.content_security_policy.is_none()
+            && matches!(security_headers.csp_preset, CspPreset::Strict)
+        {
+            tracing::warn!(
+                "[ui] UI is enabled but [server.security_headers].csp_preset = \"strict\", \
+                 which blocks the in-browser Python/SQL/chart tools (Pyodide/DuckDB/Vega need \
+                 'unsafe-eval' and blob workers). Set csp_preset = \"self_hosted\" (recommended, \
+                 same-origin assets) or \"permissive\" if you use MCP or external browser tools."
+            );
         }
     }
 }
