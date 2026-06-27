@@ -107,11 +107,20 @@ async function vendorPyodide() {
   for (const file of CORE_FILES) {
     const buf = await fetchBuffer(PYODIDE_CDN + file);
     const hash = sha256(buf);
-    if (committed && committed[file] && committed[file] !== hash) {
-      throw new Error(
-        `[vendor] checksum mismatch for ${file}: expected ${committed[file]}, got ${hash}. ` +
-          `Supply-chain check failed — refusing to vendor altered assets.`
-      );
+    if (committed) {
+      if (!committed[file]) {
+        throw new Error(
+          `[vendor] ${file} is in CORE_FILES but missing from ${MANIFEST}. ` +
+            `Refusing to vendor an unverified core file — add its hash to the manifest ` +
+            `(delete the manifest to regenerate, then review the diff before committing).`
+        );
+      }
+      if (committed[file] !== hash) {
+        throw new Error(
+          `[vendor] checksum mismatch for ${file}: expected ${committed[file]}, got ${hash}. ` +
+            `Supply-chain check failed — refusing to vendor altered assets.`
+        );
+      }
     }
     generated[file] = hash;
     writeFileSync(join(PYODIDE_OUT, file), buf);

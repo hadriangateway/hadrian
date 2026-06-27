@@ -12,7 +12,7 @@ import { formatApiError } from "@/utils/formatApiError";
  * - Errors are sent as { type: "error", id, error: string }
  */
 
-// Pyodide interface type (we load from CDN, not from npm)
+// Pyodide interface type (the runtime is loaded from the self-hosted path, not from npm)
 interface PyProxy {
   toJs(): unknown;
   destroy(): void;

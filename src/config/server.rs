@@ -655,7 +655,9 @@ fn default_csp_self_hosted() -> String {
      worker-src 'self' blob:; \
      frame-src 'self' blob:; \
      object-src 'none'; \
-     base-uri 'self'"
+     base-uri 'self'; \
+     form-action 'self'; \
+     frame-ancestors 'none'"
         .to_string()
 }
 
