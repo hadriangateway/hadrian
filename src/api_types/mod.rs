@@ -4,6 +4,7 @@ pub mod completions;
 pub mod embeddings;
 pub mod images;
 pub mod responses;
+pub mod videos;
 
 pub use audio::{CreateSpeechRequest, CreateTranscriptionRequest, CreateTranslationRequest, Voice};
 pub use chat_completion::{CreateChatCompletionPayload, Message, MessageContent, ReasoningEffort};
@@ -18,4 +19,8 @@ pub use images::{
 pub use responses::{
     CompactRequest, CreateResponsesPayload, InlineSkill, InlineSkillSource, RequestSkill,
     ResponsesReasoningEffort,
+};
+pub use videos::{
+    Character, CreateVideoRequest, InputReference, RemixVideoRequest, Video, VideoDeleteResponse,
+    VideoEditRequest, VideoError, VideoExtensionRequest, VideoListResponse, VideoRef, VideoVariant,
 };

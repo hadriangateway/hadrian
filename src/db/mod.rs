@@ -78,6 +78,8 @@ struct CachedRepos {
     responses: Arc<dyn ResponsesRepo>,
     // Per-response event log
     response_events: Arc<dyn ResponseEventsRepo>,
+    // Async video-generation jobs + characters (proxy-on-read routing map)
+    videos: Arc<dyn VideosRepo>,
     // Containers + container_files (shell-tool /mnt/data artifacts)
     containers: Arc<dyn ContainersRepo>,
     // Parked MCP tool calls waiting on `mcp_approval_response`. Only
@@ -164,6 +166,7 @@ impl DbPool {
                 pool.clone(),
             )),
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
+            videos: Arc::new(sqlite::SqliteVideosRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
             containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
             #[cfg(feature = "mcp")]
@@ -213,6 +216,7 @@ impl DbPool {
                 pool.clone(),
             )),
             responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
+            videos: Arc::new(sqlite::SqliteVideosRepo::new(pool.clone())),
             response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
             containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
             #[cfg(feature = "mcp")]
@@ -333,6 +337,10 @@ impl DbPool {
                 write_pool.clone(),
                 read_pool.clone(),
             )),
+            videos: Arc::new(postgres::PostgresVideosRepo::new(
+                write_pool.clone(),
+                read_pool.clone(),
+            )),
             response_events: Arc::new(postgres::PostgresResponseEventsRepo::new(
                 write_pool.clone(),
                 read_pool.clone(),
@@ -425,6 +433,7 @@ impl DbPool {
                         sqlite::SqliteOAuthAuthorizationCodeRepo::new(pool.clone()),
                     ),
                     responses: Arc::new(sqlite::SqliteResponsesRepo::new(pool.clone())),
+                    videos: Arc::new(sqlite::SqliteVideosRepo::new(pool.clone())),
                     response_events: Arc::new(sqlite::SqliteResponseEventsRepo::new(pool.clone())),
                     containers: Arc::new(sqlite::SqliteContainersRepo::new(pool.clone())),
                     #[cfg(feature = "mcp")]
@@ -574,6 +583,10 @@ impl DbPool {
                         ),
                     ),
                     responses: Arc::new(postgres::PostgresResponsesRepo::new(
+                        write_pool.clone(),
+                        read_pool.clone(),
+                    )),
+                    videos: Arc::new(postgres::PostgresVideosRepo::new(
                         write_pool.clone(),
                         read_pool.clone(),
                     )),
@@ -767,6 +780,11 @@ impl DbPool {
     /// Get the response event log repository.
     pub fn response_events(&self) -> Arc<dyn ResponseEventsRepo> {
         Arc::clone(&self.repos.response_events)
+    }
+
+    /// Get the videos + characters repository.
+    pub fn videos(&self) -> Arc<dyn VideosRepo> {
+        Arc::clone(&self.repos.videos)
     }
 
     /// Get the containers + container_files repository.

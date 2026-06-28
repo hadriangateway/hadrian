@@ -47,6 +47,23 @@ export interface AudioHistoryEntry {
   createdAt: number;
 }
 
+export interface VideoHistoryEntry {
+  id: string;
+  jobId: string;
+  prompt: string;
+  modelId: string;
+  status: "queued" | "in_progress" | "completed" | "failed";
+  options: {
+    seconds?: string;
+    size?: string;
+  };
+  /** OPFS filename (e.g. `{entryId}_{jobId}.mp4`), or `""` if not downloaded */
+  videoData: string;
+  error?: string;
+  costMicrocents?: number;
+  createdAt: number;
+}
+
 /** Per-instance result within a grouped transcription history entry */
 export interface InstanceTranscriptionResult {
   instanceId: string;

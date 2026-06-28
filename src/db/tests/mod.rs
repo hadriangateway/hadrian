@@ -37,3 +37,4 @@ mod sso_group_mappings;
 mod teams;
 mod usage;
 mod users;
+mod videos;

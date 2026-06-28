@@ -41,6 +41,8 @@ pub mod responses_lookup;
 pub mod skills;
 pub(crate) mod tools;
 mod vector_stores;
+#[cfg(feature = "server")]
+pub mod videos;
 
 // Re-export all public items from submodules
 pub use audio::*;
@@ -906,7 +908,39 @@ pub(crate) fn api_v1_routes(limits: ApiBodyLimits) -> Router<AppState> {
             get(containers::api_v1_containers_file_content),
         )
         .route("/v1/images/edits", post(api_v1_images_edits))
-        .route("/v1/images/variations", post(api_v1_images_variations));
+        .route("/v1/images/variations", post(api_v1_images_variations))
+        // Videos API (OpenAI-compatible, async job-based). Persistence-backed,
+        // so server-only like responses/containers.
+        .route(
+            "/v1/videos",
+            post(videos::api_v1_videos_create).get(videos::api_v1_videos_list),
+        )
+        .route("/v1/videos/edits", post(videos::api_v1_videos_edits))
+        .route(
+            "/v1/videos/extensions",
+            post(videos::api_v1_videos_extensions),
+        )
+        .route(
+            "/v1/videos/characters",
+            post(videos::api_v1_videos_characters_create)
+                .layer(DefaultBodyLimit::max(limits.files)),
+        )
+        .route(
+            "/v1/videos/characters/{character_id}",
+            get(videos::api_v1_videos_characters_retrieve),
+        )
+        .route(
+            "/v1/videos/{video_id}",
+            get(videos::api_v1_videos_retrieve).delete(videos::api_v1_videos_delete),
+        )
+        .route(
+            "/v1/videos/{video_id}/content",
+            get(videos::api_v1_videos_content),
+        )
+        .route(
+            "/v1/videos/{video_id}/remix",
+            post(videos::api_v1_videos_remix),
+        );
     let router = router
         // Audio API (OpenAI-compatible). speech is text-only (small payload), so
         // it stays on the global limit; transcription/translation receive raw

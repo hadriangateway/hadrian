@@ -25,6 +25,8 @@ pub enum ApiKeyScope {
     Embeddings,
     /// Access to image generation endpoints (`/v1/images/*`)
     Images,
+    /// Access to video generation endpoints (`/v1/videos/*`)
+    Videos,
     /// Access to audio endpoints (`/v1/audio/*`)
     Audio,
     /// Access to files and vector store endpoints (`/v1/files/*`, `/v1/vector_stores/*`)
@@ -43,6 +45,7 @@ impl ApiKeyScope {
             ApiKeyScope::Completions => "completions",
             ApiKeyScope::Embeddings => "embeddings",
             ApiKeyScope::Images => "images",
+            ApiKeyScope::Videos => "videos",
             ApiKeyScope::Audio => "audio",
             ApiKeyScope::Files => "files",
             ApiKeyScope::Models => "models",
@@ -57,6 +60,7 @@ impl ApiKeyScope {
             ApiKeyScope::Completions,
             ApiKeyScope::Embeddings,
             ApiKeyScope::Images,
+            ApiKeyScope::Videos,
             ApiKeyScope::Audio,
             ApiKeyScope::Files,
             ApiKeyScope::Models,
@@ -85,6 +89,7 @@ impl FromStr for ApiKeyScope {
             "completions" => Ok(ApiKeyScope::Completions),
             "embeddings" => Ok(ApiKeyScope::Embeddings),
             "images" => Ok(ApiKeyScope::Images),
+            "videos" => Ok(ApiKeyScope::Videos),
             "audio" => Ok(ApiKeyScope::Audio),
             "files" => Ok(ApiKeyScope::Files),
             "models" => Ok(ApiKeyScope::Models),
@@ -131,7 +136,7 @@ pub struct ApiKey {
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     /// Permission scopes (null = full access)
-    /// Valid scopes: chat, completions, embeddings, images, audio, files, models, admin
+    /// Valid scopes: chat, completions, embeddings, images, videos, audio, files, models, admin
     pub scopes: Option<Vec<String>>,
     /// Allowed models (null = all models, supports wildcards like "gpt-4*")
     pub allowed_models: Option<Vec<String>>,
@@ -455,6 +460,7 @@ mod tests {
         assert_eq!(ApiKeyScope::Completions.as_str(), "completions");
         assert_eq!(ApiKeyScope::Embeddings.as_str(), "embeddings");
         assert_eq!(ApiKeyScope::Images.as_str(), "images");
+        assert_eq!(ApiKeyScope::Videos.as_str(), "videos");
         assert_eq!(ApiKeyScope::Audio.as_str(), "audio");
         assert_eq!(ApiKeyScope::Files.as_str(), "files");
         assert_eq!(ApiKeyScope::Models.as_str(), "models");
@@ -470,16 +476,18 @@ mod tests {
     #[test]
     fn test_api_key_scope_all_values() {
         let all = ApiKeyScope::all_values();
-        assert_eq!(all.len(), 8);
+        assert_eq!(all.len(), 9);
         assert!(all.contains(&ApiKeyScope::Chat));
+        assert!(all.contains(&ApiKeyScope::Videos));
         assert!(all.contains(&ApiKeyScope::Admin));
     }
 
     #[test]
     fn test_api_key_scope_all_names() {
         let names = ApiKeyScope::all_names();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
         assert!(names.contains(&"chat"));
+        assert!(names.contains(&"videos"));
         assert!(names.contains(&"admin"));
     }
 

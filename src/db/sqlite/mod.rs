@@ -34,6 +34,7 @@ mod templates;
 mod usage;
 mod users;
 mod vector_stores;
+mod videos;
 
 pub use api_keys::SqliteApiKeyRepo;
 pub use audit_logs::SqliteAuditLogRepo;
@@ -69,3 +70,4 @@ pub use templates::SqliteTemplateRepo;
 pub use usage::SqliteUsageRepo;
 pub use users::SqliteUserRepo;
 pub use vector_stores::SqliteVectorStoresRepo;
+pub use videos::SqliteVideosRepo;

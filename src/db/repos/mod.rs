@@ -33,6 +33,7 @@ mod templates;
 mod usage;
 mod users;
 mod vector_stores;
+mod videos;
 
 pub use api_keys::*;
 pub use audit_logs::*;
@@ -70,6 +71,7 @@ pub use templates::*;
 pub use usage::*;
 pub use users::*;
 pub use vector_stores::*;
+pub use videos::*;
 
 /// Sort order for list queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

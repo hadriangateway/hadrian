@@ -395,6 +395,10 @@ pub struct AppState {
     /// and the cancellation signal pipeline.
     #[cfg(feature = "server")]
     pub responses_store: Option<Arc<services::ResponsesStore>>,
+    /// Persisted Videos API store. Present when a database is configured;
+    /// powers the `/v1/videos/*` proxy-on-read routing map.
+    #[cfg(feature = "server")]
+    pub video_store: Option<Arc<services::VideoStore>>,
     /// Containers service. Present when a database is configured;
     /// drives write-through persistence for the shell-tool
     /// `/mnt/data` artifact pipeline and serves
@@ -1107,6 +1111,17 @@ impl AppState {
             Arc::new(store)
         });
 
+        // Initialize the persisted Videos API store when a database is
+        // available. Without a DB the `/v1/videos/*` endpoints 404 (the
+        // proxy-on-read routing map has nowhere to live).
+        #[cfg(feature = "server")]
+        let video_store: Option<Arc<services::VideoStore>> = db.as_ref().map(|db| {
+            Arc::new(services::VideoStore::new(
+                db.clone(),
+                std::time::Duration::from_secs(config.features.videos.retention_secs),
+            ))
+        });
+
         // Event buffer writes batched response_events. Defaults: 100ms
         // flush interval, batches of 64 events, channel of 1024.
         #[cfg(feature = "server")]
@@ -1361,6 +1376,8 @@ impl AppState {
             tool_search_embeddings,
             #[cfg(feature = "server")]
             responses_store,
+            #[cfg(feature = "server")]
+            video_store,
             #[cfg(feature = "server")]
             containers_service,
             #[cfg(feature = "server")]

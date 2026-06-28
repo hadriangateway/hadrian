@@ -1151,6 +1151,61 @@ CREATE INDEX IF NOT EXISTS idx_responses_status ON responses(status, created_at)
 CREATE INDEX IF NOT EXISTS idx_responses_owner_created ON responses(owner_type, owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_responses_retention ON responses(retention_expires_at);
 
+-- Async video-generation jobs. Hadrian is a proxy-on-read gateway for
+-- videos: it stores a `video_id -> provider/owner` mapping plus the
+-- last-known job snapshot so the bare-id endpoints (GET/DELETE/content)
+-- can route back to the originating provider, then proxies live for
+-- fresh status/bytes. Mirrors the `responses` ownership/audit columns.
+CREATE TABLE IF NOT EXISTS videos (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('organization','team','project','user','service_account')),
+    owner_id TEXT NOT NULL,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    api_key_id TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
+    service_account_id TEXT REFERENCES service_accounts(id) ON DELETE SET NULL,
+    status TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT,
+    prompt TEXT,
+    size TEXT,
+    seconds TEXT,
+    progress INTEGER,
+    remixed_from_video_id TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    expires_at TEXT,
+    error TEXT,
+    -- Full last-known Video object (JSON), re-served verbatim by list/retrieve.
+    snapshot TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retention_expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_videos_org ON videos(org_id);
+CREATE INDEX IF NOT EXISTS idx_videos_owner_created ON videos(owner_type, owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_retention ON videos(retention_expires_at);
+
+-- Characters created from a reference video (POST /v1/videos/characters).
+CREATE TABLE IF NOT EXISTS video_characters (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('organization','team','project','user','service_account')),
+    owner_id TEXT NOT NULL,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    api_key_id TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
+    service_account_id TEXT REFERENCES service_accounts(id) ON DELETE SET NULL,
+    provider TEXT,
+    model TEXT,
+    name TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_characters_org ON video_characters(org_id);
+
 -- Append-only event log for in-flight + completed responses. Powers
 -- `GET /v1/responses/{id}/events?starting_after=N` for clients that
 -- need to resume a dropped stream — they replay missed events from the

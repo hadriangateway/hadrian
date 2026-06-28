@@ -873,4 +873,300 @@ impl Provider for OpenAICompatibleProvider {
             .header(CONTENT_TYPE, content_type)
             .body(Body::from(bytes))?)
     }
+
+    // =========================================================================
+    // Video generation methods
+    // =========================================================================
+
+    #[tracing::instrument(
+        skip(self, client, payload),
+        fields(
+            provider = "openai",
+            operation = "create_video",
+            model = %payload.model.as_deref().unwrap_or("sora-2")
+        )
+    )]
+    async fn create_video(
+        &self,
+        client: &reqwest::Client,
+        payload: crate::api_types::CreateVideoRequest,
+    ) -> Result<crate::api_types::Video, ProviderError> {
+        let url = format!("{}/videos", self.base_url);
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_image_generation(),
+            "openai",
+            "create_video",
+            || async {
+                self.build_request(client.post(&url))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await
+            },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client),
+        fields(provider = "openai", operation = "get_video")
+    )]
+    async fn get_video(
+        &self,
+        client: &reqwest::Client,
+        video_id: &str,
+    ) -> Result<crate::api_types::Video, ProviderError> {
+        let url = format!("{}/videos/{}", self.base_url, video_id);
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_read_only(),
+            "openai",
+            "get_video",
+            || async { self.build_request(client.get(&url)).send().await },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client),
+        fields(provider = "openai", operation = "delete_video")
+    )]
+    async fn delete_video(
+        &self,
+        client: &reqwest::Client,
+        video_id: &str,
+    ) -> Result<crate::api_types::VideoDeleteResponse, ProviderError> {
+        let url = format!("{}/videos/{}", self.base_url, video_id);
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry,
+            "openai",
+            "delete_video",
+            || async { self.build_request(client.delete(&url)).send().await },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client),
+        fields(provider = "openai", operation = "get_video_content")
+    )]
+    async fn get_video_content(
+        &self,
+        client: &reqwest::Client,
+        video_id: &str,
+        variant: Option<crate::api_types::VideoVariant>,
+    ) -> Result<Response, ProviderError> {
+        let url = match variant {
+            Some(v) => format!(
+                "{}/videos/{}/content?variant={}",
+                self.base_url,
+                video_id,
+                v.as_str()
+            ),
+            None => format!("{}/videos/{}/content", self.base_url, video_id),
+        };
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_read_only(),
+            "openai",
+            "get_video_content",
+            || async { self.build_request(client.get(&url)).send().await },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+
+        // Return raw asset bytes, passing the provider's content-type through.
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("video/mp4")
+            .to_string();
+        let bytes = response.bytes().await?;
+
+        Ok(Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, content_type)
+            .body(Body::from(bytes))?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client, payload),
+        fields(provider = "openai", operation = "remix_video")
+    )]
+    async fn remix_video(
+        &self,
+        client: &reqwest::Client,
+        video_id: &str,
+        payload: crate::api_types::RemixVideoRequest,
+    ) -> Result<crate::api_types::Video, ProviderError> {
+        let url = format!("{}/videos/{}/remix", self.base_url, video_id);
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_image_generation(),
+            "openai",
+            "remix_video",
+            || async {
+                self.build_request(client.post(&url))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await
+            },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client, payload),
+        fields(provider = "openai", operation = "edit_video")
+    )]
+    async fn edit_video(
+        &self,
+        client: &reqwest::Client,
+        payload: crate::api_types::VideoEditRequest,
+    ) -> Result<crate::api_types::Video, ProviderError> {
+        let url = format!("{}/videos/edits", self.base_url);
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_image_generation(),
+            "openai",
+            "edit_video",
+            || async {
+                self.build_request(client.post(&url))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await
+            },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client, payload),
+        fields(provider = "openai", operation = "extend_video")
+    )]
+    async fn extend_video(
+        &self,
+        client: &reqwest::Client,
+        payload: crate::api_types::VideoExtensionRequest,
+    ) -> Result<crate::api_types::Video, ProviderError> {
+        let url = format!("{}/videos/extensions", self.base_url);
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_image_generation(),
+            "openai",
+            "extend_video",
+            || async {
+                self.build_request(client.post(&url))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .send()
+                    .await
+            },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client, name, video, filename),
+        fields(provider = "openai", operation = "create_character", video_size = video.len())
+    )]
+    async fn create_character(
+        &self,
+        client: &reqwest::Client,
+        name: String,
+        video: Bytes,
+        filename: String,
+    ) -> Result<crate::api_types::Character, ProviderError> {
+        let url = format!("{}/videos/characters", self.base_url);
+
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_image_generation(),
+            "openai",
+            "create_character",
+            || {
+                // Build form fresh for each retry attempt (Form is consumed on send)
+                let form = Form::new().text("name", name.clone()).part(
+                    "video",
+                    Part::bytes(video.to_vec()).file_name(filename.clone()),
+                );
+                let url = url.clone();
+                async move {
+                    self.build_multipart_request(client, &url, form)
+                        .send()
+                        .await
+                }
+            },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
+
+    #[tracing::instrument(
+        skip(self, client),
+        fields(provider = "openai", operation = "get_character")
+    )]
+    async fn get_character(
+        &self,
+        client: &reqwest::Client,
+        character_id: &str,
+    ) -> Result<crate::api_types::Character, ProviderError> {
+        let url = format!("{}/videos/characters/{}", self.base_url, character_id);
+        let response = with_circuit_breaker_and_retry(
+            self.circuit_breaker.as_deref(),
+            &self.circuit_breaker_config,
+            &self.retry.for_read_only(),
+            "openai",
+            "get_character",
+            || async { self.build_request(client.get(&url)).send().await },
+        )
+        .await?;
+
+        let response = Self::check_response(response).await?;
+        Ok(response.json().await?)
+    }
 }

@@ -17,9 +17,9 @@ const AudioPanel = lazy(() =>
     default: m.AudioPanel,
   }))
 );
-const VideoPlaceholder = lazy(() =>
-  import("@/components/Studio/VideoPlaceholder/VideoPlaceholder").then((m) => ({
-    default: m.VideoPlaceholder,
+const VideoGenerationPanel = lazy(() =>
+  import("@/components/Studio/VideoGeneration/VideoGenerationPanel").then((m) => ({
+    default: m.VideoGenerationPanel,
   }))
 );
 
@@ -53,6 +53,10 @@ export default function StudioPage() {
   );
   const audioModels = useMemo(
     () => availableModels.filter((m) => m.tasks?.includes("tts")),
+    [availableModels]
+  );
+  const videoModels = useMemo(
+    () => availableModels.filter((m) => m.tasks?.includes("video_generation")),
     [availableModels]
   );
   const transcriptionModels = useMemo(
@@ -97,9 +101,7 @@ export default function StudioPage() {
               chatModels={chatModels}
             />
           )}
-          {activeTab === "video" && (
-            <VideoPlaceholder onNavigateToImages={() => handleTabChange("images")} />
-          )}
+          {activeTab === "video" && <VideoGenerationPanel availableModels={videoModels} />}
         </Suspense>
       </div>
     </div>

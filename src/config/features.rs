@@ -96,6 +96,10 @@ pub struct FeaturesConfig {
     #[serde(default)]
     pub responses: ResponsesPersistenceConfig,
 
+    /// Persistence settings for the Videos API.
+    #[serde(default)]
+    pub videos: VideosPersistenceConfig,
+
     /// MCP (Model Context Protocol) tool configuration. When set,
     /// `/v1/responses` accepts `{"type": "mcp", ...}` tool entries and
     /// either forwards them to OpenAI/Azure (`mode = passthrough_openai`)
@@ -455,6 +459,54 @@ impl ResponsesPersistenceConfig {
     }
 }
 
+/// Persistence settings for the Videos API.
+///
+/// Hadrian proxies video generation on-read and stores only a routing map +
+/// last-known snapshot per job. Rows past `retention_secs` are pruned by the
+/// cleanup worker (which also honors each job's upstream `expires_at`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VideosPersistenceConfig {
+    /// How long a video-job mapping row is kept before pruning.
+    /// Default 604800 (7d). Must be > 0.
+    #[serde(default = "default_videos_retention_secs")]
+    pub retention_secs: u64,
+    /// Interval at which the retention worker scans for expired rows.
+    /// Default 3600 (1h). Must be > 0.
+    #[serde(default = "default_videos_cleanup_interval_secs")]
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for VideosPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            retention_secs: default_videos_retention_secs(),
+            cleanup_interval_secs: default_videos_cleanup_interval_secs(),
+        }
+    }
+}
+
+impl VideosPersistenceConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.retention_secs == 0 {
+            return Err("[features.videos] retention_secs must be > 0".into());
+        }
+        if self.cleanup_interval_secs == 0 {
+            return Err("[features.videos] cleanup_interval_secs must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+fn default_videos_retention_secs() -> u64 {
+    604_800
+}
+
+fn default_videos_cleanup_interval_secs() -> u64 {
+    3_600
+}
+
 fn default_responses_worker_concurrency() -> usize {
     8
 }
@@ -657,6 +709,7 @@ impl FeaturesConfig {
             );
         }
         self.responses.validate()?;
+        self.videos.validate()?;
         self.containers.validate()?;
         self.containers_cleanup.validate()?;
         if let Some(ref mcp) = self.mcp {
