@@ -71,6 +71,11 @@ export function VideoGenerationPanel({ availableModels }: VideoGenerationPanelPr
     }
   }, [availableModels, preferences.defaultModels]);
 
+  // Abort any in-flight generation when the panel unmounts so a job stuck
+  // `queued`/`in_progress` can't keep polling (and then download/persist) in
+  // the background after the user navigates away.
+  useEffect(() => () => clearResults(), [clearResults]);
+
   const handleSubmit = useCallback(async () => {
     if (!prompt.trim() || isExecuting || instances.length === 0) return;
 
