@@ -652,10 +652,10 @@ pub async fn api_v1_videos_remix(
     Path(video_id): Path<String>,
     Valid(Json(payload)): Valid<Json<api_types::RemixVideoRequest>>,
 ) -> Result<Response, ApiError> {
-    let auth = auth.as_ref().map(|e| &e.0);
-    let authz = authz.as_ref().map(|e| &e.0);
+    let auth_ref = auth.as_ref().map(|e| &e.0);
+    let authz_ref = authz.as_ref().map(|e| &e.0);
     let store = get_video_store(&state)?;
-    let principal = video_principal(&state, auth)?;
+    let principal = video_principal(&state, auth_ref)?;
 
     let record = store
         .get(&video_id, principal.org_id)
@@ -663,8 +663,17 @@ pub async fn api_v1_videos_remix(
         .map_err(db_error)?
         .ok_or_else(|| not_found(&video_id))?;
 
-    let resolved = resolve_stored_provider(&state, auth, &record).await?;
-    authorize_model(auth, authz, None, &resolved.model).await?;
+    let resolved = resolve_stored_provider(&state, auth_ref, &record).await?;
+    authorize_model(auth_ref, authz_ref, None, &resolved.model).await?;
+    // Remix launches new upstream generation, so it must pass the same
+    // sovereignty gate as create (API-key requirements; no per-request field).
+    let _sovereignty = check_sovereignty(
+        auth.as_ref(),
+        None,
+        &resolved.provider_config,
+        &resolved.model,
+        &state.model_catalog,
+    )?;
 
     let provider = build_provider(&state, &resolved)?;
     let video = provider
@@ -677,7 +686,7 @@ pub async fn api_v1_videos_remix(
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
-    persist_and_respond(&state, store, auth, &resolved, video, seconds).await
+    persist_and_respond(&state, store, auth_ref, &resolved, video, seconds).await
 }
 
 /// Edit a video into a new job
@@ -698,10 +707,10 @@ pub async fn api_v1_videos_edits(
     authz: Option<Extension<AuthzContext>>,
     Valid(Json(payload)): Valid<Json<api_types::VideoEditRequest>>,
 ) -> Result<Response, ApiError> {
-    let auth = auth.as_ref().map(|e| &e.0);
-    let authz = authz.as_ref().map(|e| &e.0);
+    let auth_ref = auth.as_ref().map(|e| &e.0);
+    let authz_ref = authz.as_ref().map(|e| &e.0);
     let store = get_video_store(&state)?;
-    let principal = video_principal(&state, auth)?;
+    let principal = video_principal(&state, auth_ref)?;
 
     let record = store
         .get(&payload.video.id, principal.org_id)
@@ -709,8 +718,17 @@ pub async fn api_v1_videos_edits(
         .map_err(db_error)?
         .ok_or_else(|| not_found(&payload.video.id))?;
 
-    let resolved = resolve_stored_provider(&state, auth, &record).await?;
-    authorize_model(auth, authz, None, &resolved.model).await?;
+    let resolved = resolve_stored_provider(&state, auth_ref, &record).await?;
+    authorize_model(auth_ref, authz_ref, None, &resolved.model).await?;
+    // Edit launches new upstream generation, so it must pass the same
+    // sovereignty gate as create (API-key requirements; no per-request field).
+    let _sovereignty = check_sovereignty(
+        auth.as_ref(),
+        None,
+        &resolved.provider_config,
+        &resolved.model,
+        &state.model_catalog,
+    )?;
 
     let provider = build_provider(&state, &resolved)?;
     let video = provider
@@ -723,7 +741,7 @@ pub async fn api_v1_videos_edits(
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
-    persist_and_respond(&state, store, auth, &resolved, video, seconds).await
+    persist_and_respond(&state, store, auth_ref, &resolved, video, seconds).await
 }
 
 /// Extend a video into a new job
@@ -744,10 +762,10 @@ pub async fn api_v1_videos_extensions(
     authz: Option<Extension<AuthzContext>>,
     Valid(Json(payload)): Valid<Json<api_types::VideoExtensionRequest>>,
 ) -> Result<Response, ApiError> {
-    let auth = auth.as_ref().map(|e| &e.0);
-    let authz = authz.as_ref().map(|e| &e.0);
+    let auth_ref = auth.as_ref().map(|e| &e.0);
+    let authz_ref = authz.as_ref().map(|e| &e.0);
     let store = get_video_store(&state)?;
-    let principal = video_principal(&state, auth)?;
+    let principal = video_principal(&state, auth_ref)?;
 
     let record = store
         .get(&payload.video.id, principal.org_id)
@@ -755,8 +773,17 @@ pub async fn api_v1_videos_extensions(
         .map_err(db_error)?
         .ok_or_else(|| not_found(&payload.video.id))?;
 
-    let resolved = resolve_stored_provider(&state, auth, &record).await?;
-    authorize_model(auth, authz, None, &resolved.model).await?;
+    let resolved = resolve_stored_provider(&state, auth_ref, &record).await?;
+    authorize_model(auth_ref, authz_ref, None, &resolved.model).await?;
+    // Extension launches new upstream generation, so it must pass the same
+    // sovereignty gate as create (API-key requirements; no per-request field).
+    let _sovereignty = check_sovereignty(
+        auth.as_ref(),
+        None,
+        &resolved.provider_config,
+        &resolved.model,
+        &state.model_catalog,
+    )?;
 
     let seconds = payload.seconds.as_i64();
     let provider = build_provider(&state, &resolved)?;
@@ -765,7 +792,7 @@ pub async fn api_v1_videos_extensions(
         .await
         .map_err(provider_error)?;
 
-    persist_and_respond(&state, store, auth, &resolved, video, seconds).await
+    persist_and_respond(&state, store, auth_ref, &resolved, video, seconds).await
 }
 
 // ============================================================================
@@ -794,8 +821,8 @@ pub async fn api_v1_videos_characters_create(
     authz: Option<Extension<AuthzContext>>,
     mut multipart: Multipart,
 ) -> Result<Json<api_types::Character>, ApiError> {
-    let auth = auth.as_ref().map(|e| &e.0);
-    let authz = authz.as_ref().map(|e| &e.0);
+    let auth_ref = auth.as_ref().map(|e| &e.0);
+    let authz_ref = authz.as_ref().map(|e| &e.0);
     let store = get_video_store(&state)?;
 
     let mut name: Option<String> = None;
@@ -847,8 +874,23 @@ pub async fn api_v1_videos_characters_create(
     // Characters carry no model field upstream; Hadrian uses an optional
     // `model` form field (default `sora-2`) purely to pick the provider.
     let requested_model = model.clone().or_else(|| Some("sora-2".to_string()));
-    let resolved = resolve_provider(&state, auth, requested_model.as_deref()).await?;
-    authorize_model(auth, authz, requested_model.as_deref(), &resolved.model).await?;
+    let resolved = resolve_provider(&state, auth_ref, requested_model.as_deref()).await?;
+    authorize_model(
+        auth_ref,
+        authz_ref,
+        requested_model.as_deref(),
+        &resolved.model,
+    )
+    .await?;
+    // Character creation starts provider-side work, so it must pass the same
+    // sovereignty gate as create (API-key requirements; no per-request field).
+    let _sovereignty = check_sovereignty(
+        auth.as_ref(),
+        None,
+        &resolved.provider_config,
+        &resolved.model,
+        &state.model_catalog,
+    )?;
 
     let provider = build_provider(&state, &resolved)?;
     let character = provider
@@ -856,7 +898,7 @@ pub async fn api_v1_videos_characters_create(
         .await
         .map_err(provider_error)?;
 
-    let principal = video_principal(&state, auth)?;
+    let principal = video_principal(&state, auth_ref)?;
     let now = Utc::now();
     store
         .create_character(NewVideoCharacter {

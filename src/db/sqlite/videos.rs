@@ -291,26 +291,30 @@ impl VideosRepo for SqliteVideosRepo {
         &self,
         owner_type: ResponseOwnerType,
         owner_id: Uuid,
-        _org_id: Uuid,
+        org_id: Uuid,
         after: Option<String>,
         limit: i64,
         order: VideoListOrder,
     ) -> DbResult<(Vec<VideoRecord>, bool)> {
         let fetch_limit = limit + 1;
+        let org_str = org_id.to_string();
         let (comparison, direction) = match order {
             VideoListOrder::Desc => ("<", "DESC"),
             VideoListOrder::Asc => (">", "ASC"),
         };
 
         // Resolve the `after` cursor (a video id) into its (created_at, id)
-        // position within this owner scope. An unknown id starts from the top.
+        // position within this owner scope, scoped to the caller's org so a
+        // cursor can't leak across orgs. An unknown id starts from the top.
         let boundary: Option<DateTime<Utc>> = match &after {
             Some(after_id) => query(
-                "SELECT created_at FROM videos WHERE id = ? AND owner_type = ? AND owner_id = ?",
+                "SELECT created_at FROM videos \
+                 WHERE id = ? AND owner_type = ? AND owner_id = ? AND org_id = ?",
             )
             .bind(after_id)
             .bind(owner_type.as_str())
             .bind(owner_id.to_string())
+            .bind(org_str.clone())
             .fetch_optional(&self.pool)
             .await?
             .map(|row| row.col::<DateTime<Utc>>("created_at")),
@@ -321,7 +325,7 @@ impl VideosRepo for SqliteVideosRepo {
             (Some(after_id), Some(after_ts)) => {
                 let sql = format!(
                     "SELECT {cols} FROM videos \
-                     WHERE owner_type = ? AND owner_id = ? \
+                     WHERE owner_type = ? AND owner_id = ? AND org_id = ? \
                      AND (created_at, id) {cmp} (?, ?) \
                      ORDER BY created_at {dir}, id {dir} LIMIT ?",
                     cols = VIDEO_COLUMNS,
@@ -331,6 +335,7 @@ impl VideosRepo for SqliteVideosRepo {
                 query(&sql)
                     .bind(owner_type.as_str())
                     .bind(owner_id.to_string())
+                    .bind(org_str.clone())
                     .bind(after_ts)
                     .bind(after_id)
                     .bind(fetch_limit)
@@ -340,7 +345,7 @@ impl VideosRepo for SqliteVideosRepo {
             _ => {
                 let sql = format!(
                     "SELECT {cols} FROM videos \
-                     WHERE owner_type = ? AND owner_id = ? \
+                     WHERE owner_type = ? AND owner_id = ? AND org_id = ? \
                      ORDER BY created_at {dir}, id {dir} LIMIT ?",
                     cols = VIDEO_COLUMNS,
                     dir = direction,
@@ -348,6 +353,7 @@ impl VideosRepo for SqliteVideosRepo {
                 query(&sql)
                     .bind(owner_type.as_str())
                     .bind(owner_id.to_string())
+                    .bind(org_str.clone())
                     .bind(fetch_limit)
                     .fetch_all(&self.pool)
                     .await?

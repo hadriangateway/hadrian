@@ -31,6 +31,10 @@ type Seconds = (typeof SECONDS_OPTIONS)[number];
 type Size = (typeof SIZE_OPTIONS)[number];
 
 const POLL_INTERVAL_MS = 3000;
+// Stop polling after this long so a job stuck `queued`/`in_progress` upstream
+// can't keep the browser polling forever: the abort signal only fires on a new
+// run or clear, not when the panel unmounts.
+const MAX_POLL_MS = 10 * 60 * 1000;
 
 interface VideoResult {
   blob: Blob;
@@ -82,7 +86,9 @@ export function VideoGenerationPanel({ availableModels }: VideoGenerationPanelPr
       let job = createRes.data;
       const cost = extractCostFromResponse(createRes.response);
 
+      const deadline = Date.now() + MAX_POLL_MS;
       while (!signal.aborted && job.status !== "completed" && job.status !== "failed") {
+        if (Date.now() > deadline) throw new Error("Video generation timed out");
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         const r = await apiV1VideosRetrieve({ path: { video_id: job.id } });

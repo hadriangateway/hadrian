@@ -263,7 +263,7 @@ impl VideosRepo for PostgresVideosRepo {
         &self,
         owner_type: ResponseOwnerType,
         owner_id: Uuid,
-        _org_id: Uuid,
+        org_id: Uuid,
         after: Option<String>,
         limit: i64,
         order: VideoListOrder,
@@ -275,14 +275,17 @@ impl VideosRepo for PostgresVideosRepo {
         };
 
         // Resolve `after` (a video id) into its (created_at, id) position.
+        // Scoped to the caller's org so a cursor can't leak across orgs.
         let boundary: Option<DateTime<Utc>> = match &after {
             Some(after_id) => sqlx::query(
                 "SELECT created_at FROM videos \
-                 WHERE id = $1 AND owner_type = $2::response_owner_type AND owner_id = $3",
+                 WHERE id = $1 AND owner_type = $2::response_owner_type AND owner_id = $3 \
+                 AND org_id = $4",
             )
             .bind(after_id)
             .bind(owner_type.as_str())
             .bind(owner_id)
+            .bind(org_id)
             .fetch_optional(&self.read_pool)
             .await?
             .map(|row| row.get::<DateTime<Utc>, _>("created_at")),
@@ -293,7 +296,7 @@ impl VideosRepo for PostgresVideosRepo {
             (Some(after_id), Some(after_ts)) => {
                 let sql = format!(
                     "SELECT {cols} FROM videos \
-                     WHERE owner_type = $1::response_owner_type AND owner_id = $2 \
+                     WHERE owner_type = $1::response_owner_type AND owner_id = $2 AND org_id = $6 \
                      AND (created_at, id) {cmp} ($3, $4) \
                      ORDER BY created_at {dir}, id {dir} LIMIT $5",
                     cols = VIDEO_COLUMNS,
@@ -306,20 +309,22 @@ impl VideosRepo for PostgresVideosRepo {
                     .bind(after_ts)
                     .bind(after_id)
                     .bind(fetch_limit)
+                    .bind(org_id)
                     .fetch_all(&self.read_pool)
                     .await?
             }
             _ => {
                 let sql = format!(
                     "SELECT {cols} FROM videos \
-                     WHERE owner_type = $1::response_owner_type AND owner_id = $2 \
-                     ORDER BY created_at {dir}, id {dir} LIMIT $3",
+                     WHERE owner_type = $1::response_owner_type AND owner_id = $2 AND org_id = $3 \
+                     ORDER BY created_at {dir}, id {dir} LIMIT $4",
                     cols = VIDEO_COLUMNS,
                     dir = direction,
                 );
                 sqlx::query(&sql)
                     .bind(owner_type.as_str())
                     .bind(owner_id)
+                    .bind(org_id)
                     .bind(fetch_limit)
                     .fetch_all(&self.read_pool)
                     .await?
