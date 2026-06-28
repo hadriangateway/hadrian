@@ -20370,6 +20370,379 @@
         ]
       }
     },
+    "/api/v1/videos": {
+      "get": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "List video jobs",
+        "description": "GET /v1/videos",
+        "operationId": "api_v1_videos_list",
+        "responses": {
+          "200": {
+            "description": "List of video jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Create a video generation job",
+        "description": "POST /v1/videos",
+        "operationId": "api_v1_videos_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Video job created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "501": {
+            "description": "Database support required"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/characters": {
+      "post": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Create a character from a reference video",
+        "description": "POST /v1/videos/characters (multipart/form-data: name, video, [model])",
+        "operationId": "api_v1_videos_characters_create",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Character",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Character"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/characters/{character_id}": {
+      "get": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Retrieve a character",
+        "description": "GET /v1/videos/characters/{character_id}",
+        "operationId": "api_v1_videos_characters_retrieve",
+        "parameters": [
+          {
+            "name": "character_id",
+            "in": "path",
+            "description": "Character id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Character",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Character"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/edits": {
+      "post": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Edit a video into a new job",
+        "description": "POST /v1/videos/edits",
+        "operationId": "api_v1_videos_edits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New video job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/extensions": {
+      "post": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Extend a video into a new job",
+        "description": "POST /v1/videos/extensions",
+        "operationId": "api_v1_videos_extensions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoExtensionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New video job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/{video_id}": {
+      "get": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Retrieve a video job (refreshes status from the provider)",
+        "description": "GET /v1/videos/{video_id}",
+        "operationId": "api_v1_videos_retrieve",
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "description": "Video job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Video job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Delete a video job",
+        "description": "DELETE /v1/videos/{video_id}",
+        "operationId": "api_v1_videos_delete",
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "description": "Video job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDeleteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/{video_id}/content": {
+      "get": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Download the rendered asset for a video job",
+        "description": "GET /v1/videos/{video_id}/content",
+        "operationId": "api_v1_videos_content",
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "description": "Video job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rendered asset bytes"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/videos/{video_id}/remix": {
+      "post": {
+        "tags": [
+          "Videos"
+        ],
+        "summary": "Remix a video into a new job",
+        "description": "POST /v1/videos/{video_id}/remix",
+        "operationId": "api_v1_videos_remix",
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "description": "Source video id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemixVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New video job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Video"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/auth/discover": {
       "get": {
         "tags": [
@@ -20897,7 +21270,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Permission scopes (null = full access)\nValid scopes: chat, completions, embeddings, images, audio, files, models, admin"
+            "description": "Permission scopes (null = full access)\nValid scopes: chat, completions, embeddings, images, videos, audio, files, models, admin"
           },
           "sovereignty_requirements": {
             "oneOf": [
@@ -21041,6 +21414,7 @@
           "completions",
           "embeddings",
           "images",
+          "videos",
           "audio",
           "files",
           "models",
@@ -21512,6 +21886,34 @@
         "enum": [
           "ephemeral"
         ]
+      },
+      "Character": {
+        "type": "object",
+        "description": "A character created from a reference video.",
+        "required": [
+          "id",
+          "created_at",
+          "name"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) when the character was created."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique character identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always \"video.character\"."
+          }
+        }
       },
       "ChunkListResponse": {
         "type": "object",
@@ -24896,6 +25298,70 @@
           }
         }
       },
+      "CreateVideoRequest": {
+        "type": "object",
+        "description": "Create video generation request (POST /v1/videos).",
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "input_reference": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InputReference",
+                "description": "Optional reference image to guide generation."
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model to use for video generation (defaults to `sora-2`)."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "A text description of the desired video."
+          },
+          "seconds": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VideoSeconds",
+                "description": "Requested duration in seconds (4, 8, or 12)."
+              }
+            ]
+          },
+          "size": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VideoSize",
+                "description": "Output resolution."
+              }
+            ]
+          },
+          "sovereignty_requirements": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SovereigntyRequirements",
+                "description": "**Hadrian Extension:** Per-request sovereignty requirements.\nMerged with API key requirements (most restrictive wins). Stripped\nbefore the request is forwarded upstream."
+              }
+            ]
+          }
+        }
+      },
       "CreatedApiKey": {
         "allOf": [
           {
@@ -27705,6 +28171,26 @@
           "pcm16",
           "pcm24"
         ]
+      },
+      "InputReference": {
+        "type": "object",
+        "description": "Reference image used to guide generation (image-to-video).",
+        "properties": {
+          "file_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of a previously uploaded file to use as the reference."
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fully qualified URL or base64 data URL of the reference image."
+          }
+        }
       },
       "JsonSchemaConfig": {
         "type": "object",
@@ -30695,6 +31181,19 @@
             "type": "integer",
             "format": "int64",
             "description": "Total tokens used from this referer"
+          }
+        }
+      },
+      "RemixVideoRequest": {
+        "type": "object",
+        "description": "Remix request (POST /v1/videos/{id}/remix).",
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Updated direction for the remixed video."
           }
         }
       },
@@ -36532,6 +37031,281 @@
           }
         }
       },
+      "Video": {
+        "type": "object",
+        "description": "A video generation job.\n\nFields beyond the core identity are optional so provider responses with\nvarying shapes still deserialize; Hadrian persists and re-serves the\nlast-known object verbatim.",
+        "required": [
+          "id",
+          "model",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix timestamp (seconds) when the job completed."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) when the job was created."
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VideoError",
+                "description": "Error details when `status` is `failed`."
+              }
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix timestamp (seconds) when the rendered asset expires."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique job identifier."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used for generation."
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always \"video\"."
+          },
+          "progress": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Approximate completion percentage (0-100)."
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Original generation prompt."
+          },
+          "remixed_from_video_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source video id when this job is a remix."
+          },
+          "seconds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Requested duration in seconds."
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Output resolution."
+          },
+          "status": {
+            "$ref": "#/components/schemas/VideoStatus",
+            "description": "Current job status."
+          }
+        }
+      },
+      "VideoDeleteResponse": {
+        "type": "object",
+        "description": "Response from deleting a video job.",
+        "required": [
+          "id",
+          "object",
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "description": "Whether the video was deleted."
+          },
+          "id": {
+            "type": "string",
+            "description": "Id of the deleted video."
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always \"video.deleted\"."
+          }
+        }
+      },
+      "VideoEditRequest": {
+        "type": "object",
+        "description": "Edit request (POST /v1/videos/edits).",
+        "required": [
+          "prompt",
+          "video"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Instructions describing the edit."
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoRef",
+            "description": "The source video to edit."
+          }
+        }
+      },
+      "VideoError": {
+        "type": "object",
+        "description": "Error details for a failed video job.",
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable error code."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable error message."
+          }
+        }
+      },
+      "VideoExtensionRequest": {
+        "type": "object",
+        "description": "Extension request (POST /v1/videos/extensions).",
+        "required": [
+          "prompt",
+          "seconds",
+          "video"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Direction for the extended segment."
+          },
+          "seconds": {
+            "$ref": "#/components/schemas/VideoSeconds",
+            "description": "Additional duration in seconds (4, 8, 12, 16, or 20)."
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoRef",
+            "description": "The source video to extend."
+          }
+        }
+      },
+      "VideoListResponse": {
+        "type": "object",
+        "description": "Paginated list of video jobs (OpenAI list envelope).",
+        "required": [
+          "object",
+          "data",
+          "has_more"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Video"
+            },
+            "description": "The video jobs in this page."
+          },
+          "first_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the first item in the page."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether more items exist after this page."
+          },
+          "last_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the last item in the page."
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type, always \"list\"."
+          }
+        }
+      },
+      "VideoModel": {
+        "type": "string",
+        "description": "Video generation model (for schema/documentation; requests accept any\n`model` string so provider-prefixed ids like `openai/sora-2` route).",
+        "enum": [
+          "sora-2",
+          "sora-2-pro",
+          "sora-2-2025-10-06",
+          "sora-2-pro-2025-10-06",
+          "sora-2-2025-12-08"
+        ]
+      },
+      "VideoRef": {
+        "type": "object",
+        "description": "Reference to an existing video by id (edits/extensions).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the source video."
+          }
+        }
+      },
+      "VideoSeconds": {
+        "type": "string",
+        "description": "Requested video duration in seconds. Creation/edits allow 4/8/12;\nextensions additionally allow 16/20.",
+        "enum": [
+          "4",
+          "8",
+          "12",
+          "16",
+          "20"
+        ]
+      },
+      "VideoSize": {
+        "type": "string",
+        "description": "Output resolution for a generated video.",
+        "enum": [
+          "720x1280",
+          "1280x720",
+          "1024x1792",
+          "1792x1024"
+        ]
+      },
+      "VideoStatus": {
+        "type": "string",
+        "description": "Status of a video generation job.",
+        "enum": [
+          "queued",
+          "in_progress",
+          "completed",
+          "failed"
+        ]
+      },
       "VideoUrl": {
         "type": "object",
         "description": "Video URL reference",
@@ -36543,6 +37317,15 @@
             "type": "string"
           }
         }
+      },
+      "VideoVariant": {
+        "type": "string",
+        "description": "Asset variant for the content-download endpoint.",
+        "enum": [
+          "video",
+          "thumbnail",
+          "spritesheet"
+        ]
       },
       "Voice": {
         "type": "string",
@@ -36864,6 +37647,10 @@
     {
       "name": "Images",
       "description": "Generate, edit, and create variations of images using DALL-E models. OpenAI-compatible."
+    },
+    {
+      "name": "Videos",
+      "description": "Asynchronous video generation, remix, edit, extend, and characters using Sora models. OpenAI-compatible."
     },
     {
       "name": "Audio",

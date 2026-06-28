@@ -2480,6 +2480,7 @@ mod tests {
             #[cfg(feature = "mcp")]
             tool_search_embeddings: None,
             responses_store: None,
+            video_store: None,
             containers_service: None,
             container_session_registry: std::sync::Arc::new(
                 crate::services::container_session::ContainerSessionRegistry::new(),
@@ -2800,6 +2801,7 @@ mod tests {
             #[cfg(feature = "mcp")]
             tool_search_embeddings: None,
             responses_store: None,
+            video_store: None,
             containers_service: None,
             container_session_registry: std::sync::Arc::new(
                 crate::services::container_session::ContainerSessionRegistry::new(),

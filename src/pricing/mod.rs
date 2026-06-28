@@ -254,6 +254,8 @@ pub struct TokenUsage {
     pub audio_seconds: Option<i64>,
     /// Character count (for TTS pricing)
     pub character_count: Option<i64>,
+    /// Video duration in seconds (for video-generation pricing)
+    pub video_seconds: Option<i64>,
 }
 
 impl TokenUsage {
@@ -288,6 +290,14 @@ impl TokenUsage {
     pub fn for_tts_characters(characters: i64) -> Self {
         Self {
             character_count: Some(characters),
+            ..Default::default()
+        }
+    }
+
+    /// Create usage for video generation (per-second pricing)
+    pub fn for_video_seconds(seconds: i64) -> Self {
+        Self {
+            video_seconds: Some(seconds),
             ..Default::default()
         }
     }
@@ -420,6 +430,12 @@ impl PricingConfig {
 
         // Per-second cost (audio transcription/translation)
         if let (Some(seconds), Some(second_price)) = (usage.audio_seconds, pricing.per_second) {
+            total_microcents += seconds as i128 * second_price as i128;
+        }
+
+        // Per-second cost (video generation). Reuses the model's `per_second`
+        // rate; a video model never also reports `audio_seconds`.
+        if let (Some(seconds), Some(second_price)) = (usage.video_seconds, pricing.per_second) {
             total_microcents += seconds as i128 * second_price as i128;
         }
 
@@ -788,6 +804,25 @@ mod tests {
     }
 
     #[test]
+    fn test_video_per_second_cost() {
+        let mut config = PricingConfig::default();
+        // $0.10/second of output video.
+        config.set_pricing(
+            "openai",
+            "sora-2",
+            ModelPricing {
+                per_second: Some(100_000), // 100_000 microcents = $0.10
+                ..Default::default()
+            },
+        );
+
+        // An 8-second clip: 8 * 100_000 = 800_000 microcents = $0.80.
+        let usage = TokenUsage::for_video_seconds(8);
+        let cost = config.calculate_cost_detailed("openai", "sora-2", &usage);
+        assert_eq!(cost.map(|(c, _)| c), Some(800_000));
+    }
+
+    #[test]
     fn test_merge_configs() {
         let mut base = PricingConfig::default();
         let mut overlay = PricingConfig::default();
@@ -995,6 +1030,7 @@ mod tests {
             image_quality: None,
             audio_seconds: None,
             character_count: None,
+            video_seconds: None,
         };
 
         let cost = config.calculate_cost_detailed("test", "multi-cost", &usage);

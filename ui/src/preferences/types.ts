@@ -2,7 +2,7 @@ export type Theme = "light" | "dark" | "system";
 
 export type ConversationOwnerType = "user" | "project";
 
-export type ModelTask = "chat" | "images" | "tts" | "transcription" | "translation";
+export type ModelTask = "chat" | "images" | "video" | "tts" | "transcription" | "translation";
 
 export interface ConversationOwnerPreference {
   type: ConversationOwnerType;

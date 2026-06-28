@@ -32,6 +32,7 @@ mod templates;
 mod usage;
 mod users;
 mod vector_stores;
+mod videos;
 
 pub use api_keys::PostgresApiKeyRepo;
 pub use audit_logs::PostgresAuditLogRepo;
@@ -67,3 +68,4 @@ pub use templates::PostgresTemplateRepo;
 pub use usage::PostgresUsageRepo;
 pub use users::PostgresUserRepo;
 pub use vector_stores::PostgresVectorStoresRepo;
+pub use videos::PostgresVideosRepo;

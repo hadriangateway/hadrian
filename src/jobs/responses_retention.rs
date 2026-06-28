@@ -73,6 +73,15 @@ pub async fn start_responses_retention_worker(
             Err(e) => tracing::warn!(error = %e, "Responses retention pass failed"),
         }
 
+        // Prune expired video-job mapping rows. Proxy-on-read means the
+        // upstream provider owns the asset lifecycle; this only bounds the
+        // local routing-map storage. Shares the leader lock above.
+        match db.videos().delete_expired(Utc::now()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(deleted = n, "Pruned expired video rows"),
+            Err(e) => tracing::warn!(error = %e, "Video retention pass failed"),
+        }
+
         // Sweep parked MCP approvals past their TTL. Runs under the same
         // leader lock so only one replica writes; the claim path already
         // refuses expired rows, so this only bounds storage growth.

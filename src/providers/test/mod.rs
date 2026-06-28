@@ -22,6 +22,10 @@ use crate::{
             CreateImageEditRequest, CreateImageRequest, CreateImageVariationRequest, Image,
             ImagesResponse,
         },
+        videos::{
+            Character, CreateVideoRequest, RemixVideoRequest, Video, VideoDeleteResponse,
+            VideoEditRequest, VideoExtensionRequest, VideoStatus, VideoVariant,
+        },
     },
     config::TestFailureMode,
     providers::{ModelInfo, ModelsResponse, Provider, ProviderError},
@@ -176,6 +180,35 @@ fn current_timestamp() -> i64 {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn test_video(
+    id: &str,
+    model: &str,
+    status: VideoStatus,
+    prompt: Option<String>,
+    seconds: Option<String>,
+    size: Option<String>,
+    remixed_from_video_id: Option<String>,
+) -> Video {
+    let now = current_timestamp();
+    let completed = matches!(status, VideoStatus::Completed);
+    Video {
+        id: id.to_string(),
+        object: "video".to_string(),
+        model: model.to_string(),
+        status,
+        progress: Some(if completed { 100 } else { 0 }),
+        created_at: now,
+        completed_at: completed.then_some(now),
+        expires_at: Some(now + 3600),
+        prompt,
+        seconds: seconds.or_else(|| Some("4".to_string())),
+        size: size.or_else(|| Some("720x1280".to_string())),
+        remixed_from_video_id,
+        error: None,
     }
 }
 
@@ -1029,6 +1062,169 @@ impl Provider for TestProvider {
                 "text": "This is a test translation to English from the test provider."
             })),
         }
+    }
+
+    // =========================================================================
+    // Video generation methods
+    // =========================================================================
+
+    async fn create_video(
+        &self,
+        _client: &reqwest::Client,
+        payload: CreateVideoRequest,
+    ) -> Result<Video, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(test_video(
+            &format!("video_test_{}", uuid::Uuid::new_v4().simple()),
+            payload.model.as_deref().unwrap_or("sora-2"),
+            VideoStatus::Queued,
+            Some(payload.prompt),
+            payload.seconds.map(|s| s.as_str().to_string()),
+            payload.size.map(|s| s.as_str().to_string()),
+            None,
+        ))
+    }
+
+    async fn get_video(
+        &self,
+        _client: &reqwest::Client,
+        video_id: &str,
+    ) -> Result<Video, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        // Test jobs render instantly: report completed so polling terminates.
+        Ok(test_video(
+            video_id,
+            "sora-2",
+            VideoStatus::Completed,
+            None,
+            None,
+            None,
+            None,
+        ))
+    }
+
+    async fn delete_video(
+        &self,
+        _client: &reqwest::Client,
+        video_id: &str,
+    ) -> Result<VideoDeleteResponse, ProviderError> {
+        Ok(VideoDeleteResponse::new(video_id, true))
+    }
+
+    async fn get_video_content(
+        &self,
+        _client: &reqwest::Client,
+        _video_id: &str,
+        _variant: Option<VideoVariant>,
+    ) -> Result<Response, ProviderError> {
+        if let Some(error_response) = self.apply_failure_mode().await? {
+            return Ok(error_response);
+        }
+        // Minimal MP4 `ftyp` box (enough bytes for tests; not a playable clip).
+        let mock_video: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2', 0x00, 0x00,
+            0x00, 0x00, b'm', b'p', b'4', b'2', b'i', b's', b'o', b'm',
+        ];
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "video/mp4")
+            .body(Body::from(mock_video))?)
+    }
+
+    async fn remix_video(
+        &self,
+        _client: &reqwest::Client,
+        video_id: &str,
+        payload: RemixVideoRequest,
+    ) -> Result<Video, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(test_video(
+            &format!("video_test_{}", uuid::Uuid::new_v4().simple()),
+            "sora-2",
+            VideoStatus::Queued,
+            Some(payload.prompt),
+            None,
+            None,
+            Some(video_id.to_string()),
+        ))
+    }
+
+    async fn edit_video(
+        &self,
+        _client: &reqwest::Client,
+        payload: VideoEditRequest,
+    ) -> Result<Video, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(test_video(
+            &format!("video_test_{}", uuid::Uuid::new_v4().simple()),
+            "sora-2",
+            VideoStatus::Queued,
+            Some(payload.prompt),
+            None,
+            None,
+            Some(payload.video.id),
+        ))
+    }
+
+    async fn extend_video(
+        &self,
+        _client: &reqwest::Client,
+        payload: VideoExtensionRequest,
+    ) -> Result<Video, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(test_video(
+            &format!("video_test_{}", uuid::Uuid::new_v4().simple()),
+            "sora-2",
+            VideoStatus::Queued,
+            Some(payload.prompt),
+            Some(payload.seconds.as_str().to_string()),
+            None,
+            Some(payload.video.id),
+        ))
+    }
+
+    async fn create_character(
+        &self,
+        _client: &reqwest::Client,
+        name: String,
+        _video: Bytes,
+        _filename: String,
+    ) -> Result<Character, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(Character {
+            id: format!("character_test_{}", uuid::Uuid::new_v4().simple()),
+            object: "video.character".to_string(),
+            created_at: current_timestamp(),
+            name,
+        })
+    }
+
+    async fn get_character(
+        &self,
+        _client: &reqwest::Client,
+        character_id: &str,
+    ) -> Result<Character, ProviderError> {
+        if let Some(_error_response) = self.apply_failure_mode().await? {
+            return Err(ProviderError::Internal("Test failure mode active".into()));
+        }
+        Ok(Character {
+            id: character_id.to_string(),
+            object: "video.character".to_string(),
+            created_at: current_timestamp(),
+            name: "Test Character".to_string(),
+        })
     }
 }
 

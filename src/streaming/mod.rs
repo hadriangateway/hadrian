@@ -688,6 +688,7 @@ impl UsageLogger {
                     image_quality: None,
                     audio_seconds: None,
                     character_count: None,
+                    video_seconds: None,
                 },
             );
             let (cost_microcents, _pricing_source) =
@@ -725,6 +726,7 @@ impl UsageLogger {
                 image_quality: None,
                 audio_seconds: None,
                 character_count: None,
+                video_seconds: None,
             },
         );
 

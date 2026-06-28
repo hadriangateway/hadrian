@@ -1,12 +1,13 @@
 /**
- * OPFS (Origin Private File System) service for persisting audio blobs.
- * Files are stored under an `audio/` subdirectory with filenames of the form
- * `{entryId}_{sanitizedInstanceId}.{format}`.
+ * OPFS (Origin Private File System) service for persisting generated media
+ * blobs (audio and video). Files live under per-media subdirectories with
+ * filenames of the form `{entryId}_{sanitizedInstanceId}.{format}`.
  *
  * All methods catch errors and return null/empty on failure (graceful degradation).
  */
 
 const AUDIO_DIR = "audio";
+const VIDEO_DIR = "video";
 
 /** Check whether OPFS is available in this browser. */
 export function isAvailable(): boolean {
@@ -90,6 +91,78 @@ export async function clearAllAudioFiles(): Promise<void> {
     // Check if the directory exists before trying to remove it
     await root.getDirectoryHandle(AUDIO_DIR);
     await root.removeEntry(AUDIO_DIR, { recursive: true });
+  } catch {
+    // NotFoundError is expected when the directory was never created
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Video blobs — same scheme as audio, under a `video/` subdirectory.
+// ---------------------------------------------------------------------------
+
+async function getVideoDir(): Promise<FileSystemDirectoryHandle> {
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(VIDEO_DIR, { create: true });
+}
+
+/** Write a video blob to OPFS. Returns the filename on success, or null on failure. */
+export async function writeVideoFile(
+  entryId: string,
+  instanceId: string,
+  format: string,
+  blob: Blob
+): Promise<string | null> {
+  try {
+    if (!isAvailable()) return null;
+    const dir = await getVideoDir();
+    const filename = buildFilename(entryId, instanceId, format);
+    const fileHandle = await dir.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return filename;
+  } catch (e) {
+    console.warn("OPFS writeVideoFile failed:", e);
+    return null;
+  }
+}
+
+/** Read a video blob from OPFS by filename. Returns null if unavailable or missing. */
+export async function readVideoFile(filename: string): Promise<Blob | null> {
+  try {
+    if (!isAvailable()) return null;
+    const dir = await getVideoDir();
+    const fileHandle = await dir.getFileHandle(filename);
+    return await fileHandle.getFile();
+  } catch (e) {
+    console.warn("OPFS readVideoFile failed:", e);
+    return null;
+  }
+}
+
+/** Delete all OPFS video files whose filename starts with the given entryId. */
+export async function deleteVideoFilesForEntry(entryId: string): Promise<void> {
+  try {
+    if (!isAvailable()) return;
+    const dir = await getVideoDir();
+    const prefix = `${entryId}_`;
+    for await (const [name] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+      if (name.startsWith(prefix)) {
+        await dir.removeEntry(name);
+      }
+    }
+  } catch (e) {
+    console.warn("OPFS deleteVideoFilesForEntry failed:", e);
+  }
+}
+
+/** Remove the entire `video/` directory from OPFS (no-op if it doesn't exist). */
+export async function clearAllVideoFiles(): Promise<void> {
+  try {
+    if (!isAvailable()) return;
+    const root = await navigator.storage.getDirectory();
+    await root.getDirectoryHandle(VIDEO_DIR);
+    await root.removeEntry(VIDEO_DIR, { recursive: true });
   } catch {
     // NotFoundError is expected when the directory was never created
   }

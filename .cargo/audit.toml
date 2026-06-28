@@ -16,4 +16,9 @@ ignore = [
     # microsandbox bump. Hadrian's own resolver uses hickory-resolver 0.26.1.
     "RUSTSEC-2026-0118",
     "RUSTSEC-2026-0119",
+    # lopdf 0.40.0 stack overflow on deeply-nested PDFs (SIGABRT DoS). Transitive
+    # via kreuzberg 4.7.4 (document-extraction). Fixed in lopdf 0.42.0, but
+    # kreuzberg 4.7.4 pins lopdf 0.40 — no compatible update until kreuzberg bumps.
+    # Reachable only with a document-extraction feature + untrusted PDFs. Mirrors deny.toml.
+    "RUSTSEC-2026-0187",
 ]

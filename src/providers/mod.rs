@@ -85,6 +85,10 @@ use crate::{
         CreateImageRequest, CreateResponsesPayload, CreateSpeechRequest,
         CreateTranscriptionRequest, CreateTranslationRequest,
         images::{CreateImageEditRequest, CreateImageVariationRequest, ImagesResponse},
+        videos::{
+            Character, CreateVideoRequest, RemixVideoRequest, Video, VideoDeleteResponse,
+            VideoEditRequest, VideoExtensionRequest, VideoVariant,
+        },
     },
     config::{ResponseValidationConfig, ResponseValidationMode},
     observability::metrics,
@@ -401,6 +405,122 @@ pub trait Provider: Send + Sync {
     ) -> Result<Response, ProviderError> {
         Err(ProviderError::Internal(
             "This provider does not support audio translation".to_string(),
+        ))
+    }
+
+    // =========================================================================
+    // Video generation methods
+    // =========================================================================
+    //
+    // Video generation is asynchronous: `create_video` returns a job that the
+    // caller polls via `get_video`. Hadrian persists a job → provider mapping
+    // so the bare-id endpoints (`get_video`, `delete_video`, `get_video_content`)
+    // route back to the originating provider. All methods default to
+    // `Unsupported` so only video-capable providers override them.
+
+    /// Create a video generation job from a text prompt.
+    async fn create_video(
+        &self,
+        _client: &reqwest::Client,
+        _payload: CreateVideoRequest,
+    ) -> Result<Video, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Retrieve the current state of a video generation job.
+    async fn get_video(
+        &self,
+        _client: &reqwest::Client,
+        _video_id: &str,
+    ) -> Result<Video, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Delete a video generation job and its rendered asset.
+    async fn delete_video(
+        &self,
+        _client: &reqwest::Client,
+        _video_id: &str,
+    ) -> Result<VideoDeleteResponse, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Download the rendered asset for a completed video job.
+    ///
+    /// Returns a raw byte response with the provider's `content-type`
+    /// passed through (e.g. `video/mp4`).
+    async fn get_video_content(
+        &self,
+        _client: &reqwest::Client,
+        _video_id: &str,
+        _variant: Option<VideoVariant>,
+    ) -> Result<Response, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Remix an existing video into a new job.
+    async fn remix_video(
+        &self,
+        _client: &reqwest::Client,
+        _video_id: &str,
+        _payload: RemixVideoRequest,
+    ) -> Result<Video, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Edit an existing video into a new job.
+    async fn edit_video(
+        &self,
+        _client: &reqwest::Client,
+        _payload: VideoEditRequest,
+    ) -> Result<Video, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Extend an existing video into a new job.
+    async fn extend_video(
+        &self,
+        _client: &reqwest::Client,
+        _payload: VideoExtensionRequest,
+    ) -> Result<Video, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video generation".to_string(),
+        ))
+    }
+
+    /// Create a character from an uploaded reference video.
+    async fn create_character(
+        &self,
+        _client: &reqwest::Client,
+        _name: String,
+        _video: Bytes,
+        _filename: String,
+    ) -> Result<Character, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video characters".to_string(),
+        ))
+    }
+
+    /// Retrieve a previously created character.
+    async fn get_character(
+        &self,
+        _client: &reqwest::Client,
+        _character_id: &str,
+    ) -> Result<Character, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "This provider does not support video characters".to_string(),
         ))
     }
 

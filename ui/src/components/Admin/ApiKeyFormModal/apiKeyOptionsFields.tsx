@@ -25,6 +25,7 @@ export const API_KEY_SCOPES = [
   { value: "completions", label: "Completions", description: "Legacy text completions" },
   { value: "embeddings", label: "Embeddings", description: "Generate vector embeddings" },
   { value: "images", label: "Images", description: "Image generation, edits, variations" },
+  { value: "videos", label: "Videos", description: "Video generation, remix, edits, characters" },
   { value: "audio", label: "Audio", description: "Speech, transcription, translation" },
   {
     value: "files",

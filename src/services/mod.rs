@@ -75,6 +75,8 @@ mod templates;
 mod usage;
 mod users;
 mod vector_stores;
+#[cfg(not(target_arch = "wasm32"))]
+mod video_store;
 #[cfg(feature = "virus-scan")]
 mod virus_scan;
 pub mod web_search_tool;
@@ -150,6 +152,8 @@ pub use templates::TemplateService;
 pub use usage::UsageService;
 pub use users::UserService;
 pub use vector_stores::VectorStoresService;
+#[cfg(not(target_arch = "wasm32"))]
+pub use video_store::VideoStore;
 #[cfg(feature = "virus-scan")]
 pub use virus_scan::{
     ClamAvScanner, NoOpScanner, ScanResult, VirusScanError, VirusScanResult, VirusScanner,

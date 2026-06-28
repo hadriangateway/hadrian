@@ -17,6 +17,7 @@ use crate::models::ApiKeyScope;
 /// | `completions` | `/v1/completions` |
 /// | `embeddings` | `/v1/embeddings` |
 /// | `images` | `/v1/images/*` |
+/// | `videos` | `/v1/videos/*` |
 /// | `audio` | `/v1/audio/*` |
 /// | `files` | `/v1/files/*`, `/v1/vector_stores/*` |
 /// | `models` | `/v1/models/*` |
@@ -46,6 +47,11 @@ pub fn required_scope_for_path(path: &str) -> Option<ApiKeyScope> {
     // Images endpoints
     if path.starts_with("/v1/images") || path.starts_with("/api/v1/images") {
         return Some(ApiKeyScope::Images);
+    }
+
+    // Videos endpoints
+    if path.starts_with("/v1/videos") || path.starts_with("/api/v1/videos") {
+        return Some(ApiKeyScope::Videos);
     }
 
     // Audio endpoints
@@ -136,6 +142,22 @@ mod tests {
         assert_eq!(
             required_scope_for_path("/v1/images/variations"),
             Some(ApiKeyScope::Images)
+        );
+    }
+
+    #[test]
+    fn test_videos_scope() {
+        assert_eq!(
+            required_scope_for_path("/v1/videos"),
+            Some(ApiKeyScope::Videos)
+        );
+        assert_eq!(
+            required_scope_for_path("/api/v1/videos/video_abc/content"),
+            Some(ApiKeyScope::Videos)
+        );
+        assert_eq!(
+            required_scope_for_path("/v1/videos/characters"),
+            Some(ApiKeyScope::Videos)
         );
     }
 

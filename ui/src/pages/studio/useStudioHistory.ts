@@ -1,12 +1,23 @@
 import { useCallback } from "react";
 import { useIndexedDB } from "@/hooks/useIndexedDB";
-import { deleteAudioFilesForEntry, clearAllAudioFiles } from "@/services/opfs/opfsService";
-import type { ImageHistoryEntry, AudioHistoryEntry, TranscriptionHistoryEntry } from "./types";
+import {
+  deleteAudioFilesForEntry,
+  clearAllAudioFiles,
+  deleteVideoFilesForEntry,
+  clearAllVideoFiles,
+} from "@/services/opfs/opfsService";
+import type {
+  ImageHistoryEntry,
+  AudioHistoryEntry,
+  TranscriptionHistoryEntry,
+  VideoHistoryEntry,
+} from "./types";
 
 const LIMITS = {
   images: 100,
   audio: 50,
   transcriptions: 200,
+  videos: 50,
 } as const;
 
 function useHistoryArray<T extends { id: string }>(key: string, maxSize: number) {
@@ -87,4 +98,39 @@ export function useTranscriptionHistory() {
     "studio-transcription-history",
     LIMITS.transcriptions
   );
+}
+
+export function useVideoHistory() {
+  const {
+    entries,
+    addEntry: rawAdd,
+    removeEntry: rawRemove,
+    clearAll: rawClear,
+    isLoading,
+  } = useHistoryArray<VideoHistoryEntry>("studio-video-history", LIMITS.videos);
+
+  const addEntry = useCallback(
+    (entry: VideoHistoryEntry) => {
+      const evicted = rawAdd(entry);
+      for (const e of evicted) {
+        deleteVideoFilesForEntry(e.id);
+      }
+    },
+    [rawAdd]
+  );
+
+  const removeEntry = useCallback(
+    (id: string) => {
+      rawRemove(id);
+      deleteVideoFilesForEntry(id);
+    },
+    [rawRemove]
+  );
+
+  const clearAllEntries = useCallback(() => {
+    rawClear();
+    clearAllVideoFiles();
+  }, [rawClear]);
+
+  return { entries, addEntry, removeEntry, clearAll: clearAllEntries, isLoading };
 }

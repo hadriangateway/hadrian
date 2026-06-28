@@ -1382,6 +1382,58 @@ CREATE INDEX IF NOT EXISTS idx_responses_status ON responses(status, created_at)
 CREATE INDEX IF NOT EXISTS idx_responses_owner_created ON responses(owner_type, owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_responses_retention ON responses(retention_expires_at);
 
+-- Async video-generation jobs. See SQLite migration for the design
+-- (proxy-on-read routing map + last-known snapshot). Reuses the
+-- `response_owner_type` enum for ownership.
+CREATE TABLE IF NOT EXISTS videos (
+    id VARCHAR(128) PRIMARY KEY,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type response_owner_type NOT NULL,
+    owner_id UUID NOT NULL,
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
+    service_account_id UUID REFERENCES service_accounts(id) ON DELETE SET NULL,
+    status VARCHAR(16) NOT NULL,
+    model VARCHAR(128) NOT NULL,
+    provider VARCHAR(128),
+    prompt TEXT,
+    size VARCHAR(32),
+    seconds VARCHAR(8),
+    progress INTEGER,
+    remixed_from_video_id VARCHAR(128),
+    created_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    error JSONB,
+    snapshot JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    retention_expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_videos_org ON videos(org_id);
+CREATE INDEX IF NOT EXISTS idx_videos_owner_created ON videos(owner_type, owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_retention ON videos(retention_expires_at);
+
+-- Characters created from a reference video (POST /v1/videos/characters).
+CREATE TABLE IF NOT EXISTS video_characters (
+    id VARCHAR(128) PRIMARY KEY,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    owner_type response_owner_type NOT NULL,
+    owner_id UUID NOT NULL,
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
+    service_account_id UUID REFERENCES service_accounts(id) ON DELETE SET NULL,
+    provider VARCHAR(128),
+    model VARCHAR(128),
+    name TEXT NOT NULL,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_characters_org ON video_characters(org_id);
+
 -- Append-only event log; see SQLite migration. The composite PRIMARY
 -- KEY already provides the (response_id, sequence_number) b-tree, so
 -- no extra index is needed.
