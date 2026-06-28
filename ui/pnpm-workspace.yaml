@@ -1,4 +1,0 @@
-allowBuilds:
-  '@modelcontextprotocol/ext-apps': true
-  esbuild: true
-  msw: true
