@@ -15,13 +15,13 @@
 //! - Code: `.rs`, `.py`, `.js`, `.ts`, `.go`, `.java`, `.c`, `.cpp`, `.h`, etc.
 //! - Config: `.yaml`, `.toml`, `.ini`, `.env`
 //!
-//! ## Rich Documents (via Kreuzberg)
+//! ## Rich Documents (via xberg)
 //! - PDF: `.pdf`
 //! - Microsoft Office: `.docx`, `.doc`, `.xlsx`, `.xls`, `.pptx`, `.ppt`
 //! - OpenDocument: `.odt`, `.ods`, `.odp`
 //! - Other: `.rtf`, `.epub`
 //!
-//! ## Images with OCR (via Kreuzberg + Tesseract)
+//! ## Images with OCR (via xberg + Tesseract)
 //! - `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`, `.gif`
 //!
 //! OCR requires Tesseract to be installed on the system. Configure via `document_extraction`:
@@ -2046,8 +2046,8 @@ fn get_file_extension(filename: &str) -> String {
 ///
 /// Supported formats fall into three categories:
 /// 1. **Plain text** - Direct UTF-8 text files (txt, md, json, csv, code files, etc.)
-/// 2. **Rich documents** - Extracted via Kreuzberg (PDF, Office, OpenDocument, EPUB, RTF)
-/// 3. **Images with OCR** - Requires `ocr` feature in Kreuzberg (not yet enabled)
+/// 2. **Rich documents** - Extracted via xberg (PDF, Office, OpenDocument, EPUB, RTF)
+/// 3. **Images with OCR** - Requires `ocr` feature in xberg (not yet enabled)
 fn is_supported_file_type(extension: &str) -> bool {
     matches!(
         extension,
@@ -2060,7 +2060,7 @@ fn is_supported_file_type(extension: &str) -> bool {
         "cfg" | "conf" | "properties" | "env" | "dockerfile" | "makefile" |
         // Documentation
         "rst" | "adoc" | "tex" | "latex" |
-        // Rich documents (extracted via Kreuzberg)
+        // Rich documents (extracted via xberg)
         "pdf" |                                    // PDF documents
         "docx" | "doc" |                           // Microsoft Word
         "xlsx" | "xls" |                           // Microsoft Excel
@@ -2068,7 +2068,7 @@ fn is_supported_file_type(extension: &str) -> bool {
         "odt" | "ods" | "odp" |                    // OpenDocument (Writer, Calc, Impress)
         "rtf" |                                    // Rich Text Format
         "epub" |                                   // EPUB ebooks
-        // Images (OCR extraction via Kreuzberg + Tesseract)
+        // Images (OCR extraction via xberg + Tesseract)
         "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp" | "gif"
     )
 }
@@ -2076,7 +2076,7 @@ fn is_supported_file_type(extension: &str) -> bool {
 /// Check if a file extension represents a plain text file.
 ///
 /// Plain text files can be read directly as UTF-8 without document extraction.
-/// Rich document formats (PDF, Office, etc.) require Kreuzberg for extraction.
+/// Rich document formats (PDF, Office, etc.) require xberg for extraction.
 fn is_plain_text_type(extension: &str) -> bool {
     matches!(
         extension,
@@ -2093,10 +2093,10 @@ fn is_plain_text_type(extension: &str) -> bool {
 }
 
 #[cfg(any(feature = "document-extraction-full", test))]
-/// Map a file extension to its MIME type for Kreuzberg extraction.
+/// Map a file extension to its MIME type for xberg extraction.
 ///
-/// Returns the MIME type string used by Kreuzberg for document extraction.
-/// Only maps rich document formats that require Kreuzberg; plain text files
+/// Returns the MIME type string used by xberg for document extraction.
+/// Only maps rich document formats that require xberg; plain text files
 /// should use direct UTF-8 conversion instead.
 fn extension_to_mime(extension: &str) -> Option<&'static str> {
     match extension {
@@ -2132,7 +2132,7 @@ fn extension_to_mime(extension: &str) -> Option<&'static str> {
 /// Extract text content from file data.
 ///
 /// For plain text files (code, markdown, JSON, etc.), performs direct UTF-8 conversion.
-/// For rich documents (PDF, Office, EPUB, etc.), uses Kreuzberg for extraction.
+/// For rich documents (PDF, Office, EPUB, etc.), uses xberg for extraction.
 ///
 /// Takes ownership of the byte vector to avoid copying when possible.
 ///
@@ -2150,7 +2150,7 @@ async fn extract_text(
         return String::from_utf8(data).map_err(|_| DocumentProcessorError::InvalidUtf8);
     }
 
-    // Rich documents: use Kreuzberg for extraction (requires document-extraction-full feature)
+    // Rich documents: use xberg for extraction (requires document-extraction-full feature)
     #[cfg(feature = "document-extraction-full")]
     {
         let mime_type = extension_to_mime(extension).ok_or_else(|| {
@@ -2160,12 +2160,13 @@ async fn extract_text(
             ))
         })?;
 
-        // Build Kreuzberg extraction config from our config
-        let config = build_kreuzberg_config(extraction_config);
-        let extraction = kreuzberg::extract_bytes(&data, mime_type, &config);
+        // Build xberg extraction config from our config
+        let config = build_xberg_config(extraction_config);
+        let input = xberg::ExtractInput::from_bytes(data, mime_type, None);
+        let extraction = xberg::extract(input, &config);
 
         // Bound how long any single document may tie up an extraction worker.
-        // Kreuzberg has no internal hard limit, so a 5,000-page OCR job (or a
+        // xberg has no internal hard limit, so a 5,000-page OCR job (or a
         // pathological/malicious input) would otherwise run unbounded.
         let result = if extraction_config.extraction_timeout_secs > 0 {
             let timeout = std::time::Duration::from_secs(extraction_config.extraction_timeout_secs);
@@ -2183,7 +2184,18 @@ async fn extract_text(
         }
         .map_err(|e| DocumentProcessorError::DocumentExtraction(e.to_string()))?;
 
-        Ok(result.content)
+        // xberg returns an envelope of per-document results; a single-input
+        // `extract` yields exactly one on success.
+        result
+            .results
+            .into_iter()
+            .next()
+            .map(|document| document.content)
+            .ok_or_else(|| {
+                DocumentProcessorError::DocumentExtraction(
+                    "Document extraction produced no results".to_string(),
+                )
+            })
     }
 
     #[cfg(not(feature = "document-extraction-full"))]
@@ -2198,23 +2210,23 @@ async fn extract_text(
     }
 }
 
-/// Build a Kreuzberg ExtractionConfig from our DocumentExtractionConfig.
+/// Build an xberg ExtractionConfig from our DocumentExtractionConfig.
 #[cfg(feature = "document-extraction-full")]
-fn build_kreuzberg_config(config: &DocumentExtractionConfig) -> kreuzberg::ExtractionConfig {
-    let mut kreuzberg_config = kreuzberg::ExtractionConfig::default();
+fn build_xberg_config(config: &DocumentExtractionConfig) -> xberg::ExtractionConfig {
+    let mut xberg_config = xberg::ExtractionConfig::default();
 
     // Configure OCR if enabled
     if config.enable_ocr {
-        kreuzberg_config.ocr = Some(kreuzberg::OcrConfig {
+        xberg_config.ocr = Some(xberg::OcrConfig {
             backend: "tesseract".to_string(),
-            language: config.ocr_language.clone(),
+            language: vec![config.ocr_language.clone()],
             ..Default::default()
         });
-        kreuzberg_config.force_ocr = config.force_ocr;
+        xberg_config.force_ocr = config.force_ocr;
     }
 
     // Configure PDF-specific options
-    kreuzberg_config.pdf_options = Some(kreuzberg::PdfConfig {
+    xberg_config.pdf_options = Some(xberg::PdfConfig {
         extract_images: config.pdf_extract_images,
         extract_metadata: true,
         ..Default::default()
@@ -2222,7 +2234,7 @@ fn build_kreuzberg_config(config: &DocumentExtractionConfig) -> kreuzberg::Extra
 
     // Configure image extraction settings (includes DPI for OCR)
     if config.pdf_extract_images || config.enable_ocr {
-        kreuzberg_config.images = Some(kreuzberg::ImageExtractionConfig {
+        xberg_config.images = Some(xberg::ImageExtractionConfig {
             extract_images: config.pdf_extract_images,
             target_dpi: config.pdf_image_dpi as i32,
             max_image_dimension: 4096,
@@ -2233,7 +2245,7 @@ fn build_kreuzberg_config(config: &DocumentExtractionConfig) -> kreuzberg::Extra
         });
     }
 
-    kreuzberg_config
+    xberg_config
 }
 
 /// Split text into sentences (simple heuristic).
@@ -2334,7 +2346,7 @@ mod tests {
         assert!(is_supported_file_type("js"));
         assert!(is_supported_file_type("ts"));
 
-        // Rich documents (via Kreuzberg)
+        // Rich documents (via xberg)
         assert!(is_supported_file_type("pdf"));
         assert!(is_supported_file_type("docx"));
         assert!(is_supported_file_type("doc"));
@@ -2348,7 +2360,7 @@ mod tests {
         assert!(is_supported_file_type("rtf"));
         assert!(is_supported_file_type("epub"));
 
-        // Images (OCR via Kreuzberg + Tesseract)
+        // Images (OCR via xberg + Tesseract)
         assert!(is_supported_file_type("png"));
         assert!(is_supported_file_type("jpg"));
         assert!(is_supported_file_type("jpeg"));
@@ -2708,7 +2720,7 @@ mod tests {
     /// Integration test: Extract text from a PDF file
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires test fixtures and Kreuzberg"]
+    #[ignore = "Integration test - requires test fixtures and xberg"]
     #[serial]
     async fn test_extract_text_from_pdf_file() {
         let config = DocumentExtractionConfig::default();
@@ -2734,7 +2746,7 @@ mod tests {
     /// Integration test: Extract text from a DOCX file
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires test fixtures and Kreuzberg"]
+    #[ignore = "Integration test - requires test fixtures and xberg"]
     #[serial]
     async fn test_extract_text_from_docx_file() {
         let config = DocumentExtractionConfig::default();
@@ -2761,7 +2773,7 @@ mod tests {
     /// Integration test: Extract text from an XLSX file
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires test fixtures and Kreuzberg"]
+    #[ignore = "Integration test - requires test fixtures and xberg"]
     #[serial]
     async fn test_extract_text_from_xlsx_file() {
         let config = DocumentExtractionConfig::default();
@@ -2789,7 +2801,7 @@ mod tests {
     /// Integration test: Extract text from an RTF file
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires test fixtures and Kreuzberg"]
+    #[ignore = "Integration test - requires test fixtures and xberg"]
     #[serial]
     async fn test_extract_text_from_rtf_file() {
         let config = DocumentExtractionConfig::default();
@@ -2816,7 +2828,7 @@ mod tests {
     /// Integration test: Verify corrupted/invalid PDF handling
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires Kreuzberg"]
+    #[ignore = "Integration test - requires xberg"]
     #[serial]
     async fn test_extract_text_from_corrupted_pdf() {
         let config = DocumentExtractionConfig::default();
@@ -2840,7 +2852,7 @@ mod tests {
     /// Integration test: Verify empty file handling
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires Kreuzberg"]
+    #[ignore = "Integration test - requires xberg"]
     #[serial]
     async fn test_extract_text_from_empty_pdf() {
         let config = DocumentExtractionConfig::default();
@@ -2861,7 +2873,7 @@ mod tests {
     /// Integration test: Test extraction with all supported rich document types
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires test fixtures and Kreuzberg"]
+    #[ignore = "Integration test - requires test fixtures and xberg"]
     #[serial]
     async fn test_extract_all_rich_document_types() {
         let config = DocumentExtractionConfig::default();
@@ -3098,7 +3110,7 @@ mod tests {
     /// Integration test: Verify OCR is disabled by default
     #[cfg(feature = "document-extraction-full")]
     #[tokio::test]
-    #[ignore = "Integration test - requires Kreuzberg"]
+    #[ignore = "Integration test - requires xberg"]
     #[serial]
     async fn test_image_extraction_without_ocr_enabled() {
         // With OCR disabled (default), image extraction should still work
@@ -3109,7 +3121,7 @@ mod tests {
         let path = format!("{}/sample_text.png", FIXTURES_DIR);
         let data = std::fs::read(&path).expect("Failed to read sample_text.png");
 
-        // Without OCR, Kreuzberg may return empty text or fail
+        // Without OCR, xberg may return empty text or fail
         let result = extract_text(data, "png", &config).await;
         match result {
             Ok(text) => {

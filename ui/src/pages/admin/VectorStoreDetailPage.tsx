@@ -126,7 +126,7 @@ const VALID_FILE_EXTENSIONS = [
   ".adoc",
   ".tex",
   ".latex",
-  // Rich documents (extracted via Kreuzberg)
+  // Rich documents (extracted via xberg)
   ".pdf",
   ".docx",
   ".doc",
@@ -139,7 +139,7 @@ const VALID_FILE_EXTENSIONS = [
   ".odp",
   ".rtf",
   ".epub",
-  // Images (OCR extraction via Kreuzberg + Tesseract)
+  // Images (OCR extraction via xberg + Tesseract)
   ".png",
   ".jpg",
   ".jpeg",

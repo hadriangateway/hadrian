@@ -17,7 +17,7 @@ Knowledge Bases provide retrieval-augmented generation (RAG) capabilities throug
 The Knowledge Bases feature provides:
 
 - **OpenAI-compatible API** - Drop-in replacement for OpenAI's Vector Stores and Files APIs
-- **Automatic document processing** - Extract text from PDF, DOCX, HTML, and more via Kreuzberg
+- **Automatic document processing** - Extract text from PDF, DOCX, HTML, and more via xberg
 - **OCR support** - Extract text from scanned documents and images
 - **Flexible chunking** - Auto or fixed-size chunking strategies
 - **Multiple vector backends** - pgvector (PostgreSQL) or Qdrant
@@ -304,7 +304,7 @@ max_search_result_chars = 4000
 
 | Extension                      | Description                   |
 | ------------------------------ | ----------------------------- |
-| `.pdf`                         | PDF documents (via Kreuzberg) |
+| `.pdf`                         | PDF documents (via xberg)     |
 | `.docx`, `.doc`                | Microsoft Word                |
 | `.xlsx`, `.xls`                | Microsoft Excel               |
 | `.pptx`, `.ppt`                | Microsoft PowerPoint          |
@@ -488,7 +488,7 @@ When a file is added to a knowledge base, the following pipeline executes:
 2. Add to Knowledge Base
    └─ Trigger document processing
 
-3. Text Extraction (Kreuzberg)
+3. Text Extraction (xberg)
    ├─ PDF: Extract text, optionally OCR images
    ├─ Office: DOCX, XLSX, PPTX conversion
    ├─ HTML: Parse and extract content

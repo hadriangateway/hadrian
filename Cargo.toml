@@ -256,7 +256,7 @@ utoipa = ["dep:utoipa", "dep:utoipa-scalar"]
 
 # Document processing
 document-extraction-basic = ["dep:tiktoken-rs"]
-document-extraction-full = ["document-extraction-basic", "dep:kreuzberg"]
+document-extraction-full = ["document-extraction-basic", "dep:xberg"]
 
 # New feature flags
 forecasting = ["dep:augurs"]
@@ -378,7 +378,6 @@ google-cloud-token = { version = "0.1", optional = true }
 hickory-resolver = { version = "0.26.1", features = ["tokio", "system-config"], optional = true }
 hostname = { version = "0.4.2", optional = true }
 jsonschema = { version = "0.29", optional = true }
-kreuzberg = { version = "~4.7", default-features = false, features = ["tokio-runtime", "bundled-pdfium", "office", "excel", "ocr"], optional = true }
 metrics = { version = "0.24", optional = true }
 metrics-exporter-prometheus = { version = "0.16", optional = true }
 open = { version = "5.3.3", optional = true }
@@ -399,6 +398,7 @@ tracing-opentelemetry = { version = "0.32", optional = true }
 utoipa = { version = "5", features = ["chrono", "uuid", "axum_extras"], optional = true }
 utoipa-scalar = { version = "0.3", features = ["axum"], optional = true }
 vaultrs = { version = "0.7.4", features = ["rustls"], optional = true }
+xberg = { version = "1.0.0-rc.1", default-features = false, features = ["tokio-runtime", "pdf", "office", "excel", "ocr"], optional = true }
 
 # Shell-tool runtime: local microVM SDK.
 #

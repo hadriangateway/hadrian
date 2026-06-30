@@ -61,7 +61,7 @@ Hierarchical profiles (default: `full`):
 - **`tiny`** — OpenAI + Test providers, no DB, no embedded assets
 - **`minimal`** — tiny + all providers, SQLite, embedded UI/catalog, wizard
 - **`standard`** — minimal + Postgres, Redis, OTLP, Prometheus, SSO, CEL, S3, secrets managers
-- **`full`** — standard + SAML, Kreuzberg, ClamAV
+- **`full`** — standard + SAML, xberg, ClamAV
 - **`headless`** — full without embedded assets
 - **`wasm`** — Browser-only build (see `agent_instructions/wasm.md`)
 

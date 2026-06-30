@@ -78,7 +78,7 @@ Each organization can configure its own identity provider (OIDC or SAML), replac
 2. **Add to Vector Store** (`POST /v1/vector_stores/{id}/files`) — Trigger processing
    - Note: 'Vector Stores' are called 'Knowledge Bases' in the UI. Do not refer to them as 'Vector Stores' there.
 3. **Document Processor** (inline or queue mode):
-   - Extract text via Kreuzberg (PDF, DOCX, HTML, etc.)
+   - Extract text via xberg (PDF, DOCX, HTML, etc.)
    - OCR for scanned documents (optional)
    - Chunk text (auto or fixed-size strategy)
    - Generate embeddings per chunk

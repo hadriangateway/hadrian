@@ -1688,7 +1688,7 @@ pub enum FileProcessingQueueBackend {
 /// Controls how PDF, Office, and other document formats are processed,
 /// including OCR settings for scanned documents and images.
 ///
-/// Uses [Kreuzberg](https://github.com/Goldziher/kreuzberg) for document extraction.
+/// Uses [xberg](https://github.com/xberg-io/xberg) for document extraction.
 ///
 /// # Example Configuration
 ///
@@ -1719,7 +1719,7 @@ pub enum FileProcessingQueueBackend {
 pub struct DocumentExtractionConfig {
     /// Enable OCR (Optical Character Recognition) for scanned documents and images.
     ///
-    /// When enabled, Kreuzberg will use Tesseract to extract text from:
+    /// When enabled, xberg will use Tesseract to extract text from:
     /// - Scanned PDF documents (no embedded text layer)
     /// - Images embedded in documents
     /// - Image files (PNG, JPG, TIFF, etc.) if supported

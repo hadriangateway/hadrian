@@ -96,7 +96,7 @@ Hadrian uses Cargo feature flags for modular compilation. Choose a profile based
 | `tiny`           | OpenAI + Test providers only — no database, no embedded assets                                                                                                                                                    | Stateless API proxy, smallest binary      |
 | `minimal`        | tiny + all providers (Anthropic, Azure, Bedrock, Vertex), SQLite, embedded UI, embedded catalog, wizard                                                                                                           | Development, Windows, embedded            |
 | `standard`       | minimal + PostgreSQL, Redis, OTLP, Prometheus, CEL, SSO, basic doc extraction, embedded docs, OpenAPI docs, S3, secrets managers (AWS/Azure/GCP/Vault), forecasting, JSON schema, response validation, CSV export | Typical deployment                        |
-| `full` (default) | standard + SAML, Kreuzberg (full doc extraction), ClamAV (virus scan)                                                                                                                                             | Production multi-tenant                   |
+| `full` (default) | standard + SAML, xberg (full doc extraction), ClamAV (virus scan)                                                                                                                                             | Production multi-tenant                   |
 | `headless`       | All `full` features except embedded assets (no UI, docs, or catalog)                                                                                                                                              | `cargo install`, separate frontend, CI/CD |
 
 Build with a specific profile:
@@ -145,7 +145,7 @@ Select individual features for a custom build by combining flags with `--no-defa
 | **Cache / Storage**     | `redis`                     | Distributed cache, rate limits, queues                  | standard    |
 |                         | `s3-storage`                | S3-compatible file storage                              | standard    |
 | **Document Processing** | `document-extraction-basic` | Built-in text extraction                                | standard    |
-|                         | `document-extraction-full`  | Kreuzberg: PDF, DOCX, OCR                               | full        |
+|                         | `document-extraction-full`  | xberg: PDF, DOCX, OCR                                   | full        |
 | **Observability**       | `otlp`                      | OpenTelemetry OTLP export (gRPC)                        | standard    |
 | **Metrics**             | `prometheus`                | Prometheus metrics export                               | standard    |
 | **Validation & Export** | `json-schema`               | JSON schema generation (schemars)                       | standard    |

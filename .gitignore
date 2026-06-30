@@ -2,7 +2,7 @@
 .env
 hadrian.toml
 /coverage
-.kreuzberg
+.xberg
 todo/
 
 # Model catalog (fetched via scripts/fetch-model-catalog.sh)
