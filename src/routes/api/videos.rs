@@ -807,7 +807,7 @@ pub async fn api_v1_videos_extensions(
     post,
     path = "/api/v1/videos/characters",
     tag = "Videos",
-    request_body(content_type = "multipart/form-data", content = api_types::CreateCharacterRequest),
+    request_body(content_type = "multipart/form-data", content = api_types::videos::CreateCharacterRequest),
     responses((status = 200, description = "Character", body = api_types::Character)),
     security(("api_key" = []))
 ))]

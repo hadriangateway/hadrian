@@ -80,7 +80,9 @@ jobs:
       - name: Point DuckDB at jsDelivr (Pages 25 MiB per-file limit)
         working-directory: ui
         run: |
-          DUCKDB_VERSION=$(node -p "require('@duckdb/duckdb-wasm/package.json').version")
+          # Read the installed version straight from the file; the package's
+          # `exports` map doesn't expose ./package.json to `require`.
+          DUCKDB_VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@duckdb/duckdb-wasm/package.json','utf8')).version)")
           echo "VITE_DUCKDB_BASE_URL=https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${DUCKDB_VERSION}/dist/" >> "$GITHUB_ENV"
 
       - name: Build frontend (WASM mode)
