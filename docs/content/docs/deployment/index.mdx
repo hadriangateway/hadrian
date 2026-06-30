@@ -96,7 +96,7 @@ Hadrian uses Cargo feature flags for modular compilation. Choose a profile based
 | `tiny`           | OpenAI + Test providers only — no database, no embedded assets                                                                                                                                                    | Stateless API proxy, smallest binary      |
 | `minimal`        | tiny + all providers (Anthropic, Azure, Bedrock, Vertex), SQLite, embedded UI, embedded catalog, wizard                                                                                                           | Development, Windows, embedded            |
 | `standard`       | minimal + PostgreSQL, Redis, OTLP, Prometheus, CEL, SSO, basic doc extraction, embedded docs, OpenAPI docs, S3, secrets managers (AWS/Azure/GCP/Vault), forecasting, JSON schema, response validation, CSV export | Typical deployment                        |
-| `full` (default) | standard + SAML, xberg (full doc extraction), ClamAV (virus scan)                                                                                                                                             | Production multi-tenant                   |
+| `full` (default) | standard + SAML, xberg (full doc extraction), ClamAV (virus scan)                                                                                                                                                 | Production multi-tenant                   |
 | `headless`       | All `full` features except embedded assets (no UI, docs, or catalog)                                                                                                                                              | `cargo install`, separate frontend, CI/CD |
 
 Build with a specific profile:
