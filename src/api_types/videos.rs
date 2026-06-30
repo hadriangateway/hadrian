@@ -246,6 +246,21 @@ pub struct VideoExtensionRequest {
     pub video: VideoRef,
 }
 
+/// Create-character request (POST /v1/videos/characters).
+///
+/// Note: this endpoint accepts multipart/form-data. The `video` field is a
+/// file upload (the source clip), not a JSON field.
+#[derive(Debug, Clone, Validate, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CreateCharacterRequest {
+    /// Display name for the new character.
+    pub name: String,
+
+    /// Optional model id, used only to resolve the provider (default `sora-2`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// Error details for a failed video job.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]

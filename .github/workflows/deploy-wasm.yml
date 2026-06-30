@@ -72,11 +72,28 @@ jobs:
       - name: Build WASM module
         run: ./scripts/build-wasm.sh --release
 
+      # Cloudflare Pages rejects any file >25 MiB, and the vendored DuckDB wasm
+      # bundles (mvp ~37 MiB, eh ~33 MiB) exceed that. For the public Pages demo
+      # only, load DuckDB from jsDelivr instead of self-hosting it. Self-hosted
+      # deployments keep the same-origin vendored copies (the default base URL).
+      # The version is read from the lockfile-resolved install so it never drifts.
+      - name: Point DuckDB at jsDelivr (Pages 25 MiB per-file limit)
+        working-directory: ui
+        run: |
+          DUCKDB_VERSION=$(node -p "require('@duckdb/duckdb-wasm/package.json').version")
+          echo "VITE_DUCKDB_BASE_URL=https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${DUCKDB_VERSION}/dist/" >> "$GITHUB_ENV"
+
       - name: Build frontend (WASM mode)
         working-directory: ui
         run: pnpm build
         env:
           VITE_WASM_MODE: "true"
+          VITE_DUCKDB_BASE_URL: ${{ env.VITE_DUCKDB_BASE_URL }}
+
+      # Drop the vendored DuckDB wasm now that the app loads it from jsDelivr;
+      # otherwise wrangler aborts on the >25 MiB files even though they're unused.
+      - name: Drop vendored DuckDB wasm from the bundle
+        run: rm -rf ui/dist/wasm/duckdb
 
       - name: Add headers for service worker
         run: |

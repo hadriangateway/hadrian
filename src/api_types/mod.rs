@@ -21,6 +21,6 @@ pub use responses::{
     ResponsesReasoningEffort,
 };
 pub use videos::{
-    Character, CreateVideoRequest, RemixVideoRequest, Video, VideoDeleteResponse, VideoEditRequest,
-    VideoExtensionRequest, VideoListResponse, VideoVariant,
+    Character, CreateCharacterRequest, CreateVideoRequest, RemixVideoRequest, Video,
+    VideoDeleteResponse, VideoEditRequest, VideoExtensionRequest, VideoListResponse, VideoVariant,
 };

@@ -812,6 +812,7 @@ requests_per_minute = 120
         api_types::RemixVideoRequest,
         api_types::VideoEditRequest,
         api_types::VideoExtensionRequest,
+        api_types::CreateCharacterRequest,
         api_types::videos::VideoRef,
         api_types::videos::VideoError,
         api_types::Character,

@@ -20450,7 +20450,7 @@
           "content": {
             "multipart/form-data": {
               "schema": {
-                "type": "string"
+                "$ref": "#/components/schemas/CreateCharacterRequest"
               }
             }
           },
@@ -22887,6 +22887,26 @@
           "key_options": {
             "$ref": "#/components/schemas/OAuthKeyOptions",
             "description": "User's choices for the API key that will be issued on exchange.\nMirrors the fields shown in the self-service \"Create API Key\" modal."
+          }
+        }
+      },
+      "CreateCharacterRequest": {
+        "type": "object",
+        "description": "Create-character request (POST /v1/videos/characters).\n\nNote: this endpoint accepts multipart/form-data. The `video` field is a\nfile upload (the source clip), not a JSON field.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional model id, used only to resolve the provider (default `sora-2`)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name for the new character."
           }
         }
       },
