@@ -143,7 +143,7 @@ const featureMatrix: { name: string; profiles: Profile[]; href?: string }[] = [
   { name: "JSON schema", profiles: ["standard", "headless", "full"] },
   { name: "SAML SSO", profiles: ["headless", "full"], href: "/docs/features/saml" },
   {
-    name: "Kreuzberg OCR",
+    name: "xberg OCR",
     profiles: ["headless", "full"],
     href: "/docs/configuration/features/file-processing#document-extraction",
   },

@@ -22,7 +22,7 @@ yanked = "warn"
 ignore = [
     # rand 0.8.5 unsoundness requires a custom `log::Log` implementation that calls
     # `rand::rng()` during trace-level logging. Hadrian uses `tracing-subscriber`, so the
-    # affected code path is unreachable. Pulled in transitively via augurs, kreuzberg, sqlx.
+    # affected code path is unreachable. Pulled in transitively via augurs, sqlx, and oauth2.
     { id = "RUSTSEC-2026-0097", reason = "unreachable: hadrian has no custom log::Log impl that invokes rand::rng()" },
     # hickory-proto 0.25.2 NSEC3 closest-encloser unbounded loop. Pulled in only by
     # microsandbox-network (the `runtime-microsandbox` feature) for in-microVM DNS
@@ -38,13 +38,6 @@ ignore = [
     # allowlist. Fixed in hickory-proto 0.26.1, which microsandbox 0.4.5 cannot adopt.
     # Mirrors .cargo/audit.toml.
     { id = "RUSTSEC-2026-0119", reason = "limited reach: microsandbox-network in-microVM DNS only; no 0.25.x fix until microsandbox bump" },
-    # lopdf 0.40.0 stack overflow on deeply-nested PDFs (SIGABRT DoS). Pulled in
-    # only by kreuzberg 4.7.4 (the document-extraction features). Fixed in lopdf
-    # 0.42.0, but kreuzberg 4.7.4 pins lopdf 0.40, so there is no compatible
-    # update until kreuzberg bumps. Reachable only when a document-extraction
-    # feature is enabled and untrusted PDFs are parsed — mitigate with upstream
-    # size/complexity limits. Tracking for a kreuzberg bump. Mirrors .cargo/audit.toml.
-    { id = "RUSTSEC-2026-0187", reason = "no compatible fix: kreuzberg 4.7.4 pins lopdf 0.40 (<0.42 fix); reachable only with document-extraction + untrusted PDFs" },
 ]
 
 # Licenses - ensure all dependencies use acceptable licenses

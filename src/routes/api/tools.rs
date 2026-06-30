@@ -694,21 +694,32 @@ fn extract_identity(
 
 /// Convert HTML to readable text.
 ///
-/// When the `document-extraction-full` feature is enabled, uses kreuzberg to
+/// When the `document-extraction-full` feature is enabled, uses xberg to
 /// convert HTML to well-formatted markdown. Otherwise, falls back to a basic
 /// tag-stripping approach.
 async fn html_to_text(html: &str) -> String {
     #[cfg(feature = "document-extraction-full")]
     {
-        let config = kreuzberg::ExtractionConfig {
-            output_format: kreuzberg::OutputFormat::Markdown,
+        let config = xberg::ExtractionConfig {
+            output_format: xberg::OutputFormat::Markdown,
             use_cache: false,
             ..Default::default()
         };
-        match kreuzberg::extract_bytes(html.as_bytes(), "text/html", &config).await {
-            Ok(result) => return result.content,
+        let input = xberg::ExtractInput::from_bytes(html.as_bytes(), "text/html", None);
+        match xberg::extract(input, &config).await {
+            Ok(result) => {
+                // xberg wraps a single bytes input in `ExtractionResult::single`,
+                // so there is exactly one result on success — multiple results
+                // only come from URL crawling, which we don't use here.
+                if let Some(document) = result.results.into_iter().next() {
+                    return document.content;
+                }
+                tracing::debug!(
+                    "xberg HTML conversion produced no results, falling back to tag stripping"
+                );
+            }
             Err(e) => {
-                tracing::debug!(error = %e, "Kreuzberg HTML conversion failed, falling back to tag stripping");
+                tracing::debug!(error = %e, "xberg HTML conversion failed, falling back to tag stripping");
             }
         }
     }
