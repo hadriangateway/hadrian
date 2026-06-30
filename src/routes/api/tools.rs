@@ -708,6 +708,9 @@ async fn html_to_text(html: &str) -> String {
         let input = xberg::ExtractInput::from_bytes(html.as_bytes(), "text/html", None);
         match xberg::extract(input, &config).await {
             Ok(result) => {
+                // xberg wraps a single bytes input in `ExtractionResult::single`,
+                // so there is exactly one result on success — multiple results
+                // only come from URL crawling, which we don't use here.
                 if let Some(document) = result.results.into_iter().next() {
                     return document.content;
                 }

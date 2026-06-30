@@ -2047,7 +2047,7 @@ fn get_file_extension(filename: &str) -> String {
 /// Supported formats fall into three categories:
 /// 1. **Plain text** - Direct UTF-8 text files (txt, md, json, csv, code files, etc.)
 /// 2. **Rich documents** - Extracted via xberg (PDF, Office, OpenDocument, EPUB, RTF)
-/// 3. **Images with OCR** - Requires `ocr` feature in xberg (not yet enabled)
+/// 3. **Images with OCR** - Requires `ocr` feature in xberg and `enable_ocr = true` in config
 fn is_supported_file_type(extension: &str) -> bool {
     matches!(
         extension,
@@ -2184,8 +2184,10 @@ async fn extract_text(
         }
         .map_err(|e| DocumentProcessorError::DocumentExtraction(e.to_string()))?;
 
-        // xberg returns an envelope of per-document results; a single-input
-        // `extract` yields exactly one on success.
+        // xberg wraps a single bytes input in `ExtractionResult::single`, so
+        // `extract` returns exactly one result on success. Additional results
+        // only arise from URL crawling (URI inputs + the `url-ingestion`
+        // feature), neither of which we use, so taking the first is safe.
         result
             .results
             .into_iter()
