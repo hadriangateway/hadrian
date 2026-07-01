@@ -75,7 +75,7 @@ jobs:
         run: pnpm build
 
       - name: Add CNAME
-        run: echo "hadriangateway.com" > docs/out/CNAME
+        run: echo "docs.hadriangateway.com" > docs/out/CNAME
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
