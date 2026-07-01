@@ -634,6 +634,10 @@ pub struct PagesConfig {
     #[serde(default)]
     pub providers: PageConfig,
     #[serde(default)]
+    pub templates: PageConfig,
+    #[serde(default)]
+    pub skills: PageConfig,
+    #[serde(default)]
     pub usage: PageConfig,
     #[serde(default)]
     pub admin: AdminPagesConfig,

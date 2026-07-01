@@ -1,8 +1,10 @@
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3,
   BookOpen,
   Box,
+  Brain,
+  ClipboardPenLine,
   FolderOpen,
   Key,
   Menu,
@@ -10,10 +12,17 @@ import {
   Palette,
   Server,
   Shield,
+  ToolCase,
   WandSparkles,
   UsersRound,
 } from "lucide-react";
 import { Button } from "@/components/Button/Button";
+import {
+  Dropdown,
+  DropdownContent,
+  DropdownItem,
+  DropdownTrigger,
+} from "@/components/Dropdown/Dropdown";
 import { HadrianIcon } from "@/components/HadrianIcon/HadrianIcon";
 import { ThemeToggle } from "@/components/ThemeToggle/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu/UserMenu";
@@ -32,17 +41,44 @@ export interface NavItem {
   pageKey?: string;
 }
 
-export const navItems: NavItem[] = [
+/** A set of nav items collapsed under a single top-bar dropdown (e.g. "Resources"). */
+export interface NavGroup {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  items: NavItem[];
+}
+
+export type NavEntry = NavItem | NavGroup;
+
+function isNavGroup(entry: NavEntry): entry is NavGroup {
+  return "items" in entry;
+}
+
+/** Ordered top-bar navigation. Individual links plus grouped dropdowns. */
+export const navEntries: NavEntry[] = [
   { to: "/chat", icon: MessageSquare, label: "Chat", pageKey: "chat" },
   { to: "/studio", icon: Palette, label: "Studio", pageKey: "studio" },
   { to: "/projects", icon: FolderOpen, label: "Projects", pageKey: "projects" },
   { to: "/teams", icon: UsersRound, label: "Teams", pageKey: "teams" },
-  { to: "/knowledge-bases", icon: BookOpen, label: "Knowledge", pageKey: "knowledge_bases" },
-  { to: "/containers", icon: Box, label: "Containers", pageKey: "containers" },
-  { to: "/api-keys", icon: Key, label: "API Keys", pageKey: "api_keys" },
-  { to: "/providers", icon: Server, label: "Providers", pageKey: "providers" },
   { to: "/usage", icon: BarChart3, label: "Usage", pageKey: "usage" },
+  {
+    label: "Resources",
+    icon: ToolCase,
+    items: [
+      { to: "/api-keys", icon: Key, label: "API Keys", pageKey: "api_keys" },
+      { to: "/containers", icon: Box, label: "Containers", pageKey: "containers" },
+      { to: "/knowledge-bases", icon: BookOpen, label: "Knowledge", pageKey: "knowledge_bases" },
+      { to: "/providers", icon: Server, label: "Providers", pageKey: "providers" },
+      { to: "/skills", icon: Brain, label: "Skills", pageKey: "skills" },
+      { to: "/templates", icon: ClipboardPenLine, label: "Templates", pageKey: "templates" },
+    ],
+  },
 ];
+
+/** Flattened list of every destination, consumed by the mobile menu in UserMenu. */
+export const navItems: NavItem[] = navEntries.flatMap((entry) =>
+  isNavGroup(entry) ? entry.items : [entry]
+);
 
 export const adminNavItem: NavItem = {
   to: "/admin",
@@ -70,15 +106,25 @@ export function Header({ onMenuClick, showMenuButton = false, className }: Heade
       ? config.branding.logo_dark_url
       : config?.branding.logo_url;
 
-  // Filter nav items by page visibility
-  const visibleNavItems = navItems.filter((item) => {
+  const isItemVisible = (item: NavItem) => {
     if (!item.pageKey) return true;
     return getPageConfig(config.pages, item.pageKey).status !== "disabled";
-  });
+  };
+
+  // Filter nav entries by page visibility; drop groups left with no visible items.
+  const visibleNavEntries = navEntries.reduce<NavEntry[]>((acc, entry) => {
+    if (isNavGroup(entry)) {
+      const items = entry.items.filter(isItemVisible);
+      if (items.length > 0) acc.push({ ...entry, items });
+    } else if (isItemVisible(entry)) {
+      acc.push(entry);
+    }
+    return acc;
+  }, []);
 
   // Only show admin nav if admin is enabled AND user has admin access
   const showAdmin = config?.admin.enabled && hasAdminAccess(user);
-  const allNavItems = showAdmin ? [...visibleNavItems, adminNavItem] : visibleNavItems;
+  const allNavEntries = showAdmin ? [...visibleNavEntries, adminNavItem] : visibleNavEntries;
 
   const isActive = (item: NavItem) => {
     if (item.matchPrefix) {
@@ -126,13 +172,16 @@ export function Header({ onMenuClick, showMenuButton = false, className }: Heade
         role="navigation"
         aria-label="Main navigation"
       >
-        {allNavItems.map((item) => {
-          const Icon = item.icon;
-          const active = isActive(item);
+        {allNavEntries.map((entry) => {
+          if (isNavGroup(entry)) {
+            return <NavGroupMenu key={entry.label} group={entry} isActive={isActive} />;
+          }
+          const Icon = entry.icon;
+          const active = isActive(entry);
           return (
             <NavLink
-              key={item.to}
-              to={item.to}
+              key={entry.to}
+              to={entry.to}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
                 "hover:bg-muted hover:text-foreground",
@@ -140,7 +189,7 @@ export function Header({ onMenuClick, showMenuButton = false, className }: Heade
               )}
             >
               <Icon className="h-4 w-4" aria-hidden="true" />
-              <span>{item.label}</span>
+              <span>{entry.label}</span>
             </NavLink>
           );
         })}
@@ -164,5 +213,49 @@ export function Header({ onMenuClick, showMenuButton = false, className }: Heade
         <UserMenu />
       </div>
     </header>
+  );
+}
+
+/** Top-bar dropdown that collapses a group of nav items (e.g. "Resources"). */
+function NavGroupMenu({
+  group,
+  isActive,
+}: {
+  group: NavGroup;
+  isActive: (item: NavItem) => boolean;
+}) {
+  const navigate = useNavigate();
+  const Icon = group.icon;
+  const groupActive = group.items.some(isActive);
+
+  return (
+    <Dropdown>
+      <DropdownTrigger
+        variant="ghost"
+        className={cn(
+          "gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium",
+          "hover:bg-muted hover:text-foreground",
+          groupActive ? "bg-muted text-foreground" : "text-muted-foreground"
+        )}
+      >
+        <Icon className="h-4 w-4" aria-hidden="true" />
+        <span>{group.label}</span>
+      </DropdownTrigger>
+      <DropdownContent align="start" className="w-48">
+        {group.items.map((item) => {
+          const ItemIcon = item.icon;
+          return (
+            <DropdownItem
+              key={item.to}
+              onClick={() => navigate(item.to)}
+              className={cn(isActive(item) && "bg-accent text-accent-foreground")}
+            >
+              <ItemIcon className="mr-2 h-4 w-4" />
+              {item.label}
+            </DropdownItem>
+          );
+        })}
+      </DropdownContent>
+    </Dropdown>
   );
 }

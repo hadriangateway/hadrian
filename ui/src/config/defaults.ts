@@ -11,6 +11,8 @@ export const defaultPagesConfig: PagesConfig = {
   containers: enabledPage,
   api_keys: enabledPage,
   providers: enabledPage,
+  templates: enabledPage,
+  skills: enabledPage,
   usage: enabledPage,
   admin: {
     dashboard: enabledPage,

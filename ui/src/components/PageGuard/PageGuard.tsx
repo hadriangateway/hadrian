@@ -14,6 +14,8 @@ const mainPageOrder: MainPageKey[] = [
   "containers",
   "api_keys",
   "providers",
+  "templates",
+  "skills",
   "usage",
 ];
 
@@ -26,6 +28,8 @@ const mainPageRoutes: Record<MainPageKey, string> = {
   containers: "/containers",
   api_keys: "/api-keys",
   providers: "/providers",
+  templates: "/templates",
+  skills: "/skills",
   usage: "/usage",
 };
 
