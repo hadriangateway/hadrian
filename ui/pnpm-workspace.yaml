@@ -4,9 +4,9 @@ allowBuilds:
   esbuild: true
   msw: true
 auditConfig:
-  ignoreCves:
-    - CVE-2025-69873
-    - CVE-2026-26996
+  ignoreGhsas:
+    - GHSA-2g4f-4pwh-qvx6 # CVE-2025-69873: ajv ReDoS via $data option
+    - GHSA-3ppc-4f35-3m26 # CVE-2026-26996: minimatch ReDoS via repeated wildcards
 overrides:
   "glob>minimatch": ">=10.2.3"
   "filelist>minimatch": ">=10.2.3"
