@@ -19,6 +19,8 @@ const ApiKeysPage = lazy(() => import("@/pages/ApiKeysPage"));
 const ApiKeyDetailPage = lazy(() => import("@/pages/ApiKeyDetailPage"));
 const MyUsagePage = lazy(() => import("@/pages/MyUsagePage"));
 const MyProvidersPage = lazy(() => import("@/pages/MyProvidersPage"));
+const TemplatesPage = lazy(() => import("@/pages/TemplatesPage"));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
 const SelfServiceProjectDetailPage = lazy(() => import("@/pages/project/ProjectDetailPage"));
 const StudioPage = lazy(() => import("@/pages/studio/StudioPage"));
 const ChatPage = lazy(() => import("@/pages/chat/ChatPage"));
@@ -228,6 +230,30 @@ export function AppRoutes() {
             <Suspense fallback={<PageLoader />}>
               <PageGuard pageKey="providers" pageTitle="Providers">
                 <MyProvidersPage />
+              </PageGuard>
+            </Suspense>
+          }
+        />
+
+        {/* Templates route (self-service) */}
+        <Route
+          path="/templates"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageGuard pageKey="templates" pageTitle="Templates">
+                <TemplatesPage />
+              </PageGuard>
+            </Suspense>
+          }
+        />
+
+        {/* Skills route (self-service) */}
+        <Route
+          path="/skills"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageGuard pageKey="skills" pageTitle="Skills">
+                <SkillsPage />
               </PageGuard>
             </Suspense>
           }

@@ -14,6 +14,8 @@ export interface PagesConfig {
   containers: PageConfig;
   api_keys: PageConfig;
   providers: PageConfig;
+  templates: PageConfig;
+  skills: PageConfig;
   usage: PageConfig;
   admin: AdminPagesConfig;
 }
