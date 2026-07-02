@@ -73,6 +73,9 @@ export default function SkillsPage() {
 
   const columns = createSkillColumns(handleEdit, handleDelete);
 
+  // Without a user id the server derives the owner from the caller's auth scope.
+  const ownerOverride = user?.id ? ({ type: "user", user_id: user.id } as const) : undefined;
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
@@ -125,31 +128,27 @@ export default function SkillsPage() {
         </CardContent>
       </Card>
 
-      {user?.id && (
-        <>
-          <SkillFormModal
-            open={isFormOpen}
-            onClose={() => {
-              setIsFormOpen(false);
-              setEditingSkill(null);
-            }}
-            editingSkill={editingSkill}
-            ownerOverride={{ type: "user", user_id: user.id }}
-            onSaved={() => {
-              toast({
-                title: editingSkill ? "Skill updated" : "Skill created",
-                type: "success",
-              });
-            }}
-          />
-          <SkillImportModal
-            open={importOpen}
-            onClose={() => setImportOpen(false)}
-            ownerOverride={{ type: "user", user_id: user.id }}
-            initialTab={importTab}
-          />
-        </>
-      )}
+      <SkillFormModal
+        open={isFormOpen}
+        onClose={() => {
+          setIsFormOpen(false);
+          setEditingSkill(null);
+        }}
+        editingSkill={editingSkill}
+        ownerOverride={ownerOverride}
+        onSaved={() => {
+          toast({
+            title: editingSkill ? "Skill updated" : "Skill created",
+            type: "success",
+          });
+        }}
+      />
+      <SkillImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        ownerOverride={ownerOverride}
+        initialTab={importTab}
+      />
     </div>
   );
 }

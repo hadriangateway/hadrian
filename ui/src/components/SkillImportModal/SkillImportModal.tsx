@@ -31,7 +31,8 @@ type ImportTab = "github" | "filesystem";
 export interface SkillImportModalProps {
   open: boolean;
   onClose: () => void;
-  ownerOverride: SkillOwner;
+  /** Owner for imported skills. When omitted the server derives it from the caller's auth scope. */
+  ownerOverride?: SkillOwner;
   /** Which tab to open initially. Defaults to "github". */
   initialTab?: ImportTab;
 }

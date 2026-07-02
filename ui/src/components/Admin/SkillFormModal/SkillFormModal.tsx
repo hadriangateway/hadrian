@@ -93,7 +93,8 @@ export interface SkillFormModalProps {
   open: boolean;
   onClose: () => void;
   editingSkill?: SkillResource | null;
-  ownerOverride: SkillOwner;
+  /** Owner for created skills. When omitted the server derives it from the caller's auth scope. */
+  ownerOverride?: SkillOwner;
   onSaved?: (skill: SkillResource) => void;
 }
 
