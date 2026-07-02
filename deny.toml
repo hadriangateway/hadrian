@@ -38,6 +38,15 @@ ignore = [
     # allowlist. Fixed in hickory-proto 0.26.1, which microsandbox 0.4.5 cannot adopt.
     # Mirrors .cargo/audit.toml.
     { id = "RUSTSEC-2026-0119", reason = "limited reach: microsandbox-network in-microVM DNS only; no 0.25.x fix until microsandbox bump" },
+    # quick-xml < 0.41 quadratic duplicate-attribute check. Fixed only in quick-xml
+    # 0.41.0 (2026-06-29); every dependent still pins an older series: samael ^0.37.2
+    # (SAML SSO), calamine ^0.39 and xberg/pdf_oxide/office_oxide ^0.40 (document
+    # extraction). All are at their latest releases, so no upgrade path exists yet.
+    # DoS only (CPU exhaustion). Drop when upstream bumps land. Mirrors .cargo/audit.toml.
+    { id = "RUSTSEC-2026-0194", reason = "no fixed upstream releases: samael/calamine/xberg all pin pre-0.41 quick-xml; DoS only" },
+    # quick-xml < 0.41 unbounded namespace-declaration allocation in NsReader. Same
+    # provenance and status as RUSTSEC-2026-0194. Mirrors .cargo/audit.toml.
+    { id = "RUSTSEC-2026-0195", reason = "no fixed upstream releases: samael/calamine/xberg all pin pre-0.41 quick-xml; DoS only" },
 ]
 
 # Licenses - ensure all dependencies use acceptable licenses
