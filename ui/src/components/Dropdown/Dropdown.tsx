@@ -431,9 +431,11 @@ export function DropdownItem({
     setItemIndex(index);
   }, [registerItem]);
 
-  // Focus management when highlighted
+  // Focus management when highlighted. Guard on itemIndex >= 0: before
+  // registration both itemIndex and highlightedIndex are -1, and without the
+  // guard every item would steal focus on mount (the last one winning).
   useEffect(() => {
-    if (highlightedIndex === itemIndex && itemRef.current) {
+    if (itemIndex >= 0 && highlightedIndex === itemIndex && itemRef.current) {
       itemRef.current.focus();
     }
   }, [highlightedIndex, itemIndex]);
