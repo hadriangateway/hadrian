@@ -16,4 +16,15 @@ ignore = [
     # microsandbox bump. Hadrian's own resolver uses hickory-resolver 0.26.1.
     "RUSTSEC-2026-0118",
     "RUSTSEC-2026-0119",
+    # quick-xml < 0.41 DoS: quadratic duplicate-attribute check (0194) and unbounded
+    # namespace-declaration allocation in NsReader (0195). Both fixed only in 0.41.0
+    # (published 2026-06-29); no dependent has released a 0.41 bump yet:
+    #   - 0.37.5 via samael ^0.37.2 (latest 0.0.21, git master unchanged) — SAML SSO
+    #   - 0.39.2 via calamine ^0.39 (latest 0.35.0) — xberg excel extraction
+    #   - 0.40.1 via xberg/pdf_oxide/office_oxide ^0.40 (all latest) — xberg office/pdf
+    # DoS only (CPU/memory exhaustion), no memory unsafety or code execution. SAML and
+    # document extraction do parse untrusted XML, so drop these ignores as soon as
+    # upstream releases pick up quick-xml 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

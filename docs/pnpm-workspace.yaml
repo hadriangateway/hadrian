@@ -1,0 +1,5 @@
+# pnpm 11 blocks dependency build scripts unless allowed here.
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true

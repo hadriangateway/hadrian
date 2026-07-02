@@ -96,6 +96,10 @@ Server runs on `http://0.0.0.0:8080` by default.
 
 The UI is in `ui/` — React 19, TypeScript, TailwindCSS, Storybook, @tanstack/react-query, hey-api.
 
+pnpm 11 no longer reads the `"pnpm"` field in package.json: settings (`overrides`, `auditConfig`) and
+build-script allowances (`allowBuilds` — pnpm 11 blocks dependency build scripts by default) live in
+`pnpm-workspace.yaml` next to each package.json (`ui/`, `docs/`, `deploy/tests/`).
+
 ```bash
 cd ui
 pnpm install           # Install dependencies

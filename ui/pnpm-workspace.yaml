@@ -1,0 +1,35 @@
+# pnpm settings (moved from the package.json "pnpm" field, which pnpm 11 no longer reads).
+allowBuilds:
+  "@modelcontextprotocol/ext-apps": true
+  esbuild: true
+  msw: true
+auditConfig:
+  ignoreGhsas:
+    - GHSA-2g4f-4pwh-qvx6 # CVE-2025-69873: ajv ReDoS via $data option
+    - GHSA-3ppc-4f35-3m26 # CVE-2026-26996: minimatch ReDoS via repeated wildcards
+overrides:
+  "glob>minimatch": ">=10.2.3"
+  "filelist>minimatch": ">=10.2.3"
+  "@typescript-eslint/typescript-estree>minimatch": ">=10.2.3"
+  "eslint>minimatch": "~3.1.4"
+  "@eslint/config-array>minimatch": "~3.1.4"
+  "@eslint/eslintrc>minimatch": "~3.1.4"
+  "eslint-plugin-jsx-a11y>minimatch": "~3.1.4"
+  "@rollup/plugin-terser>serialize-javascript": ">=7.0.3"
+  qs: ">=6.14.2"
+  "workbox-build>ajv": ">=8.18.0"
+  "@modelcontextprotocol/sdk>ajv": ">=8.18.0"
+  hono: ">=4.12.25"
+  "@modelcontextprotocol/sdk>@hono/node-server": ">=1.19.10"
+  "@modelcontextprotocol/sdk>express-rate-limit": ">=8.2.2"
+  flatted: ">=3.4.2"
+  picomatch: ">=4.0.4"
+  "@rollup/pluginutils>picomatch": ">=2.3.2 <4.0.0 || >=4.0.4"
+  lodash: ">=4.18.1"
+  lodash-es: ">=4.18.1"
+  defu: ">=6.1.7"
+  vite: ">=7.3.5 <8"
+  ws: ">=8.21.0"
+  fast-uri: ">=3.1.2"
+  "@babel/plugin-transform-modules-systemjs": ">=7.29.4"
+  esbuild: ">=0.28.1"

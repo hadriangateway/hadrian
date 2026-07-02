@@ -4,13 +4,13 @@
 FROM node:24-slim AS frontend-builder
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
 
 WORKDIR /app
 
 # Copy package files for dependency caching
-COPY ui/package.json ui/pnpm-lock.yaml ./ui/
-COPY docs/package.json docs/pnpm-lock.yaml docs/next.config.mjs docs/source.config.ts ./docs/
+COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./ui/
+COPY docs/package.json docs/pnpm-lock.yaml docs/pnpm-workspace.yaml docs/next.config.mjs docs/source.config.ts ./docs/
 
 # Install UI dependencies
 WORKDIR /app/ui
