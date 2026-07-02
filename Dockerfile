@@ -4,7 +4,7 @@
 FROM node:24-slim AS frontend-builder
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@11 --activate
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
 
 WORKDIR /app
 
