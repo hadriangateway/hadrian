@@ -316,6 +316,7 @@ pub async fn web_search(
             extract_identity(&auth, &state);
         usage_buffer.push(UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
+            client_request_id: None,
             api_key_id,
             user_id,
             org_id,
@@ -609,6 +610,7 @@ pub async fn web_fetch(
             extract_identity(&auth, &state);
         usage_buffer.push(UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
+            client_request_id: None,
             api_key_id,
             user_id,
             org_id,

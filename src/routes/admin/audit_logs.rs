@@ -29,6 +29,10 @@ fn get_services(state: &AppState) -> Result<&Services, AdminError> {
 }
 
 /// List audit logs
+///
+/// When neither `from` nor `to` is supplied, results default to the last
+/// 7 days (the audit log is append-only and an unbounded scan would hit
+/// the entire table). Pass an explicit `from` for older entries.
 #[cfg_attr(feature = "utoipa", utoipa::path(
     get,
     path = "/admin/v1/audit-logs",
@@ -36,7 +40,7 @@ fn get_services(state: &AppState) -> Result<&Services, AdminError> {
     operation_id = "audit_log_list",
     params(AuditLogQuery),
     responses(
-        (status = 200, description = "List of audit log entries", body = AuditLogListResponse),
+        (status = 200, description = "List of audit log entries (defaults to the last 7 days when no from/to range is given)", body = AuditLogListResponse),
         (status = 400, description = "Invalid cursor or direction", body = crate::openapi::ErrorResponse),
     )
 ))]
@@ -47,7 +51,10 @@ pub async fn list(
 ) -> Result<Json<AuditLogListResponse>, AdminError> {
     let services = get_services(&state)?;
 
-    let limit = query.limit.unwrap_or(100);
+    // Clamp to [1, 1000] like the usage-log endpoints: previously any limit
+    // was honored verbatim (including negative values, which SQLite treats
+    // as "no limit").
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
 
     // Validate direction if provided
     if let Some(ref dir) = query.direction
@@ -60,10 +67,18 @@ pub async fn list(
         )));
     }
 
+    // Reject garbage cursors with the 400 the OpenAPI annotation promises;
+    // the repo layer surfaces decode failures as 500 database errors.
+    if let Some(ref c) = query.cursor {
+        crate::db::repos::Cursor::decode(c)
+            .map_err(|e| AdminError::BadRequest(format!("Invalid cursor: {}", e)))?;
+    }
+
     // Cap unbounded scans: when no time range is supplied, default to the last
     // 7 days. The audit log is append-only and grows fast; an unfiltered list
     // hits the entire table with `ORDER BY ts DESC` which can DoS the gateway.
     let mut query = query;
+    query.limit = Some(limit);
     if query.from.is_none() && query.to.is_none() {
         query.from = Some(chrono::Utc::now() - chrono::Duration::days(7));
     }

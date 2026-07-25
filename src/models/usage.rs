@@ -13,6 +13,8 @@ pub struct UsageLogRecord {
     pub id: Uuid,
     pub recorded_at: DateTime<Utc>,
     pub request_id: String,
+    /// Client-supplied correlation id (X-Request-Id / X-Client-Request-Id)
+    pub client_request_id: Option<String>,
     pub api_key_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub org_id: Option<Uuid>,
@@ -68,8 +70,13 @@ pub struct UsageLogRecord {
 /// `api_key_id` is None for session-based users (OIDC/SAML/proxy auth).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageLogEntry {
-    /// Unique request identifier for idempotency (prevents duplicate charges)
+    /// Unique request identifier for idempotency (prevents duplicate charges).
+    /// Always server-generated: a client-controllable value here would let a
+    /// client suppress its own billing rows via the duplicate-id dedupe.
     pub request_id: String,
+    /// Client-supplied correlation id (X-Request-Id / X-Client-Request-Id).
+    /// Correlation only — never keys or dedupes rows.
+    pub client_request_id: Option<String>,
     /// API key used (None for session-based auth)
     pub api_key_id: Option<Uuid>,
     /// User who made the request (from session or user-owned API key)
@@ -104,7 +111,7 @@ pub struct UsageLogEntry {
     pub cancelled: bool,
     /// HTTP status code of the response
     pub status_code: Option<i16>,
-    /// Where the cost data came from (provider, provider_config, pricing_config, catalog, none)
+    /// Where the cost data came from (provider, admin, provider_config, pricing_config, catalog, none)
     #[serde(default)]
     pub pricing_source: CostPricingSource,
     /// Number of images generated (for image generation requests)

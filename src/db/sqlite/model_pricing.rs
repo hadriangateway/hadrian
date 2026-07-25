@@ -539,6 +539,23 @@ impl ModelPricingRepo for SqliteModelPricingRepo {
         Ok(row.col::<i64>("count"))
     }
 
+    async fn list_billing_overlay_rows(&self) -> DbResult<Vec<DbModelPricing>> {
+        let rows = query(
+            r#"
+            SELECT id, owner_type, owner_id, provider, model,
+                   input_per_1m_tokens, output_per_1m_tokens, per_image, per_request,
+                   cached_input_per_1m_tokens, cache_write_per_1m_tokens, reasoning_per_1m_tokens,
+                   per_second, per_1m_characters, source, created_at, updated_at
+            FROM model_pricing
+            WHERE owner_type IS NULL OR owner_type = 'organization'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(Self::row_to_pricing).collect()
+    }
+
     async fn update(&self, id: Uuid, input: UpdateModelPricing) -> DbResult<DbModelPricing> {
         let now = truncate_to_millis(chrono::Utc::now());
 

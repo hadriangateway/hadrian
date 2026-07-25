@@ -283,6 +283,66 @@ impl ProviderErrorParser for AnthropicErrorParser {
     }
 }
 
+/// OpenAI-compatible provider error parser.
+///
+/// Handles the standard OpenAI shape `{"error": {"message": "...", "type": "...",
+/// "code": "..."}}` plus aggregator variants: OpenRouter uses a numeric `code`
+/// and attaches top-level account fields (e.g. `user_id`) that identify the
+/// gateway operator's upstream account and must never be forwarded to clients.
+/// Only the message is preserved; everything else is re-derived.
+pub struct OpenAiErrorParser;
+
+impl ProviderErrorParser for OpenAiErrorParser {
+    fn parse_error(
+        status: StatusCode,
+        _headers: &http::HeaderMap,
+        body: &[u8],
+    ) -> ProviderErrorInfo {
+        let upstream_error: serde_json::Value =
+            serde_json::from_slice(body).unwrap_or_else(|_| serde_json::json!({}));
+
+        let error_obj = &upstream_error["error"];
+        let upstream_type = error_obj["type"].as_str();
+        let message = error_obj["message"]
+            .as_str()
+            .unwrap_or("Unknown upstream provider error")
+            .to_string();
+
+        let error_type = if let Some(t) = upstream_type {
+            match t {
+                "invalid_request_error" => OpenAiErrorType::InvalidRequest,
+                "authentication_error" => OpenAiErrorType::Authentication,
+                "rate_limit_error" => OpenAiErrorType::RateLimit,
+                "server_error" => OpenAiErrorType::Server,
+                _ => OpenAiErrorType::Api,
+            }
+        } else {
+            match status.as_u16() {
+                400 | 404 | 422 => OpenAiErrorType::InvalidRequest,
+                401 | 403 => OpenAiErrorType::Authentication,
+                429 => OpenAiErrorType::RateLimit,
+                500..=599 => OpenAiErrorType::Server,
+                _ => OpenAiErrorType::Api,
+            }
+        };
+
+        // OpenRouter sends `code` as a bare HTTP status number; fall back to a
+        // status-derived code so the field is always a meaningful string.
+        let code = error_obj["code"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| {
+                status
+                    .canonical_reason()
+                    .unwrap_or("upstream_error")
+                    .to_lowercase()
+                    .replace(' ', "_")
+            });
+
+        ProviderErrorInfo::new(error_type, message, code)
+    }
+}
+
 #[cfg(feature = "provider-azure")]
 /// Azure OpenAI error parser.
 ///

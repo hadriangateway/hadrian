@@ -41,6 +41,8 @@ pub enum BackgroundExecuteError {
     Resolution(String),
     #[error("provider execution failed: {0}")]
     Execution(String),
+    #[error("upstream returned HTTP {status}: {detail}")]
+    UpstreamStatus { status: u16, detail: String },
     #[error("response store missing — background mode requires persistence")]
     NoStore,
 }
@@ -55,6 +57,9 @@ impl BackgroundExecuteError {
             // Provider / network / streaming — the same row may
             // succeed if we wait and try again.
             Self::Execution(_) => true,
+            // Upstream overload / rate limiting / server errors are worth
+            // retrying; other statuses (invalid model, auth) are permanent.
+            Self::UpstreamStatus { status, .. } => *status == 429 || *status >= 500,
             // Everything else is a config / structural issue: the
             // payload won't deserialise differently, the routing
             // won't resolve a missing provider, etc.
@@ -172,13 +177,31 @@ pub async fn execute_persisted_response(
         payload.previous_response_id = None;
     }
 
-    // Route the model.
-    let routed = route_models_extended(
-        payload.model.as_deref(),
-        payload.models.as_deref(),
-        &state.config.providers,
-    )
-    .map_err(|e| BackgroundExecuteError::Routing(e.to_string()))?;
+    // Route using the provider persisted at admission time. The row's
+    // `model` column is already stripped of its provider prefix, so
+    // re-parsing it from scratch can match a *different* configured
+    // provider — e.g. "openai/gpt-4o-mini" admitted via openrouter would
+    // re-route to the operator's `openai` provider and execute against
+    // api.openai.com. Rebuild the explicit "provider/model" form instead;
+    // fall back to payload-based routing only when the persisted provider
+    // is not in the static config (dynamic/scoped providers).
+    let persisted_provider = record
+        .provider
+        .as_deref()
+        .filter(|p| state.config.providers.get(p).is_some());
+    let qualified_model =
+        persisted_provider.map(|provider| format!("{}/{}", provider, record.model));
+    let routed = if let Some(ref qualified) = qualified_model {
+        crate::routing::route_model_extended(Some(qualified.as_str()), &state.config.providers)
+            .map_err(|e| BackgroundExecuteError::Routing(e.to_string()))?
+    } else {
+        route_models_extended(
+            payload.model.as_deref(),
+            payload.models.as_deref(),
+            &state.config.providers,
+        )
+        .map_err(|e| BackgroundExecuteError::Routing(e.to_string()))?
+    };
 
     let resolved = resolver::resolve_to_provider(
         routed,
@@ -323,6 +346,28 @@ pub async fn execute_persisted_response(
 
     let ExecutionResult { response, .. } = exec_result;
 
+    // An upstream 4xx/5xx response body never carries terminal SSE events,
+    // so the persister would leave the row `in_progress` until the reaper's
+    // 1-hour backstop, with the error silently discarded. Surface it here so
+    // the worker's retry/failure path owns the terminal write.
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        warn!(
+            response_id = %record.id,
+            status = %status,
+            detail = %detail,
+            "Background execution got an error response from upstream"
+        );
+        return Err(BackgroundExecuteError::UpstreamStatus {
+            status: status.as_u16(),
+            detail,
+        });
+    }
+
     // Cancellation: use the row's in-process watch channel directly.
     // The cross-replica case is handled by a single replica-wide
     // poller (`jobs::responses_cancel_poller`) that periodically
@@ -436,6 +481,7 @@ pub async fn execute_persisted_response(
     // persisted row instead of the live auth extension.
     let usage_entry = crate::models::UsageLogEntry {
         request_id: uuid::Uuid::new_v4().to_string(),
+        client_request_id: None,
         api_key_id: record.api_key_id,
         user_id: record.user_id,
         org_id: Some(record.org_id),
@@ -529,6 +575,9 @@ pub async fn execute_persisted_response(
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
             usage_drain: Some(&state.usage_drain),
+            #[cfg(feature = "server")]
+            settlement_cell: None, // Background runs hold no middleware reservations
+            estimated_input_tokens: 0,
             max_response_body_bytes: state.config.server.max_response_body_bytes,
             streaming_idle_timeout_secs: state.config.server.streaming_idle_timeout_secs,
             validation_config: &state.config.observability.response_validation,
@@ -577,6 +626,7 @@ pub async fn mark_background_failure(
             BackgroundExecuteError::Routing(_) => "routing_failed",
             BackgroundExecuteError::Resolution(_) => "provider_resolution_failed",
             BackgroundExecuteError::Execution(_) => "execution_failed",
+            BackgroundExecuteError::UpstreamStatus { .. } => "upstream_error",
             BackgroundExecuteError::NoStore => "internal_error",
         },
         "message": err.to_string(),

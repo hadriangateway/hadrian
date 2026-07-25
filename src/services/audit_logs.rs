@@ -103,7 +103,7 @@ impl AuditLogService {
 
     /// List audit logs with optional filtering and pagination
     ///
-    /// Supports both offset-based and cursor-based pagination.
+    /// Supports cursor-based pagination (`cursor` + `direction`).
     pub async fn list(&self, query: AuditLogQuery) -> DbResult<ListResult<AuditLog>> {
         self.db.audit_logs().list(query).await
     }

@@ -151,4 +151,15 @@ impl ModelPricingService {
     pub async fn bulk_upsert(&self, entries: Vec<CreateModelPricing>) -> DbResult<usize> {
         self.db.model_pricing().bulk_upsert(entries).await
     }
+
+    /// Reload the in-memory billing overlay from the DB (global and
+    /// organization-scoped rows only; see `pricing::ModelPricingOverlay`).
+    /// Returns the number of entries applied.
+    pub async fn refresh_overlay(
+        &self,
+        overlay: &crate::pricing::ModelPricingOverlay,
+    ) -> DbResult<usize> {
+        let rows = self.db.model_pricing().list_billing_overlay_rows().await?;
+        Ok(overlay.load_from_rows(&rows))
+    }
 }

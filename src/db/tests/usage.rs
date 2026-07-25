@@ -75,6 +75,7 @@ fn create_usage_entry(
 ) -> UsageLogEntry {
     UsageLogEntry {
         request_id: Uuid::new_v4().to_string(),
+        client_request_id: None,
         api_key_id: Some(api_key_id),
         user_id: None,
         org_id: None,
@@ -111,6 +112,22 @@ fn create_usage_entry(
     }
 }
 
+/// A server-side tool usage entry (`record_type = "tool"`).
+fn create_tool_usage_entry(api_key_id: Uuid, cost_microcents: i64) -> UsageLogEntry {
+    UsageLogEntry {
+        record_type: "tool".to_string(),
+        tool_name: Some("web_search".to_string()),
+        ..create_usage_entry(
+            api_key_id,
+            "web_search",
+            "openai",
+            0,
+            0,
+            Some(cost_microcents),
+        )
+    }
+}
+
 fn create_usage_entry_with_referer(
     api_key_id: Uuid,
     model: &str,
@@ -119,6 +136,7 @@ fn create_usage_entry_with_referer(
 ) -> UsageLogEntry {
     UsageLogEntry {
         request_id: Uuid::new_v4().to_string(),
+        client_request_id: None,
         api_key_id: Some(api_key_id),
         user_id: None,
         org_id: None,
@@ -163,6 +181,7 @@ fn create_usage_entry_at_time(
 ) -> UsageLogEntry {
     UsageLogEntry {
         request_id: Uuid::new_v4().to_string(),
+        client_request_id: None,
         api_key_id: Some(api_key_id),
         user_id: None,
         org_id: None,
@@ -217,6 +236,7 @@ fn create_attributed_usage_entry(
 ) -> UsageLogEntry {
     UsageLogEntry {
         request_id: Uuid::new_v4().to_string(),
+        client_request_id: None,
         api_key_id: attr.api_key_id,
         user_id: attr.user_id,
         org_id: attr.org_id,
@@ -258,11 +278,24 @@ fn today_range() -> DateRange {
     DateRange {
         start: today,
         end: today,
+        record_type: None,
+    }
+}
+
+/// Today's range restricted to a single record type ("model" or "tool").
+fn today_range_of(record_type: &str) -> DateRange {
+    DateRange {
+        record_type: Some(record_type.to_string()),
+        ..today_range()
     }
 }
 
 fn date_range(start: chrono::NaiveDate, end: chrono::NaiveDate) -> DateRange {
-    DateRange { start, end }
+    DateRange {
+        start,
+        end,
+        record_type: None,
+    }
 }
 
 // ============================================================================
@@ -1892,6 +1925,96 @@ pub async fn test_team_aggregation_excludes_other_teams(ctx: &UsageTestContext<'
 }
 
 // ============================================================================
+// Record Type Filter Tests
+// ============================================================================
+
+pub async fn test_get_summary_record_type_filter(ctx: &UsageTestContext<'_>) {
+    let org_id = ctx.create_test_org("rt-org").await;
+    let api_key_id = ctx.create_test_api_key(org_id, "rt-key").await;
+
+    ctx.usage_repo
+        .log(create_usage_entry(
+            api_key_id,
+            "gpt-4",
+            "openai",
+            100,
+            50,
+            Some(500),
+        ))
+        .await
+        .unwrap();
+    ctx.usage_repo
+        .log(create_tool_usage_entry(api_key_id, 250))
+        .await
+        .unwrap();
+
+    // No filter includes both record types
+    let all = ctx
+        .usage_repo
+        .get_summary(api_key_id, today_range())
+        .await
+        .unwrap();
+    assert_eq!(all.request_count, 2);
+    assert_eq!(all.total_cost_microcents, 750);
+
+    // "model" excludes the tool row
+    let models = ctx
+        .usage_repo
+        .get_summary(api_key_id, today_range_of("model"))
+        .await
+        .unwrap();
+    assert_eq!(models.request_count, 1);
+    assert_eq!(models.total_cost_microcents, 500);
+
+    // "tool" excludes the model row
+    let tools = ctx
+        .usage_repo
+        .get_summary(api_key_id, today_range_of("tool"))
+        .await
+        .unwrap();
+    assert_eq!(tools.request_count, 1);
+    assert_eq!(tools.total_cost_microcents, 250);
+}
+
+pub async fn test_get_by_model_record_type_filter(ctx: &UsageTestContext<'_>) {
+    let org_id = ctx.create_test_org("rt-model-org").await;
+    let api_key_id = ctx.create_test_api_key(org_id, "rt-model-key").await;
+
+    ctx.usage_repo
+        .log(create_usage_entry(
+            api_key_id,
+            "gpt-4",
+            "openai",
+            100,
+            50,
+            Some(500),
+        ))
+        .await
+        .unwrap();
+    ctx.usage_repo
+        .log(create_tool_usage_entry(api_key_id, 250))
+        .await
+        .unwrap();
+
+    // Grouped aggregation honors the filter too
+    let models = ctx
+        .usage_repo
+        .get_by_model(api_key_id, today_range_of("model"))
+        .await
+        .unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].model, "gpt-4");
+    assert_eq!(models[0].total_cost_microcents, 500);
+
+    let all = ctx
+        .usage_repo
+        .get_by_model(api_key_id, today_range())
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+}
+
+// ============================================================================
 // SQLite Tests - Fast, in-memory
 // ============================================================================
 
@@ -1948,6 +2071,7 @@ mod sqlite_tests {
     sqlite_test!(test_get_summary_with_records);
     sqlite_test!(test_get_summary_filters_by_api_key);
     sqlite_test!(test_get_summary_filters_by_date_range);
+    sqlite_test!(test_get_summary_record_type_filter);
 
     // Get by date tests
     sqlite_test!(test_get_by_date_empty);
@@ -1959,6 +2083,7 @@ mod sqlite_tests {
     sqlite_test!(test_get_by_model_groups_by_model);
     sqlite_test!(test_get_by_model_ordered_by_cost_desc);
     sqlite_test!(test_get_by_model_filters_by_date_range);
+    sqlite_test!(test_get_by_model_record_type_filter);
 
     // Get by referer tests
     sqlite_test!(test_get_by_referer_empty);
@@ -2053,6 +2178,7 @@ mod postgres_tests {
     postgres_test!(test_get_summary_with_records);
     postgres_test!(test_get_summary_filters_by_api_key);
     postgres_test!(test_get_summary_filters_by_date_range);
+    postgres_test!(test_get_summary_record_type_filter);
 
     // Get by date tests
     postgres_test!(test_get_by_date_empty);
@@ -2064,6 +2190,7 @@ mod postgres_tests {
     postgres_test!(test_get_by_model_groups_by_model);
     postgres_test!(test_get_by_model_ordered_by_cost_desc);
     postgres_test!(test_get_by_model_filters_by_date_range);
+    postgres_test!(test_get_by_model_record_type_filter);
 
     // Get by referer tests
     postgres_test!(test_get_by_referer_empty);

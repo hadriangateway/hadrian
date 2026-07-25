@@ -34,6 +34,8 @@ mod layers;
 #[cfg(feature = "server")]
 pub(crate) mod util;
 
+// Budget/token reservation handoff between the API middleware and streaming
+// usage logging (see `util::settlement`).
 // ── Middleware layer exports — server only ───────────────────────────────────
 #[cfg(feature = "sso")]
 pub use layers::admin::strip_reserved_roles;
@@ -48,3 +50,5 @@ pub use layers::{
     request_id::request_id_middleware,
     security_headers::security_headers_middleware,
 };
+#[cfg(feature = "server")]
+pub use util::settlement::{SettlementCell, StreamSettlement};

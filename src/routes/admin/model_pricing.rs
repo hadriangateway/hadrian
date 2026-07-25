@@ -78,6 +78,23 @@ fn get_services(state: &AppState) -> Result<&Services, AdminError> {
     state.services.as_ref().ok_or(AdminError::ServicesRequired)
 }
 
+/// Best-effort refresh of the in-memory pricing overlay after a mutation so
+/// admin pricing changes affect billing on this replica immediately. Other
+/// replicas converge via the periodic overlay refresh job. Failures are
+/// logged, not surfaced: the DB write already succeeded and the overlay
+/// self-heals on the next refresh.
+async fn refresh_pricing_overlay(state: &AppState, services: &Services) {
+    let Some(overlay) = state.pricing.overlay() else {
+        return;
+    };
+    if let Err(e) = services.model_pricing.refresh_overlay(overlay).await {
+        tracing::warn!(
+            error = %e,
+            "Failed to refresh model pricing overlay after admin mutation"
+        );
+    }
+}
+
 /// Create a new model pricing entry
 #[cfg_attr(feature = "utoipa", utoipa::path(
     post,
@@ -113,6 +130,7 @@ pub async fn create(
     let actor = AuditActor::from(&admin_auth);
 
     let pricing = services.model_pricing.create(input).await?;
+    refresh_pricing_overlay(&state, services).await;
 
     // Extract org_id and project_id from owner for audit log context
     let (org_id, project_id) = match &pricing.owner {
@@ -243,6 +261,7 @@ pub async fn update(
     });
 
     let pricing = services.model_pricing.update(id, input).await?;
+    refresh_pricing_overlay(&state, services).await;
 
     // Extract org_id and project_id from owner for audit log context
     let (org_id, project_id) = match &pricing.owner {
@@ -328,6 +347,7 @@ pub async fn delete(
     let owner = pricing.owner.clone();
 
     services.model_pricing.delete(id).await?;
+    refresh_pricing_overlay(&state, services).await;
 
     // Log audit event (fire-and-forget)
     let _ = services
@@ -649,6 +669,7 @@ pub async fn upsert(
     let actor = AuditActor::from(&admin_auth);
 
     let pricing = services.model_pricing.upsert(input).await?;
+    refresh_pricing_overlay(&state, services).await;
 
     // Extract org_id and project_id from owner for audit log context
     let (org_id, project_id) = match &pricing.owner {
@@ -732,6 +753,7 @@ pub async fn bulk_upsert(
         entries.iter().map(|e| e.provider.clone()).collect();
 
     let count = services.model_pricing.bulk_upsert(entries).await?;
+    refresh_pricing_overlay(&state, services).await;
 
     // Log audit event (fire-and-forget)
     // Use Uuid::nil() as resource_id since this is a bulk operation

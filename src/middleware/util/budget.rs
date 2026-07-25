@@ -57,7 +57,14 @@ impl IntoResponse for BudgetError {
             } => (
                 StatusCode::PAYMENT_REQUIRED,
                 "budget_exceeded",
-                format!("Budget limit exceeded for {} period", period.as_str()),
+                format!(
+                    "Budget limit exceeded for {} period: current spend plus in-flight \
+                     reservations ({} cents) leave no room for this request's estimated \
+                     cost within the {} cent limit",
+                    period.as_str(),
+                    current_spend_cents,
+                    limit_cents
+                ),
                 Some(json!({
                     "limit_cents": limit_cents,
                     "current_spend_cents": current_spend_cents,
@@ -104,7 +111,10 @@ impl IntoResponse for BudgetError {
             BudgetError::NotAuthenticated => "authentication_error",
             BudgetError::CacheRequired { .. } | BudgetError::Internal(_) => "server_error",
         };
-        // Note: details are logged but not included in response for OpenAI compatibility
+        // Numeric context is folded into the message text; a structured
+        // `details` object is deliberately omitted from the response body to
+        // keep the OpenAI error shape. The audit log carries the structured
+        // values (see log_budget_exceeded).
         let _ = details;
         let body = ErrorResponse::with_type(error_type, code, message);
 

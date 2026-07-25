@@ -8,7 +8,7 @@ use crate::{
         error::DbResult,
         repos::{
             Cursor, CursorDirection, DateRange, ListResult, PageCursors, SortOrder, UsageLogQuery,
-            UsageRepo, UsageStats, cursor_from_row,
+            UsageRepo, UsageStats, cursor_from_row, truncate_to_millis,
         },
     },
     models::{
@@ -24,6 +24,32 @@ const MEDIA_AGGREGATE_COLS_PG: &str = "\
     COALESCE(SUM(image_count), 0) as image_count, \
     COALESCE(SUM(audio_seconds), 0) as audio_seconds, \
     COALESCE(SUM(character_count), 0) as character_count";
+
+/// SQL fragment applying the [`DateRange`] record-type filter, or `""` when the
+/// range has no filter. `prefix` is the query's table alias (e.g. `"u."`) and
+/// `param` the next free `$n` placeholder index for the query.
+/// Pair with [`BindRecordType::bind_record_type`] to bind the value.
+fn record_type_sql(range: &DateRange, prefix: &str, param: usize) -> String {
+    if range.record_type.is_some() {
+        format!("AND {prefix}record_type = ${param}")
+    } else {
+        String::new()
+    }
+}
+
+/// Chain-friendly conditional bind for the [`record_type_sql`] placeholder.
+trait BindRecordType: Sized {
+    fn bind_record_type(self, range: &DateRange) -> Self;
+}
+
+impl<'q> BindRecordType for sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    fn bind_record_type(self, range: &DateRange) -> Self {
+        match &range.record_type {
+            Some(rt) => self.bind(rt.clone()),
+            None => self,
+        }
+    }
+}
 
 pub struct PostgresUsageRepo {
     write_pool: PgPool,
@@ -59,7 +85,7 @@ impl UsageRepo for PostgresUsageRepo {
         sqlx::query(
             r#"
             INSERT INTO usage_records (
-                id, request_id, api_key_id, model, provider, input_tokens, output_tokens,
+                id, request_id, client_request_id, api_key_id, model, provider, input_tokens, output_tokens,
                 total_tokens, cost_microcents, http_referer, recorded_at,
                 streamed, cached_tokens, reasoning_tokens, finish_reason,
                 latency_ms, cancelled, status_code,
@@ -69,12 +95,13 @@ impl UsageRepo for PostgresUsageRepo {
                 tool_bytes_fetched, tool_results_count, tool_runtime_seconds,
                 tool_exit_code
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
             ON CONFLICT (request_id) DO NOTHING
             "#,
         )
         .bind(id)
         .bind(&entry.request_id)
+        .bind(&entry.client_request_id)
         .bind(entry.api_key_id)
         .bind(&entry.model)
         .bind(&entry.provider)
@@ -83,7 +110,9 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(total_tokens)
         .bind(entry.cost_microcents.unwrap_or(0))
         .bind(&entry.http_referer)
-        .bind(entry.request_at)
+        // Millisecond truncation keeps stored values equal to cursor-encoded
+        // boundaries (see db/repos/cursor.rs)
+        .bind(truncate_to_millis(entry.request_at))
         .bind(entry.streamed)
         .bind(entry.cached_tokens)
         .bind(entry.reasoning_tokens)
@@ -121,7 +150,7 @@ impl UsageRepo for PostgresUsageRepo {
         }
 
         // PostgreSQL allows up to 65535 parameters per query
-        // Each entry uses 36 parameters, so we can insert ~1820 entries per batch
+        // Each entry uses 37 parameters, so we can insert ~1770 entries per batch
         // Use 1000 as a reasonable batch size for performance
         const MAX_ENTRIES_PER_BATCH: usize = 1000;
 
@@ -139,15 +168,16 @@ impl UsageRepo for PostgresUsageRepo {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let o = i * 36;
+                    let o = i * 37;
                     format!(
-                        "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                        "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
                         o + 1, o + 2, o + 3, o + 4, o + 5, o + 6,
                         o + 7, o + 8, o + 9, o + 10, o + 11, o + 12,
                         o + 13, o + 14, o + 15, o + 16, o + 17, o + 18,
                         o + 19, o + 20, o + 21, o + 22, o + 23, o + 24,
                         o + 25, o + 26, o + 27, o + 28, o + 29, o + 30,
-                        o + 31, o + 32, o + 33, o + 34, o + 35, o + 36
+                        o + 31, o + 32, o + 33, o + 34, o + 35, o + 36,
+                        o + 37
                     )
                 })
                 .collect();
@@ -155,7 +185,7 @@ impl UsageRepo for PostgresUsageRepo {
             let query = format!(
                 r#"
                 INSERT INTO usage_records (
-                    id, request_id, api_key_id, model, provider, input_tokens, output_tokens,
+                    id, request_id, client_request_id, api_key_id, model, provider, input_tokens, output_tokens,
                     total_tokens, cost_microcents, http_referer, recorded_at,
                     streamed, cached_tokens, reasoning_tokens, finish_reason,
                     latency_ms, cancelled, status_code,
@@ -180,6 +210,7 @@ impl UsageRepo for PostgresUsageRepo {
                 query_builder = query_builder
                     .bind(id)
                     .bind(&entry.request_id)
+                    .bind(&entry.client_request_id)
                     .bind(entry.api_key_id)
                     .bind(&entry.model)
                     .bind(&entry.provider)
@@ -188,7 +219,7 @@ impl UsageRepo for PostgresUsageRepo {
                     .bind(total_tokens)
                     .bind(entry.cost_microcents.unwrap_or(0))
                     .bind(&entry.http_referer)
-                    .bind(entry.request_at)
+                    .bind(truncate_to_millis(entry.request_at))
                     .bind(entry.streamed)
                     .bind(entry.cached_tokens)
                     .bind(entry.reasoning_tokens)
@@ -226,6 +257,7 @@ impl UsageRepo for PostgresUsageRepo {
 
     async fn get_summary(&self, api_key_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
         // Use range query instead of date casting to allow index usage on recorded_at
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -241,11 +273,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -266,6 +300,7 @@ impl UsageRepo for PostgresUsageRepo {
 
     async fn get_by_date(&self, api_key_id: Uuid, range: DateRange) -> DbResult<Vec<DailySpend>> {
         // Use range query in WHERE for index usage; date cast only needed in SELECT/GROUP BY
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -280,6 +315,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE DESC
             "#,
@@ -287,6 +323,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -310,6 +347,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_by_model(&self, api_key_id: Uuid, range: DateRange) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -324,6 +362,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -331,6 +370,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -358,6 +398,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<RefererSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -372,6 +413,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY http_referer
             ORDER BY total_cost_microcents DESC
             "#,
@@ -379,6 +421,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -403,7 +446,8 @@ impl UsageRepo for PostgresUsageRepo {
 
     async fn get_usage_stats(&self, api_key_id: Uuid, range: DateRange) -> DbResult<UsageStats> {
         // PostgreSQL has native STDDEV_SAMP function
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             WITH daily_totals AS (
                 SELECT
@@ -413,6 +457,7 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE api_key_id = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             )
             SELECT
@@ -421,10 +466,11 @@ impl UsageRepo for PostgresUsageRepo {
                 COUNT(*)::INT as sample_days
             FROM daily_totals
             "#,
-        )
+        ))
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -476,6 +522,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -490,6 +537,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE ASC
             "#,
@@ -497,6 +545,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -524,6 +573,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -538,6 +588,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE ASC
             "#,
@@ -545,6 +596,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -572,6 +624,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -586,6 +639,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE ASC
             "#,
@@ -593,6 +647,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -620,6 +675,7 @@ impl UsageRepo for PostgresUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -634,6 +690,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE provider = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE ASC
             "#,
@@ -641,6 +698,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -668,6 +726,7 @@ impl UsageRepo for PostgresUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -683,11 +742,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE provider = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -711,6 +772,7 @@ impl UsageRepo for PostgresUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -725,6 +787,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE provider = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -732,6 +795,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -759,7 +823,8 @@ impl UsageRepo for PostgresUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             SELECT
                 COALESCE(AVG(daily_cost), 0)::BIGINT as avg_daily_spend,
@@ -772,13 +837,15 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE provider = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             ) daily_totals
             "#,
-        )
+        ))
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -794,6 +861,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -808,6 +876,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -815,6 +884,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -842,6 +912,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -856,6 +927,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -863,6 +935,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -890,6 +963,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -904,6 +978,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -911,6 +986,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -938,6 +1014,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -952,6 +1029,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -959,6 +1037,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -982,6 +1061,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_summary_by_org(&self, org_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -997,11 +1077,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1025,6 +1107,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -1040,11 +1123,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1064,6 +1149,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_summary_by_user(&self, user_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -1079,11 +1165,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1103,7 +1191,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_usage_stats_by_org(&self, org_id: Uuid, range: DateRange) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             WITH daily_totals AS (
                 SELECT
@@ -1113,6 +1202,7 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE org_id = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             )
             SELECT
@@ -1121,10 +1211,11 @@ impl UsageRepo for PostgresUsageRepo {
                 COUNT(*)::INT as sample_days
             FROM daily_totals
             "#,
-        )
+        ))
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1140,7 +1231,8 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             WITH daily_totals AS (
                 SELECT
@@ -1150,6 +1242,7 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE project_id = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             )
             SELECT
@@ -1158,10 +1251,11 @@ impl UsageRepo for PostgresUsageRepo {
                 COUNT(*)::INT as sample_days
             FROM daily_totals
             "#,
-        )
+        ))
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1177,7 +1271,8 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             WITH daily_totals AS (
                 SELECT
@@ -1187,6 +1282,7 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE user_id = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             )
             SELECT
@@ -1195,10 +1291,11 @@ impl UsageRepo for PostgresUsageRepo {
                 COUNT(*)::INT as sample_days
             FROM daily_totals
             "#,
-        )
+        ))
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1216,6 +1313,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1230,6 +1328,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE
             ORDER BY recorded_at::DATE ASC
             "#,
@@ -1237,6 +1336,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1264,6 +1364,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1278,6 +1379,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1285,6 +1387,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1312,6 +1415,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1326,6 +1430,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1333,6 +1438,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1356,6 +1462,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_summary_by_team(&self, team_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let row = sqlx::query(&format!(
             r#"
             SELECT
@@ -1371,11 +1478,13 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1399,7 +1508,8 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 4);
+        let row = sqlx::query(&format!(
             r#"
             WITH daily_totals AS (
                 SELECT
@@ -1409,6 +1519,7 @@ impl UsageRepo for PostgresUsageRepo {
                 WHERE team_id = $1
                     AND recorded_at >= $2::DATE
                     AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                    {record_type_filter}
                 GROUP BY recorded_at::DATE
             )
             SELECT
@@ -1417,10 +1528,11 @@ impl UsageRepo for PostgresUsageRepo {
                 COUNT(*)::INT as sample_days
             FROM daily_totals
             "#,
-        )
+        ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -1436,6 +1548,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1450,6 +1563,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1457,6 +1571,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1484,6 +1599,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1498,6 +1614,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1505,6 +1622,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1532,6 +1650,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -1546,6 +1665,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1553,6 +1673,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1580,6 +1701,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, model,
@@ -1592,6 +1714,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, model
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1599,6 +1722,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1627,6 +1751,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, model,
@@ -1639,6 +1764,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, model
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1646,6 +1772,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1674,6 +1801,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, model,
@@ -1686,6 +1814,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, model
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1693,6 +1822,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1721,6 +1851,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, model,
@@ -1733,6 +1864,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, model
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1740,6 +1872,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1768,6 +1901,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, model,
@@ -1780,6 +1914,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, model
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1787,6 +1922,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1815,6 +1951,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, provider,
@@ -1827,6 +1964,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, provider
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1834,6 +1972,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1862,6 +2001,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, provider,
@@ -1874,6 +2014,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, provider
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1881,6 +2022,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1909,6 +2051,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, provider,
@@ -1921,6 +2064,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, provider
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1928,6 +2072,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -1956,6 +2101,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, provider,
@@ -1968,6 +2114,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, provider
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -1975,6 +2122,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2003,6 +2151,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, provider,
@@ -2015,6 +2164,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, provider
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2022,6 +2172,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2052,6 +2203,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -2066,6 +2218,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2073,6 +2226,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2100,6 +2254,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -2114,6 +2269,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2121,6 +2277,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2148,6 +2305,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -2162,6 +2320,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2169,6 +2328,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2196,6 +2356,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -2210,6 +2371,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2217,6 +2379,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2244,6 +2407,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT
@@ -2258,6 +2422,7 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE
                 AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2265,6 +2430,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2292,6 +2458,7 @@ impl UsageRepo for PostgresUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, pricing_source,
@@ -2304,6 +2471,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE api_key_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2311,6 +2479,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(api_key_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2339,6 +2508,7 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, pricing_source,
@@ -2351,6 +2521,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE org_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2358,6 +2529,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2386,6 +2558,7 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, pricing_source,
@@ -2398,6 +2571,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE project_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2405,6 +2579,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2433,6 +2608,7 @@ impl UsageRepo for PostgresUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, pricing_source,
@@ -2445,6 +2621,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE user_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2452,6 +2629,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(user_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2480,6 +2658,7 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 4);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date, pricing_source,
@@ -2492,6 +2671,7 @@ impl UsageRepo for PostgresUsageRepo {
             FROM usage_records
             WHERE team_id = $1
                 AND recorded_at >= $2::DATE AND recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source
             ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
@@ -2499,6 +2679,7 @@ impl UsageRepo for PostgresUsageRepo {
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2531,7 +2712,8 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -2547,13 +2729,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.project_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2583,7 +2767,8 @@ impl UsageRepo for PostgresUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -2600,13 +2785,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.project_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.user_id, users.name, users.email
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(project_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2639,7 +2826,8 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -2655,13 +2843,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.team_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2691,7 +2881,8 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -2708,13 +2899,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.team_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.user_id, users.name, users.email
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2745,7 +2938,8 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProjectSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -2761,13 +2955,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.team_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.project_id, projects.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2796,7 +2992,8 @@ impl UsageRepo for PostgresUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date,
                 u.project_id, projects.name as project_name,
@@ -2813,13 +3010,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.team_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.project_id, projects.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2852,7 +3051,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -2868,13 +3068,15 @@ impl UsageRepo for PostgresUsageRepo {
             WHERE u.org_id = $1
                 AND u.recorded_at >= $2::DATE
                 AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -2904,7 +3106,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.recorded_at::DATE as date, u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -2916,9 +3119,10 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN users ON u.user_id = users.id
             WHERE u.org_id = $1 AND u.recorded_at >= $2::DATE AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.user_id, users.name, users.email
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
-            "#).bind(org_id).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(org_id).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -2947,7 +3151,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProjectSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -2959,8 +3164,9 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.org_id = $1 AND u.recorded_at >= $2::DATE AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.project_id, projects.name ORDER BY total_cost_microcents DESC
-            "#).bind(org_id).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(org_id).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -2987,7 +3193,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.recorded_at::DATE as date, u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -2999,9 +3206,10 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.org_id = $1 AND u.recorded_at >= $2::DATE AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.project_id, projects.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
-            "#).bind(org_id).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(org_id).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3029,7 +3237,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<TeamSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -3041,8 +3250,9 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.org_id = $1 AND u.recorded_at >= $2::DATE AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.team_id, teams.name ORDER BY total_cost_microcents DESC
-            "#).bind(org_id).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(org_id).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3069,7 +3279,8 @@ impl UsageRepo for PostgresUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyTeamSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 4);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.recorded_at::DATE as date, u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -3081,9 +3292,10 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.org_id = $1 AND u.recorded_at >= $2::DATE AND u.recorded_at < ($3::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.team_id, teams.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
-            "#).bind(org_id).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(org_id).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3109,6 +3321,7 @@ impl UsageRepo for PostgresUsageRepo {
     // --- Global scope: base queries (no scope WHERE clause, just date range) ---
 
     async fn get_summary_global(&self, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let row = sqlx::query(&format!(
             r#"
             SELECT COALESCE(SUM(cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3120,10 +3333,12 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             "#
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -3143,6 +3358,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_daily_usage_global(&self, range: DateRange) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(
             r#"
             SELECT recorded_at::DATE as date,
@@ -3154,11 +3370,13 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY recorded_at::DATE ORDER BY recorded_at::DATE ASC
             "#
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3182,6 +3400,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_model_usage_global(&self, range: DateRange) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(
             r#"
             SELECT model,
@@ -3193,11 +3412,13 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY model ORDER BY total_cost_microcents DESC
             "#
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3221,6 +3442,7 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_provider_usage_global(&self, range: DateRange) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(
             r#"
             SELECT provider,
@@ -3232,11 +3454,13 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY provider ORDER BY total_cost_microcents DESC
             "#
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3263,6 +3487,7 @@ impl UsageRepo for PostgresUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(
             r#"
             SELECT pricing_source,
@@ -3274,11 +3499,13 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY pricing_source ORDER BY total_cost_microcents DESC
             "#
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3305,6 +3532,7 @@ impl UsageRepo for PostgresUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(r#"
             SELECT recorded_at::DATE as date, model,
                 COALESCE(SUM(cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3315,8 +3543,9 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY recorded_at::DATE, model ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
-            "#)).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3342,6 +3571,7 @@ impl UsageRepo for PostgresUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(r#"
             SELECT recorded_at::DATE as date, provider,
                 COALESCE(SUM(cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3352,8 +3582,9 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY recorded_at::DATE, provider ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
-            "#)).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3379,6 +3610,7 @@ impl UsageRepo for PostgresUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "", 3);
         let rows = sqlx::query(&format!(r#"
             SELECT recorded_at::DATE as date, pricing_source,
                 COALESCE(SUM(cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3389,8 +3621,9 @@ impl UsageRepo for PostgresUsageRepo {
                 {MEDIA_AGGREGATE_COLS_PG}
             FROM usage_records
             WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY recorded_at::DATE, pricing_source ORDER BY recorded_at::DATE ASC, total_cost_microcents DESC
-            "#)).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3413,7 +3646,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_usage_stats_global(&self, range: DateRange) -> DbResult<UsageStats> {
-        let row = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "", 3);
+        let row = sqlx::query(&format!(
             r#"
             SELECT COALESCE(AVG(daily_cost), 0)::BIGINT as avg_daily_spend_microcents,
                    COALESCE(STDDEV(daily_cost), 0)::BIGINT as std_dev_daily_spend_microcents,
@@ -3422,12 +3656,14 @@ impl UsageRepo for PostgresUsageRepo {
                 SELECT COALESCE(SUM(cost_microcents), 0) as daily_cost
                 FROM usage_records
                 WHERE recorded_at >= $1::DATE AND recorded_at < ($2::DATE + INTERVAL '1 day')
+                {record_type_filter}
                 GROUP BY recorded_at::DATE
             ) daily_totals
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.read_pool)
         .await?;
 
@@ -3441,7 +3677,8 @@ impl UsageRepo for PostgresUsageRepo {
     // --- Global scope: entity breakdowns (no scope WHERE, just date range + entity grouping) ---
 
     async fn get_user_usage_global(&self, range: DateRange) -> DbResult<Vec<UserSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3454,11 +3691,13 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN users ON u.user_id = users.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.user_id, users.name, users.email ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3484,7 +3723,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_daily_user_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = sqlx::query(r#"
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(r#"
             SELECT u.recorded_at::DATE as date, u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
                 COALESCE(SUM(u.input_tokens), 0)::BIGINT as input_tokens,
@@ -3496,9 +3736,10 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN users ON u.user_id = users.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.user_id, users.name, users.email
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
-            "#).bind(range.start).bind(range.end).fetch_all(&self.read_pool).await?;
+            "#)).bind(range.start).bind(range.end).bind_record_type(&range).fetch_all(&self.read_pool).await?;
 
         Ok(rows
             .iter()
@@ -3523,7 +3764,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_project_usage_global(&self, range: DateRange) -> DbResult<Vec<ProjectSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3536,11 +3778,13 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.project_id, projects.name ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3568,7 +3812,8 @@ impl UsageRepo for PostgresUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date, u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3581,12 +3826,14 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.project_id, projects.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3612,7 +3859,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_team_usage_global(&self, range: DateRange) -> DbResult<Vec<TeamSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3625,11 +3873,13 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.team_id, teams.name ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3654,7 +3904,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_daily_team_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyTeamSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date, u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3667,12 +3918,14 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.team_id, teams.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3698,7 +3951,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_org_usage_global(&self, range: DateRange) -> DbResult<Vec<OrgSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.org_id, organizations.name as org_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3711,11 +3965,13 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN organizations ON u.org_id = organizations.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.org_id, organizations.name ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3740,7 +3996,8 @@ impl UsageRepo for PostgresUsageRepo {
     }
 
     async fn get_daily_org_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyOrgSpend>> {
-        let rows = sqlx::query(
+        let record_type_filter = record_type_sql(&range, "u.", 3);
+        let rows = sqlx::query(&format!(
             r#"
             SELECT u.recorded_at::DATE as date, u.org_id, organizations.name as org_name,
                 COALESCE(SUM(u.cost_microcents), 0)::BIGINT as total_cost_microcents,
@@ -3753,12 +4010,14 @@ impl UsageRepo for PostgresUsageRepo {
                 COALESCE(SUM(u.character_count), 0)::BIGINT as character_count
             FROM usage_records u LEFT JOIN organizations ON u.org_id = organizations.id
             WHERE u.recorded_at >= $1::DATE AND u.recorded_at < ($2::DATE + INTERVAL '1 day')
+            {record_type_filter}
             GROUP BY u.recorded_at::DATE, u.org_id, organizations.name
             ORDER BY u.recorded_at::DATE ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.read_pool)
         .await?;
 
@@ -3876,7 +4135,7 @@ impl UsageRepo for PostgresUsageRepo {
 
         let sql = format!(
             r#"
-            SELECT id, recorded_at, request_id, api_key_id, user_id, org_id,
+            SELECT id, recorded_at, request_id, client_request_id, api_key_id, user_id, org_id,
                    project_id, team_id, service_account_id, model, provider,
                    http_referer, input_tokens, output_tokens, cached_tokens,
                    reasoning_tokens, cost_microcents, streamed, finish_reason,
@@ -3946,6 +4205,7 @@ impl UsageRepo for PostgresUsageRepo {
                 id: row.get("id"),
                 recorded_at: row.get("recorded_at"),
                 request_id: row.get("request_id"),
+                client_request_id: row.get("client_request_id"),
                 api_key_id: row.get("api_key_id"),
                 user_id: row.get("user_id"),
                 org_id: row.get("org_id"),

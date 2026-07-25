@@ -2338,6 +2338,41 @@ api_key = "sk-test-key"
     }
 
     #[tokio::test]
+    async fn test_get_api_key_usage_summary_record_type_filter() {
+        let app = test_app().await;
+        let org_id = create_org_with_id(&app, "usage-rt-org").await;
+        let key_id = create_api_key_with_id(&app, &org_id).await;
+
+        // Valid values are accepted
+        for record_type in ["model", "tool"] {
+            let (status, _) = get_json(
+                &app,
+                &format!(
+                    "/admin/v1/api-keys/{}/usage?record_type={}",
+                    key_id, record_type
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        // Anything else is a 400
+        let (status, body) = get_json(
+            &app,
+            &format!("/admin/v1/api-keys/{}/usage?record_type=bogus", key_id),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid record_type")
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_api_key_usage_by_date_empty() {
         let app = test_app().await;
         let org_id = create_org_with_id(&app, "usage-bydate-org").await;

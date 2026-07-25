@@ -73,6 +73,9 @@ pub struct ExtractedUsage {
     pub image_count: Option<i32>,
     pub audio_seconds: Option<i32>,
     pub character_count: Option<i32>,
+    pub cached_tokens: Option<i32>,
+    pub reasoning_tokens: Option<i32>,
+    pub finish_reason: Option<String>,
 }
 
 /// Extract usage information from response headers
@@ -116,6 +119,21 @@ pub fn extract_full_usage_from_response(response: &Response) -> ExtractedUsage {
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok());
 
+    let cached_tokens = headers
+        .get("X-Cached-Tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
+    let reasoning_tokens = headers
+        .get("X-Reasoning-Tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
+    let finish_reason = headers
+        .get("X-Finish-Reason")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
     ExtractedUsage {
         input_tokens,
         output_tokens,
@@ -124,10 +142,26 @@ pub fn extract_full_usage_from_response(response: &Response) -> ExtractedUsage {
         image_count,
         audio_seconds,
         character_count,
+        cached_tokens,
+        reasoning_tokens,
+        finish_reason,
     }
 }
 
 /// Helper to create a usage tracker from request headers
+/// Extract the client-supplied request correlation id, if any.
+///
+/// Honors `X-Request-Id` (the header the request-id middleware echoes) and
+/// OpenAI's `X-Client-Request-Id`. The value is stored on usage rows purely
+/// for correlation; it never keys them.
+pub fn client_request_id_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("X-Request-Id")
+        .or_else(|| headers.get("X-Client-Request-Id"))
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+}
+
 pub fn tracker_from_headers(headers: &axum::http::HeaderMap) -> UsageTracker {
     let referer = headers
         .get("referer")

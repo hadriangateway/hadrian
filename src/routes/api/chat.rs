@@ -465,17 +465,44 @@ fn modify_response_content(body: &[u8], new_content: &str) -> Option<Vec<u8>> {
 /// When anonymous (no auth configured), attributes to the default anonymous user/org
 /// so that streaming requests are tracked the same way the middleware tracks
 /// non-streaming anonymous requests.
+/// Rough input-token estimate (~4 chars/token) over a serialized payload
+/// fragment (messages / prompt / input). Used only as the streaming usage
+/// fallback when the provider never reports official token counts.
+pub(super) fn estimate_input_tokens<T: serde::Serialize>(value: &T) -> i64 {
+    serde_json::to_string(value)
+        .map(|s| (s.chars().count() as i64) / 4)
+        .unwrap_or(0)
+}
+
+/// Client-supplied correlation id (`X-Request-Id` / `X-Client-Request-Id`).
+/// Stored on usage rows for correlation only; the row key stays
+/// server-generated so a reused client id can never suppress a billing row.
+fn client_request_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("X-Request-Id")
+        .or_else(|| headers.get("X-Client-Request-Id"))
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+}
+
 pub(super) fn build_streaming_usage_entry(
     auth: &Option<Extension<AuthenticatedRequest>>,
     state: &AppState,
+    headers: &HeaderMap,
     model: &str,
     provider: &str,
     header_project_id: Option<uuid::Uuid>,
 ) -> Option<UsageLogEntry> {
+    let client_request_id = client_request_id(headers);
+    let http_referer = headers
+        .get("referer")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     if let Some(Extension(auth)) = auth {
         let api_key = auth.api_key();
         Some(UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
+            client_request_id,
             api_key_id: api_key.map(|k| k.key.id),
             user_id: auth.user_id(),
             org_id: api_key
@@ -489,7 +516,7 @@ pub(super) fn build_streaming_usage_entry(
             input_tokens: 0,
             output_tokens: 0,
             cost_microcents: None,
-            http_referer: None,
+            http_referer,
             request_at: Utc::now(),
             streamed: true,
             cached_tokens: 0,
@@ -517,6 +544,7 @@ pub(super) fn build_streaming_usage_entry(
         // is tracked the same way middleware tracks non-streaming anonymous usage.
         Some(UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
+            client_request_id,
             api_key_id: None,
             user_id: state.default_user_id,
             org_id: state.default_org_id,
@@ -528,7 +556,7 @@ pub(super) fn build_streaming_usage_entry(
             input_tokens: 0,
             output_tokens: 0,
             cost_microcents: None,
-            http_referer: None,
+            http_referer,
             request_at: Utc::now(),
             streamed: true,
             cached_tokens: 0,
@@ -752,12 +780,13 @@ pub fn wrap_streaming_with_guardrails(
 ))]
 #[tracing::instrument(
     name = "api.chat_completions",
-    skip(state, headers, auth, authz, request_id, client_info, payload),
+    skip_all,
     fields(
         model = %payload.model.as_deref().unwrap_or("default"),
         streaming = payload.stream,
     )
 )]
+#[allow(clippy::too_many_arguments)] // Axum extractors, one per concern
 pub async fn api_v1_chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -765,6 +794,7 @@ pub async fn api_v1_chat_completions(
     authz: Option<Extension<AuthzContext>>,
     request_id: Option<Extension<RequestId>>,
     client_info: Option<Extension<ClientInfo>>,
+    #[cfg(feature = "server")] settlement: Option<Extension<crate::middleware::SettlementCell>>,
     Valid(Json(mut payload)): Valid<Json<api_types::CreateChatCompletionPayload>>,
 ) -> Result<Response, ApiError> {
     let (ci_ip, ci_ua) = client_info
@@ -774,6 +804,13 @@ pub async fn api_v1_chat_completions(
     // Route the model to a provider with dynamic support
     let model_clone = payload.model.clone();
     let is_streaming = payload.stream;
+    // Input estimate for the streaming usage fallback (provider never
+    // reports usage); computed here while the payload is still owned.
+    let estimated_input_tokens = if is_streaming {
+        estimate_input_tokens(&payload.messages)
+    } else {
+        0
+    };
     let routed = route_model_extended(model_clone.as_deref(), &state.config.providers)?;
 
     // Resolve to concrete provider configuration
@@ -1281,7 +1318,7 @@ pub async fn api_v1_chat_completions(
 
     // Create usage entry for streaming cost tracking
     let usage_entry = if is_streaming {
-        build_streaming_usage_entry(&auth, &state, &model_name, &provider_name, {
+        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
             headers
                 .get("X-Hadrian-Project")
                 .and_then(|v| v.to_str().ok())
@@ -1304,6 +1341,9 @@ pub async fn api_v1_chat_completions(
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
             usage_drain: Some(&state.usage_drain),
+            #[cfg(feature = "server")]
+            settlement_cell: settlement.as_ref().map(|Extension(cell)| cell.clone()),
+            estimated_input_tokens,
             max_response_body_bytes: state.config.server.max_response_body_bytes,
             streaming_idle_timeout_secs: state.config.server.streaming_idle_timeout_secs,
             validation_config: &state.config.observability.response_validation,
@@ -1372,12 +1412,13 @@ pub async fn api_v1_chat_completions(
 ))]
 #[tracing::instrument(
     name = "api.responses",
-    skip(state, headers, auth, authz, request_id, client_info, payload),
+    skip_all,
     fields(
         model = %payload.model.as_deref().unwrap_or("default"),
         streaming = payload.stream,
     )
 )]
+#[allow(clippy::too_many_arguments)] // Axum extractors, one per concern
 pub async fn api_v1_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1385,6 +1426,7 @@ pub async fn api_v1_responses(
     authz: Option<Extension<AuthzContext>>,
     request_id: Option<Extension<RequestId>>,
     client_info: Option<Extension<ClientInfo>>,
+    #[cfg(feature = "server")] settlement: Option<Extension<crate::middleware::SettlementCell>>,
     Valid(Json(mut payload)): Valid<Json<api_types::CreateResponsesPayload>>,
 ) -> Result<Response, ApiError> {
     let (ci_ip, ci_ua) = client_info
@@ -1394,6 +1436,13 @@ pub async fn api_v1_responses(
     // Route the model to a provider with dynamic support
     let model_clone = payload.model.clone();
     let models_clone = payload.models.clone();
+    // Input estimate for the streaming usage fallback (provider never
+    // reports usage); computed here while the payload is still owned.
+    let estimated_input_tokens = if payload.stream {
+        estimate_input_tokens(&payload.input)
+    } else {
+        0
+    };
     let routed = route_models_extended(
         model_clone.as_deref(),
         models_clone.as_deref(),
@@ -2652,7 +2701,7 @@ pub async fn api_v1_responses(
     // folded the SSE transcript back to JSON, cost injection runs in
     // its blocking, body-parsing mode.
     let usage_entry = if caller_wants_streaming {
-        build_streaming_usage_entry(&auth, &state, &model_name, &provider_name, {
+        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
             headers
                 .get("X-Hadrian-Project")
                 .and_then(|v| v.to_str().ok())
@@ -2675,6 +2724,9 @@ pub async fn api_v1_responses(
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
             usage_drain: Some(&state.usage_drain),
+            #[cfg(feature = "server")]
+            settlement_cell: settlement.as_ref().map(|Extension(cell)| cell.clone()),
+            estimated_input_tokens,
             max_response_body_bytes: state.config.server.max_response_body_bytes,
             streaming_idle_timeout_secs: state.config.server.streaming_idle_timeout_secs,
             validation_config: &state.config.observability.response_validation,
@@ -2987,7 +3039,7 @@ fn modify_responses_content(body: &[u8], new_content: &str) -> Option<Vec<u8>> {
 ))]
 #[tracing::instrument(
     name = "api.completions",
-    skip(state, headers, auth, request_id, client_info, payload),
+    skip_all,
     fields(
         model = %payload.model.as_deref().unwrap_or("default"),
         streaming = payload.stream,
@@ -2999,6 +3051,7 @@ pub async fn api_v1_completions(
     auth: Option<Extension<AuthenticatedRequest>>,
     request_id: Option<Extension<RequestId>>,
     client_info: Option<Extension<ClientInfo>>,
+    #[cfg(feature = "server")] settlement: Option<Extension<crate::middleware::SettlementCell>>,
     Valid(Json(mut payload)): Valid<Json<api_types::CreateCompletionPayload>>,
 ) -> Result<Response, ApiError> {
     let (ci_ip, ci_ua) = client_info
@@ -3009,6 +3062,13 @@ pub async fn api_v1_completions(
     let model_clone = payload.model.clone();
     let models_clone = payload.models.clone();
     let is_streaming = payload.stream;
+    // Input estimate for the streaming usage fallback (provider never
+    // reports usage); computed here while the payload is still owned.
+    let estimated_input_tokens = if is_streaming {
+        estimate_input_tokens(&payload.prompt)
+    } else {
+        0
+    };
     let routed = route_models_extended(
         model_clone.as_deref(),
         models_clone.as_deref(),
@@ -3383,7 +3443,7 @@ pub async fn api_v1_completions(
 
     // Create usage entry for streaming cost tracking
     let usage_entry = if is_streaming {
-        build_streaming_usage_entry(&auth, &state, &model_name, &provider_name, {
+        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
             headers
                 .get("X-Hadrian-Project")
                 .and_then(|v| v.to_str().ok())
@@ -3406,6 +3466,9 @@ pub async fn api_v1_completions(
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
             usage_drain: Some(&state.usage_drain),
+            #[cfg(feature = "server")]
+            settlement_cell: settlement.as_ref().map(|Extension(cell)| cell.clone()),
+            estimated_input_tokens,
             max_response_body_bytes: state.config.server.max_response_body_bytes,
             streaming_idle_timeout_secs: state.config.server.streaming_idle_timeout_secs,
             validation_config: &state.config.observability.response_validation,

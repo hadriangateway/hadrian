@@ -360,6 +360,17 @@ pub(crate) async fn run_server(explicit_config_path: Option<&str>, no_browser: b
         });
     }
 
+    // Start the admin model-pricing overlay refresh worker. Admin mutations
+    // refresh the overlay in-process; this worker converges other replicas
+    // and out-of-band DB changes. In-memory only, so every replica runs it.
+    if let Some(services) = state.services.clone()
+        && let Some(overlay) = state.pricing.overlay().cloned()
+    {
+        tokio::spawn(async move {
+            jobs::start_model_pricing_overlay_refresh_worker(services.model_pricing, overlay).await;
+        });
+    }
+
     // Start provider health checker for providers with health checks enabled
     {
         let mut health_checker = jobs::ProviderHealthChecker::with_registry(
@@ -484,9 +495,34 @@ pub(crate) async fn run_server(explicit_config_path: Option<&str>, no_browser: b
         None
     };
     let response_event_buffer = state.response_event_buffer.clone();
-    let app = build_app(&config, state);
 
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+
+    // Record a system.startup audit entry: the audit trail should answer
+    // "when did the gateway (re)start", and restarts also reset in-memory
+    // budget counters, so this marks those boundaries.
+    if let Some(services) = state.services.as_ref() {
+        let details = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "bind_addr": bind_addr,
+        });
+        if let Err(e) = services
+            .audit_logs
+            .log_system_action(
+                "system.startup",
+                "system",
+                uuid::Uuid::nil(),
+                state.default_org_id,
+                None,
+                details,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to write system.startup audit entry");
+        }
+    }
+
+    let app = build_app(&config, state);
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(listener) => listener,
         Err(e) => {

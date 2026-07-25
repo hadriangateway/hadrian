@@ -133,6 +133,14 @@ pub struct CostInjectionParams<'a> {
     /// log partial usage from `Drop` without spawning a task there directly.
     #[cfg(feature = "server")]
     pub usage_drain: Option<&'a crate::streaming::UsageDrainHandle>,
+    /// Budget/token reservation handoff from the API middleware. The
+    /// streaming branch claims it so settlement happens with actual usage
+    /// after the stream ends; non-streaming leaves it for the middleware.
+    #[cfg(feature = "server")]
+    pub settlement_cell: Option<crate::middleware::SettlementCell>,
+    /// Input-token estimate from the request payload, used when the provider
+    /// never reports usage on a stream (fallback previously logged input 0).
+    pub estimated_input_tokens: i64,
     pub max_response_body_bytes: usize,
     /// Idle timeout for streaming responses in seconds.
     /// If a streaming response doesn't receive a chunk within this timeout,
@@ -742,6 +750,8 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
     let task_tracker = params.task_tracker;
     #[cfg(feature = "server")]
     let usage_drain = params.usage_drain;
+    #[cfg(feature = "server")]
+    let settlement_cell = params.settlement_cell.clone();
     let CostInjectionParams {
         response,
         provider,
@@ -753,6 +763,7 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
         streaming_idle_timeout_secs,
         validation_config,
         response_type,
+        estimated_input_tokens,
         ..
     } = params;
     // Only process successful JSON responses
@@ -793,6 +804,17 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
                 (db, usage_entry, task_tracker, usage_drain)
             {
                 use futures_util::StreamExt;
+
+                // Claim the reservation handoff: settlement now happens in
+                // the streaming usage logger with actual usage instead of in
+                // the middleware (whose header-based settle would see no
+                // cost on an SSE response and refund the whole reservation).
+                let settlement = settlement_cell.and_then(|cell| cell.take());
+
+                let mut entry = entry;
+                // The stream is only wrapped on success responses; record the
+                // status the client actually received.
+                entry.status_code = Some(response.status().as_u16() as i16);
 
                 let (parts, body) = response.into_parts();
 
@@ -842,6 +864,8 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
                     entry,
                     provider.to_string(),
                     model.to_string(),
+                    estimated_input_tokens,
+                    settlement,
                     tracker.clone(),
                     drain.clone(),
                 );
@@ -886,6 +910,12 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
             return Response::from_parts(parts, Body::empty());
         }
     };
+
+    // Org scope for admin `model_pricing` overrides, taken from the usage
+    // entry's attribution. When the request has no usage entry or no org
+    // attribution this is None and only global admin rows apply — one org's
+    // pricing rows never leak into another org's costs.
+    let pricing_org_id = usage_entry.as_ref().and_then(|e| e.org_id);
 
     // Try to parse as JSON and extract usage
     let extracted = match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -987,19 +1017,43 @@ pub async fn inject_cost_into_response(params: CostInjectionParams<'_>) -> Respo
                         })
                 });
 
-            // Calculate cost in microcents
-            let cost_result = pricing.calculate_cost(provider, model, input, output);
-            let cost_microcents = cost_result.map(|(c, _)| c);
-            let pricing_source = cost_result
-                .map(|(_, s)| s)
-                .unwrap_or(crate::pricing::CostPricingSource::None);
+            // Provider-reported cost, in dollars (e.g. OpenRouter's `usage.cost`).
+            let provider_cost_dollars = usage.and_then(|u| u.get("cost")).and_then(|v| v.as_f64());
+
+            // Calculate catalog/config cost, then resolve against the
+            // provider-reported cost per the configured `cost_source` policy —
+            // the same resolution the streaming path applies.
+            let calculated = pricing.calculate_cost_detailed_scoped(
+                provider,
+                model,
+                &crate::pricing::TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cached_tokens: Some(cached),
+                    reasoning_tokens: Some(reasoning),
+                    image_count: None,
+                    image_size: None,
+                    image_quality: None,
+                    audio_seconds: None,
+                    character_count: None,
+                    video_seconds: None,
+                },
+                pricing_org_id,
+            );
+            let (cost_microcents, pricing_source) =
+                pricing.resolve_cost(provider_cost_dollars, calculated);
 
             // Inject cost (in dollars) into the usage object in the response body.
-            // Only re-serialize when we actually mutate the JSON; otherwise we'd
-            // change the body length (whitespace, key order) and have to strip
-            // Content-Length unnecessarily.
+            // Only rewrite when the resolved cost did not come from the provider:
+            // a provider-reported cost is already in the body and is more precise
+            // than a round-trip through microcents. Only re-serialize when we
+            // actually mutate the JSON; otherwise we'd change the body length
+            // (whitespace, key order) and have to strip Content-Length
+            // unnecessarily.
             let mut body_modified = false;
-            if let Some(cost) = cost_microcents {
+            if let Some(cost) = cost_microcents
+                && pricing_source != crate::pricing::CostPricingSource::Provider
+            {
                 let cost_dollars = crate::pricing::microcents_to_dollars(cost);
                 if let Some(usage_obj) = json.get_mut("usage").and_then(|u| u.as_object_mut()) {
                     usage_obj.insert("cost".to_string(), serde_json::Value::from(cost_dollars));
@@ -1130,7 +1184,11 @@ pub async fn log_media_usage(params: MediaUsageParams<'_>) -> (Option<i64>, bool
         ..
     } = params;
 
-    // Calculate cost
+    // Calculate cost. Known limitation: media endpoints carry no org
+    // attribution here (the UsageLogEntry below is logged with org_id: None),
+    // so only global admin `model_pricing` rows apply — org-scoped rows never
+    // influence media costs until org context is plumbed through
+    // MediaUsageParams.
     let cost_result = pricing.calculate_cost_detailed(provider, model, &usage);
     let cost_microcents = cost_result.map(|(c, _)| c);
     let pricing_source = cost_result
@@ -1141,6 +1199,7 @@ pub async fn log_media_usage(params: MediaUsageParams<'_>) -> (Option<i64>, bool
     let usage_logged = if let (Some(db_pool), Some(key_id)) = (db, api_key_id) {
         let entry = crate::models::UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
+            client_request_id: None,
             api_key_id: Some(key_id),
             user_id: None,
             org_id: None,

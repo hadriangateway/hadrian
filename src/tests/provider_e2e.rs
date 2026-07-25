@@ -2238,8 +2238,8 @@ async fn test_cost_calculation_header(#[case] spec: &'static ProviderTestSpec) {
     // Calculate expected cost based on gpt-4o-mini pricing:
     // $0.15/1M input = 150_000 microcents/1M
     // $0.60/1M output = 600_000 microcents/1M
-    // Cost = (input * 150_000 + output * 600_000) / 1_000_000
-    let expected_cost = (input_tokens * 150_000 + output_tokens * 600_000) / 1_000_000;
+    // Cost = round((input * 150_000 + output * 600_000) / 1_000_000)
+    let expected_cost = (input_tokens * 150_000 + output_tokens * 600_000 + 500_000) / 1_000_000;
 
     assert_eq!(
         cost_microcents,
@@ -2349,7 +2349,8 @@ async fn test_reasoning_model_cost_calculation(#[case] spec: &'static ProviderTe
     // $1.10/1M input = 1_100_000 microcents/1M
     // $4.40/1M output = 4_400_000 microcents/1M
     // Note: reasoning_tokens are already included in completion_tokens (output_tokens)
-    let expected_cost = (input_tokens * 1_100_000 + output_tokens * 4_400_000) / 1_000_000;
+    let expected_cost =
+        (input_tokens * 1_100_000 + output_tokens * 4_400_000 + 500_000) / 1_000_000;
 
     assert_eq!(
         cost_microcents,

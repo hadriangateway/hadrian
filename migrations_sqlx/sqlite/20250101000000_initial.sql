@@ -577,8 +577,12 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_providers_owner ON dynamic_providers(owne
 -- Tracks request usage with principal-based attribution
 CREATE TABLE IF NOT EXISTS usage_records (
     id TEXT PRIMARY KEY NOT NULL,
-    -- Unique request identifier for idempotency (prevents duplicate charges)
+    -- Unique request identifier for idempotency (prevents duplicate charges).
+    -- Always server-generated; client-supplied ids must never key this column.
     request_id TEXT NOT NULL UNIQUE,
+    -- Client-supplied correlation id (X-Request-Id / X-Client-Request-Id).
+    -- Correlation only; intentionally not unique.
+    client_request_id TEXT,
     -- Attribution context: nullable to support session-based users without API keys
     api_key_id TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
     -- Principal-based attribution fields
@@ -646,7 +650,12 @@ CREATE INDEX IF NOT EXISTS idx_usage_records_request_id ON usage_records(request
 -- ======================================================================
 
 -- Per-scope model pricing configuration.
--- Pricing is looked up in order: user -> project -> organization -> static config -> defaults.
+-- Runtime billing overlays these rows onto configured pricing:
+-- organization row -> global row -> provider config -> [pricing] config -> catalog.
+-- Team/project/user-scoped rows are stored and served via the admin API but do not
+-- affect runtime billing yet (the synchronous cost path only carries the org id);
+-- get_effective_pricing() still resolves user -> project -> organization -> global
+-- for async callers.
 -- owner_type: 'organization', 'team', 'project', 'user', or NULL for static/global pricing
 CREATE TABLE IF NOT EXISTS model_pricing (
     id TEXT PRIMARY KEY NOT NULL,
@@ -743,7 +752,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_owner_pinned ON conversations(owner
 CREATE TABLE IF NOT EXISTS audit_logs (
     id TEXT PRIMARY KEY NOT NULL,
     -- Who performed the action: 'user', 'api_key', 'system'
-    actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'api_key', 'system')),
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'api_key', 'service_account', 'external_user', 'system')),
     -- ID of the actor (user_id or api_key_id, NULL for system)
     actor_id TEXT,
     -- The action performed (e.g., 'api_key.create', 'user.update')

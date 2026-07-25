@@ -88,6 +88,13 @@ pub trait ModelPricingRepo: Send + Sync {
     /// Delete a pricing entry
     async fn delete(&self, id: Uuid) -> DbResult<()>;
 
+    /// List every global and organization-scoped pricing row for the
+    /// in-memory billing overlay (`pricing::ModelPricingOverlay`).
+    /// Team/project/user rows are excluded — the runtime cost path only
+    /// scopes by organization. Unpaginated: the table is admin-curated
+    /// and small.
+    async fn list_billing_overlay_rows(&self) -> DbResult<Vec<DbModelPricing>>;
+
     /// Upsert pricing (create or update based on owner/provider/model)
     async fn upsert(&self, input: CreateModelPricing) -> DbResult<DbModelPricing>;
 

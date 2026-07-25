@@ -2458,6 +2458,7 @@ impl ServerExecutedTool for ShellExecutor {
             if let Some(ref buf) = usage_buffer {
                 buf.push(UsageLogEntry {
                     request_id: Uuid::new_v4().to_string(),
+                    client_request_id: None,
                     api_key_id: principal.api_key_id,
                     user_id: principal.user_id,
                     org_id: principal.org_id,

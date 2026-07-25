@@ -522,6 +522,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -582,6 +594,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -659,6 +683,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -712,6 +748,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -779,6 +827,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -832,6 +892,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -909,6 +981,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -962,6 +1046,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -1032,6 +1128,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -1144,6 +1252,7 @@
           "audit-logs"
         ],
         "summary": "List audit logs",
+        "description": "When neither `from` nor `to` is supplied, results default to the last\n7 days (the audit log is append-only and an unbounded scan would hit\nthe entire table). Pass an explicit `from` for older entries.",
         "operationId": "audit_log_list",
         "parameters": [
           {
@@ -1304,7 +1413,7 @@
         ],
         "responses": {
           "200": {
-            "description": "List of audit log entries",
+            "description": "List of audit log entries (defaults to the last 7 days when no from/to range is given)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3143,6 +3252,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3193,6 +3314,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -3260,6 +3393,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3303,6 +3448,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -3360,6 +3517,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3403,6 +3572,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -3470,6 +3651,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3513,6 +3706,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -3719,6 +3924,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "Filter by record type: \"model\" (LLM requests) or \"tool\" (server-side\ntool invocations). Omit for both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3870,6 +4087,18 @@
                 "null"
               ],
               "format": "date-time"
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "Filter by record type: \"model\" or \"tool\". Omit for both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -6358,6 +6587,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6426,6 +6667,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -6511,6 +6764,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6572,6 +6837,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -6647,6 +6924,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6708,6 +6997,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -6793,6 +7094,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6871,6 +7184,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6932,6 +7257,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -7010,6 +7347,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -10695,6 +11044,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -10763,6 +11124,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -10848,6 +11221,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -10916,6 +11301,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -10977,6 +11374,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -11062,6 +11471,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11123,6 +11544,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -11208,6 +11641,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11286,6 +11731,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11347,6 +11804,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -11432,6 +11901,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11503,6 +11984,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -11912,6 +12405,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11971,6 +12476,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -12047,6 +12564,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12106,6 +12635,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12158,6 +12699,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -12234,6 +12787,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12286,6 +12851,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -12362,6 +12939,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12424,6 +13013,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -12500,6 +13101,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12552,6 +13165,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -12628,6 +13253,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12697,6 +13334,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12759,6 +13408,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -13155,6 +13816,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -13204,6 +13877,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -13263,6 +13948,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -13726,6 +14423,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -13766,6 +14475,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -13823,6 +14544,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -13866,6 +14599,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -13923,6 +14668,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -13966,6 +14723,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14023,6 +14792,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14066,6 +14847,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14123,6 +14916,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14166,6 +14971,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14223,6 +15040,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14266,6 +15095,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14323,6 +15164,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14366,6 +15219,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14423,6 +15288,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14466,6 +15343,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -14662,6 +15551,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "Filter by record type: \"model\" (LLM requests) or \"tool\" (server-side\ntool invocations). Omit for both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14813,6 +15714,18 @@
                 "null"
               ],
               "format": "date-time"
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "Filter by record type: \"model\" or \"tool\". Omit for both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -16033,6 +16946,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -16093,6 +17018,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -16170,6 +17107,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -16223,6 +17172,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -16290,6 +17251,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -16343,6 +17316,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -16420,6 +17405,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -16473,6 +17470,18 @@
             "name": "end_date",
             "in": "query",
             "description": "End date (YYYY-MM-DD)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both.",
             "required": false,
             "schema": {
               "type": [
@@ -30454,7 +31463,7 @@
           },
           "pricing_source": {
             "type": "string",
-            "description": "Pricing source (provider, provider_config, pricing_config, catalog, none)"
+            "description": "Pricing source (provider, admin, provider_config, pricing_config, catalog, none)"
           },
           "request_count": {
             "type": "integer",
@@ -35572,6 +36581,13 @@
             ],
             "format": "int32"
           },
+          "client_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Client-supplied correlation id (X-Request-Id / X-Client-Request-Id)"
+          },
           "cost": {
             "type": "number",
             "format": "double",
@@ -35697,6 +36713,13 @@
               "null"
             ],
             "description": "End date (YYYY-MM-DD)"
+          },
+          "record_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "**Hadrian Extension:** Filter by record type: \"model\" (LLM requests) or\n\"tool\" (server-side tool invocations). Omit to include both."
           },
           "start_date": {
             "type": [

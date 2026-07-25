@@ -54,6 +54,8 @@ pub struct UsageDrainHandle {
 struct UsageDrainJob {
     logger: Arc<UsageLogger>,
     tokens: Arc<TokenAccumulator>,
+    /// True when the client dropped the stream before it completed
+    cancelled: bool,
 }
 
 #[cfg(feature = "server")]
@@ -63,7 +65,7 @@ impl UsageDrainHandle {
         let (tx, mut rx) = mpsc::channel::<UsageDrainJob>(capacity);
         task_tracker.spawn(async move {
             while let Some(job) = rx.recv().await {
-                job.logger.log_usage(&job.tokens).await;
+                job.logger.log_usage(&job.tokens, job.cancelled).await;
             }
             tracing::debug!("Usage drain channel closed; drainer exiting");
         });
@@ -73,8 +75,12 @@ impl UsageDrainHandle {
     /// Sync-send a usage log job. Safe to call from any thread/context,
     /// including `Drop`. Drops the job (with a warning) if the channel is
     /// full or closed — this is preferable to panicking from a destructor.
-    fn try_log(&self, logger: Arc<UsageLogger>, tokens: Arc<TokenAccumulator>) {
-        if let Err(err) = self.tx.try_send(UsageDrainJob { logger, tokens }) {
+    fn try_log(&self, logger: Arc<UsageLogger>, tokens: Arc<TokenAccumulator>, cancelled: bool) {
+        if let Err(err) = self.tx.try_send(UsageDrainJob {
+            logger,
+            tokens,
+            cancelled,
+        }) {
             tracing::warn!(
                 error = %err,
                 "Usage drain channel rejected job; partial usage will not be recorded"
@@ -284,8 +290,10 @@ impl SseParser {
                         });
                     }
 
-                    // Count tokens in delta content
-                    // This is approximate - real token counting requires tokenizer
+                    // Count characters in delta content; the accumulator
+                    // converts to a token estimate over the whole stream.
+                    // Summing a per-delta ceiling instead would round every
+                    // small delta up to >= 1 token and over-count ~60%.
                     if let Some(content) = json
                         .get("choices")
                         .and_then(|c| c.as_array())
@@ -294,12 +302,10 @@ impl SseParser {
                         .and_then(|delta| delta.get("content"))
                         .and_then(|c| c.as_str())
                     {
-                        // Rough approximation: 1 token ≈ 4 characters.
                         // Use chars() instead of len() so multibyte content
                         // (CJK, emoji) isn't over-counted as a token-per-byte.
-                        let estimated_tokens = (content.chars().count() as i64 + 3) / 4;
                         return Some(SseChunk::Delta {
-                            tokens: estimated_tokens,
+                            chars: content.chars().count() as i64,
                         });
                     }
                 }
@@ -312,8 +318,9 @@ impl SseParser {
 
 #[derive(Debug, Clone)]
 pub enum SseChunk {
-    /// Delta content with estimated token count
-    Delta { tokens: i64 },
+    /// Delta content with its character count (token estimation happens
+    /// over the accumulated total, not per delta)
+    Delta { chars: i64 },
     /// Final usage data from provider
     Usage {
         prompt_tokens: i64,
@@ -391,7 +398,13 @@ fn inject_cost_into_sse_chunk(chunk: &[u8], cost_dollars: f64) -> Bytes {
 pub struct TokenAccumulator {
     input_tokens: AtomicI64,
     output_tokens: AtomicI64,
-    estimated_output: AtomicI64,
+    /// Characters of delta content seen so far; converted to a token
+    /// estimate (chars / 4) only when the provider never reports usage.
+    estimated_output_chars: AtomicI64,
+    /// Input-token estimate derived from the request payload; used only
+    /// when the provider never reports usage (previously the fallback
+    /// logged input_tokens = 0 even though the prompt was known).
+    estimated_input: AtomicI64,
     usage_received: AtomicBool,
     /// Stored with NONE_SENTINEL for None
     cached_tokens: AtomicI64,
@@ -409,7 +422,8 @@ impl Default for TokenAccumulator {
         Self {
             input_tokens: AtomicI64::new(0),
             output_tokens: AtomicI64::new(0),
-            estimated_output: AtomicI64::new(0),
+            estimated_output_chars: AtomicI64::new(0),
+            estimated_input: AtomicI64::new(0),
             usage_received: AtomicBool::new(false),
             cached_tokens: AtomicI64::new(NONE_SENTINEL),
             reasoning_tokens: AtomicI64::new(NONE_SENTINEL),
@@ -420,9 +434,38 @@ impl Default for TokenAccumulator {
 }
 
 impl TokenAccumulator {
-    /// Add to the estimated output token count (from delta chunks)
-    pub fn add_estimated_output(&self, count: i64) {
-        self.estimated_output.fetch_add(count, Ordering::Relaxed);
+    /// Add delta-content characters to the output estimate
+    pub fn add_estimated_output_chars(&self, chars: i64) {
+        self.estimated_output_chars
+            .fetch_add(chars, Ordering::Relaxed);
+    }
+
+    /// Set the input-token estimate derived from the request payload
+    pub fn set_estimated_input(&self, tokens: i64) {
+        self.estimated_input.store(tokens, Ordering::Relaxed);
+    }
+
+    /// Absorb a parsed SSE event into the accumulated state
+    pub fn absorb(&self, chunk: &SseChunk) {
+        match chunk {
+            SseChunk::Delta { chars } => self.add_estimated_output_chars(*chars),
+            SseChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cost_dollars,
+                cached_tokens,
+                reasoning_tokens,
+                finish_reason,
+            } => self.set_usage(
+                *prompt_tokens,
+                *completion_tokens,
+                *cost_dollars,
+                *cached_tokens,
+                *reasoning_tokens,
+                finish_reason.clone(),
+            ),
+            SseChunk::Done => {}
+        }
     }
 
     /// Set the official usage data from the provider's final chunk
@@ -468,9 +511,15 @@ impl TokenAccumulator {
         self.output_tokens.load(Ordering::Relaxed)
     }
 
-    /// Get the estimated output token count (from delta chunks)
+    /// Get the estimated output token count (~4 chars/token over the whole
+    /// accumulated delta text, floor — matching how short streams bill)
     pub fn estimated_output(&self) -> i64 {
-        self.estimated_output.load(Ordering::Relaxed)
+        self.estimated_output_chars.load(Ordering::Relaxed) / 4
+    }
+
+    /// Get the input-token estimate derived from the request payload
+    pub fn estimated_input(&self) -> i64 {
+        self.estimated_input.load(Ordering::Relaxed)
     }
 
     /// Check if official usage data was received from the provider
@@ -522,6 +571,11 @@ pub struct UsageTrackingStream<S> {
     accumulated_tokens: Arc<TokenAccumulator>,
     usage_logger: Arc<UsageLogger>,
     stream_ended: bool,
+    /// Reassembles SSE events across TCP chunk boundaries. One network read
+    /// is not one SSE event: the final content delta and the usage event
+    /// frequently coalesce into a single chunk, and events can split across
+    /// reads. Parsing per-read silently dropped usage events either way.
+    sse_buffer: SseBuffer,
     #[cfg(feature = "server")]
     usage_drain: UsageDrainHandle,
     /// Streaming metrics tracking
@@ -639,6 +693,10 @@ pub struct UsageLogger {
     usage_entry: UsageLogEntry,
     provider: String,
     model: String,
+    /// Budget/token reservations claimed from the middleware; settled here
+    /// with actual usage once the stream ends (one-shot).
+    #[cfg(feature = "server")]
+    settlement: crate::compat::Mutex<Option<crate::middleware::StreamSettlement>>,
     #[cfg(feature = "server")]
     task_tracker: TaskTracker,
 }
@@ -650,6 +708,7 @@ impl UsageLogger {
         usage_entry: UsageLogEntry,
         provider: String,
         model: String,
+        #[cfg(feature = "server")] settlement: Option<crate::middleware::StreamSettlement>,
         #[cfg(feature = "server")] task_tracker: TaskTracker,
     ) -> Self {
         Self {
@@ -658,6 +717,8 @@ impl UsageLogger {
             usage_entry,
             provider,
             model,
+            #[cfg(feature = "server")]
+            settlement: crate::compat::Mutex::new(settlement),
             #[cfg(feature = "server")]
             task_tracker,
         }
@@ -675,7 +736,9 @@ impl UsageLogger {
             ..
         } = usage
         {
-            let calculated = self.pricing.calculate_cost_detailed(
+            // Org scope enables org-specific admin pricing rows; None (no org
+            // attribution) applies global admin rows only.
+            let calculated = self.pricing.calculate_cost_detailed_scoped(
                 &self.provider,
                 &self.model,
                 &crate::pricing::TokenUsage {
@@ -690,6 +753,7 @@ impl UsageLogger {
                     character_count: None,
                     video_seconds: None,
                 },
+                self.usage_entry.org_id,
             );
             let (cost_microcents, _pricing_source) =
                 self.pricing.resolve_cost(*provider_cost, calculated);
@@ -699,8 +763,11 @@ impl UsageLogger {
         }
     }
 
-    /// Log usage to database based on accumulated tokens
-    pub async fn log_usage(&self, tokens: &TokenAccumulator) {
+    /// Log usage to database based on accumulated tokens and settle any
+    /// claimed budget/token reservations with the actual usage.
+    ///
+    /// `cancelled` marks rows for streams the client dropped mid-flight.
+    pub async fn log_usage(&self, tokens: &TokenAccumulator, cancelled: bool) {
         // Use official usage if received, otherwise use estimates
         let (input_tokens, output_tokens) = if tokens.usage_received() {
             (tokens.input_tokens(), tokens.output_tokens())
@@ -709,11 +776,13 @@ impl UsageLogger {
             tracing::warn!(
                 "Streaming usage logged without official token counts - using estimates"
             );
-            (0, tokens.estimated_output())
+            (tokens.estimated_input(), tokens.estimated_output())
         };
 
-        // Calculate cost based on configured pricing
-        let calculated_cost = self.pricing.calculate_cost_detailed(
+        // Calculate cost based on configured pricing. The usage entry's org
+        // scope enables org-specific admin pricing rows; None (no org
+        // attribution) applies global admin rows only.
+        let calculated_cost = self.pricing.calculate_cost_detailed_scoped(
             &self.provider,
             &self.model,
             &crate::pricing::TokenUsage {
@@ -728,6 +797,7 @@ impl UsageLogger {
                 character_count: None,
                 video_seconds: None,
             },
+            self.usage_entry.org_id,
         );
 
         // Resolve cost based on cost_source preference (provider-reported vs calculated)
@@ -743,6 +813,21 @@ impl UsageLogger {
             );
         }
 
+        // Settle the budget/token reservations with actual usage. For
+        // streams this is the only settlement point: the middleware settles
+        // from response headers, which SSE responses never carry, so without
+        // this streamed spend never reached the budget counters at all.
+        #[cfg(feature = "server")]
+        {
+            // Bind before awaiting so the lock guard isn't held across .await
+            let settlement = self.settlement.lock().take();
+            if let Some(settlement) = settlement {
+                settlement
+                    .settle(cost_microcents.unwrap_or(0), input_tokens + output_tokens)
+                    .await;
+            }
+        }
+
         // Update usage entry
         // Use saturating casts to prevent overflow with extremely large token counts
         let mut entry = self.usage_entry.clone();
@@ -753,6 +838,13 @@ impl UsageLogger {
         entry.cached_tokens = saturate_i64_to_i32(tokens.cached_tokens().unwrap_or(0));
         entry.reasoning_tokens = saturate_i64_to_i32(tokens.reasoning_tokens().unwrap_or(0));
         entry.finish_reason = tokens.finish_reason();
+        entry.cancelled = cancelled;
+        // Time from request admission to final logging (~time-to-last-byte)
+        entry.latency_ms = Some(
+            (chrono::Utc::now() - entry.request_at)
+                .num_milliseconds()
+                .clamp(0, i32::MAX as i64) as i32,
+        );
 
         // Log to database with retry logic, using task_tracker to ensure completion on shutdown
         let db = self.db.clone();
@@ -805,6 +897,8 @@ where
         usage_entry: UsageLogEntry,
         provider: String,
         model: String,
+        estimated_input_tokens: i64,
+        #[cfg(feature = "server")] settlement: Option<crate::middleware::StreamSettlement>,
         #[cfg(feature = "server")] task_tracker: TaskTracker,
         #[cfg(feature = "server")] usage_drain: UsageDrainHandle,
     ) -> Self {
@@ -815,17 +909,36 @@ where
             provider.clone(),
             model.clone(),
             #[cfg(feature = "server")]
+            settlement,
+            #[cfg(feature = "server")]
             task_tracker.clone(),
         ));
 
+        let accumulated_tokens = Arc::new(TokenAccumulator::default());
+        accumulated_tokens.set_estimated_input(estimated_input_tokens);
+
         Self {
             inner: stream,
-            accumulated_tokens: Arc::new(TokenAccumulator::default()),
+            accumulated_tokens,
             usage_logger: logger,
             stream_ended: false,
+            sse_buffer: SseBuffer::new(),
             #[cfg(feature = "server")]
             usage_drain,
             streaming_metrics: Arc::new(StreamingMetrics::new(provider, model)),
+        }
+    }
+}
+
+impl<S> UsageTrackingStream<S> {
+    /// Parse any bytes still sitting in the SSE buffer (final event not
+    /// terminated by a blank line) into the accumulator.
+    fn absorb_buffer_remainder(&mut self) {
+        let remaining = self.sse_buffer.take_remaining();
+        if !remaining.is_empty()
+            && let Some(event) = SseParser::parse_chunk(&remaining)
+        {
+            self.accumulated_tokens.absorb(&event);
         }
     }
 }
@@ -843,40 +956,28 @@ where
                 // Record chunk arrival for streaming metrics
                 self.streaming_metrics.record_chunk();
 
-                // Parse chunk for token data and update atomically.
-                // Using atomic operations ensures updates are never skipped.
+                // Reassemble SSE events across chunk boundaries and absorb
+                // every complete event — a single read can carry several
+                // (e.g. the final delta coalesced with the usage event).
                 let mut chunk = chunk;
-                if let Some(sse_chunk) = SseParser::parse_chunk(&chunk) {
-                    match sse_chunk {
-                        SseChunk::Delta { tokens: count } => {
-                            self.accumulated_tokens.add_estimated_output(count);
-                        }
-                        ref usage @ SseChunk::Usage {
-                            prompt_tokens,
-                            completion_tokens,
-                            cost_dollars,
-                            cached_tokens,
-                            reasoning_tokens,
-                            ref finish_reason,
-                        } => {
-                            self.accumulated_tokens.set_usage(
-                                prompt_tokens,
-                                completion_tokens,
-                                cost_dollars,
-                                cached_tokens,
-                                reasoning_tokens,
-                                finish_reason.clone(),
-                            );
-
-                            // Inject calculated cost into the SSE chunk
-                            if let Some(cost) = self.usage_logger.calculate_cost_dollars(usage) {
-                                chunk = inject_cost_into_sse_chunk(&chunk, cost);
-                            }
-                        }
-                        SseChunk::Done => {
-                            // Stream complete marker
+                self.sse_buffer.extend(&chunk);
+                let mut usage_event: Option<SseChunk> = None;
+                for event in self.sse_buffer.extract_complete_events() {
+                    if let Some(sse_chunk) = SseParser::parse_chunk(&event) {
+                        self.accumulated_tokens.absorb(&sse_chunk);
+                        if matches!(sse_chunk, SseChunk::Usage { .. }) {
+                            usage_event = Some(sse_chunk);
                         }
                     }
+                }
+
+                // Inject the resolved cost into the chunk carrying the usage
+                // event (best effort: a usage line split across reads passes
+                // through unmodified, but the accumulator still has it).
+                if let Some(ref usage) = usage_event
+                    && let Some(cost) = self.usage_logger.calculate_cost_dollars(usage)
+                {
+                    chunk = inject_cost_into_sse_chunk(&chunk, cost);
                 }
 
                 Poll::Ready(Some(Ok(chunk)))
@@ -885,10 +986,14 @@ where
                 // Stream ended normally - log usage and report metrics
                 if !self.stream_ended {
                     self.stream_ended = true;
+                    self.absorb_buffer_remainder();
                     self.streaming_metrics.report("completed");
                     #[cfg(feature = "server")]
-                    self.usage_drain
-                        .try_log(self.usage_logger.clone(), self.accumulated_tokens.clone());
+                    self.usage_drain.try_log(
+                        self.usage_logger.clone(),
+                        self.accumulated_tokens.clone(),
+                        false,
+                    );
                 }
 
                 Poll::Ready(None)
@@ -897,12 +1002,16 @@ where
                 // Error in stream - still try to log what we have
                 if !self.stream_ended {
                     self.stream_ended = true;
+                    self.absorb_buffer_remainder();
                     self.streaming_metrics.report("error");
                     #[cfg(feature = "server")]
                     {
                         tracing::warn!("Stream ended with error, logging partial usage");
-                        self.usage_drain
-                            .try_log(self.usage_logger.clone(), self.accumulated_tokens.clone());
+                        self.usage_drain.try_log(
+                            self.usage_logger.clone(),
+                            self.accumulated_tokens.clone(),
+                            false,
+                        );
                     }
                 }
 
@@ -929,14 +1038,18 @@ impl<S> Drop for UsageTrackingStream<S> {
         // channel instead of spawning a task here directly.
         if !self.stream_ended {
             self.stream_ended = true;
+            self.absorb_buffer_remainder();
             self.streaming_metrics.report("dropped");
             #[cfg(feature = "server")]
             {
                 tracing::warn!(
                     "Stream dropped without completing - logging partial usage for budget accuracy"
                 );
-                self.usage_drain
-                    .try_log(self.usage_logger.clone(), self.accumulated_tokens.clone());
+                self.usage_drain.try_log(
+                    self.usage_logger.clone(),
+                    self.accumulated_tokens.clone(),
+                    true,
+                );
             }
         }
     }
@@ -967,9 +1080,8 @@ mod tests {
         let result = SseParser::parse_chunk(chunk);
 
         match result {
-            Some(SseChunk::Delta { tokens }) => {
-                // "Hello world" = 11 chars ≈ 3 tokens (11/4 rounded up)
-                assert!((2..=4).contains(&tokens));
+            Some(SseChunk::Delta { chars }) => {
+                assert_eq!(chars, 11); // "Hello world"
             }
             _ => panic!("Expected Delta chunk"),
         }
@@ -1076,16 +1188,13 @@ mod tests {
 
     #[test]
     fn test_parse_sse_delta_multibyte_content() {
-        // Four CJK chars = 12 bytes. len()/4 would estimate 3 tokens;
-        // chars().count()/4 estimates 1.
+        // Four CJK chars = 12 bytes. len() would report 12 chars;
+        // chars().count() reports 4.
         let chunk = r#"data: {"choices":[{"delta":{"content":"日本語😀"}}]}"#;
         let result = SseParser::parse_chunk(chunk.as_bytes());
         match result {
-            Some(SseChunk::Delta { tokens }) => {
-                assert_eq!(
-                    tokens, 1,
-                    "4 chars should estimate to 1 token, got {tokens}"
-                );
+            Some(SseChunk::Delta { chars }) => {
+                assert_eq!(chars, 4, "multibyte content must count chars, got {chars}");
             }
             _ => panic!("Expected Delta chunk"),
         }
@@ -1145,9 +1254,9 @@ mod tests {
         assert!(acc.provider_cost_dollars().is_none());
         assert!(acc.finish_reason().is_none());
 
-        // Simulate delta chunks (atomic add)
-        acc.add_estimated_output(10);
-        acc.add_estimated_output(5);
+        // Simulate delta chunks (atomic add; 60 chars -> 15 estimated tokens)
+        acc.add_estimated_output_chars(40);
+        acc.add_estimated_output_chars(20);
         assert_eq!(acc.estimated_output(), 15);
 
         // Simulate official usage
@@ -1182,7 +1291,7 @@ mod tests {
             let acc_clone = acc.clone();
             handles.push(thread::spawn(move || {
                 for _ in 0..100 {
-                    acc_clone.add_estimated_output(1);
+                    acc_clone.add_estimated_output_chars(4);
                 }
             }));
         }

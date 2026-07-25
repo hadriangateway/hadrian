@@ -38,6 +38,8 @@ mod containers_cleanup;
 mod containers_reaper;
 mod leader_lock;
 mod model_catalog_sync;
+#[cfg(feature = "server")]
+mod model_pricing_refresh;
 mod oauth_code_cleanup;
 mod provider_health_check;
 #[cfg(feature = "server")]
@@ -53,6 +55,8 @@ pub use containers_cleanup::start_containers_cleanup_worker;
 #[cfg(feature = "server")]
 pub use containers_reaper::start_containers_reaper_worker;
 pub use model_catalog_sync::start_model_catalog_sync_worker;
+#[cfg(feature = "server")]
+pub use model_pricing_refresh::start_model_pricing_overlay_refresh_worker;
 pub use oauth_code_cleanup::start_oauth_code_cleanup_worker;
 pub use provider_health_check::{
     ProviderHealthChecker, ProviderHealthState, ProviderHealthStateRegistry,

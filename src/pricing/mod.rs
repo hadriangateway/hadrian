@@ -2,12 +2,17 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+mod overlay;
+pub use overlay::ModelPricingOverlay;
+
 /// Where the cost data for a usage record came from
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum CostPricingSource {
     /// Upstream API reported cost (e.g. OpenRouter's `cost` field)
     Provider,
+    /// Admin-managed `model_pricing` DB row (global or organization scope)
+    Admin,
     /// From `[providers.*.models]` in hadrian.toml
     ProviderConfig,
     /// From `[pricing]` section in hadrian.toml
@@ -23,6 +28,7 @@ impl CostPricingSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Provider => "provider",
+            Self::Admin => "admin",
             Self::ProviderConfig => "provider_config",
             Self::PricingConfig => "pricing_config",
             Self::Catalog => "catalog",
@@ -33,6 +39,7 @@ impl CostPricingSource {
     pub fn parse(s: &str) -> Self {
         match s {
             "provider" => Self::Provider,
+            "admin" => Self::Admin,
             "provider_config" => Self::ProviderConfig,
             "pricing_config" => Self::PricingConfig,
             "catalog" => Self::Catalog,
@@ -330,6 +337,14 @@ pub struct PricingConfig {
     #[serde(skip)]
     #[cfg_attr(feature = "json-schema", schemars(skip))]
     source_map: HashMap<String, HashMap<String, CostPricingSource>>,
+
+    /// Admin-managed pricing overlay mirroring the `model_pricing` DB table
+    /// (not serialized). Highest-priority calculated source; see
+    /// [`Self::calculate_cost_detailed_scoped`]. Refreshed by admin routes
+    /// and a periodic background job.
+    #[serde(skip)]
+    #[cfg_attr(feature = "json-schema", schemars(skip))]
+    overlay: Option<ModelPricingOverlay>,
 }
 
 impl PricingConfig {
@@ -358,14 +373,45 @@ impl PricingConfig {
     /// Returns `(cost_microcents, source)` where source indicates where
     /// the pricing data came from.
     ///
-    /// First checks the pre-populated pricing HashMap, then falls back to
-    /// a runtime catalog lookup for models not in `allowed_models`.
+    /// Equivalent to [`Self::calculate_cost_detailed_scoped`] with no
+    /// organization context: global admin pricing rows still apply, but
+    /// org-scoped rows do not. Callers that know the request's organization
+    /// should use the scoped variant instead.
     pub fn calculate_cost_detailed(
         &self,
         provider: &str,
         model: &str,
         usage: &TokenUsage,
     ) -> Option<(i64, CostPricingSource)> {
+        self.calculate_cost_detailed_scoped(provider, model, usage, None)
+    }
+
+    /// Calculate cost in microcents with tenant scope for admin pricing.
+    ///
+    /// Priority chain (highest first):
+    /// 1. Admin `model_pricing` DB row for `org_id`'s organization (when known)
+    /// 2. Global admin `model_pricing` DB row
+    /// 3. Pre-populated pricing HashMap (provider config > `[pricing]` config > catalog)
+    /// 4. Runtime catalog lookup for models not in `allowed_models`
+    ///
+    /// Passing `org_id: None` (callers without org attribution) applies
+    /// global admin rows only — one organization's pricing rows are never
+    /// applied to another organization or globally.
+    pub fn calculate_cost_detailed_scoped(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: &TokenUsage,
+        org_id: Option<uuid::Uuid>,
+    ) -> Option<(i64, CostPricingSource)> {
+        if let Some(overlay) = &self.overlay
+            && let Some(pricing) = overlay.lookup(provider, model, org_id)
+        {
+            return Some((
+                Self::compute_cost(&pricing, usage),
+                CostPricingSource::Admin,
+            ));
+        }
         if let Some(pricing) = self.get(provider, model) {
             let source = self.get_source(provider, model);
             return Some((Self::compute_cost(pricing, usage), source));
@@ -379,11 +425,31 @@ impl PricingConfig {
         None
     }
 
+    /// Attach the shared admin pricing overlay (DB-backed `model_pricing`
+    /// rows). The overlay handle is cheaply cloneable; the same underlying
+    /// data is refreshed by admin routes and background jobs.
+    pub fn set_overlay(&mut self, overlay: ModelPricingOverlay) {
+        self.overlay = Some(overlay);
+    }
+
+    /// Handle to the attached admin pricing overlay, if any.
+    pub fn overlay(&self) -> Option<&ModelPricingOverlay> {
+        self.overlay.as_ref()
+    }
+
     /// Look up pricing from the runtime catalog for a provider/model pair.
     fn lookup_catalog(&self, provider: &str, model: &str) -> Option<ModelPricing> {
         let catalog = self.catalog.as_ref()?;
         let catalog_provider_id = self.provider_catalog_map.get(provider)?;
-        catalog.get_pricing(catalog_provider_id, model)
+        if let Some(pricing) = catalog.get_pricing(catalog_provider_id, model) {
+            return Some(pricing);
+        }
+        // Aggregators (e.g. OpenRouter) use "<vendor>/<model>" ids. When the
+        // aggregator's catalog section lacks the model (embeddings, delisted
+        // ids), fall back to the vendor's own section so spend is still priced
+        // rather than logged as cost 0 / pricing_source "none".
+        let (vendor, bare_model) = model.split_once('/')?;
+        catalog.get_pricing(vendor, bare_model)
     }
 
     /// Compute cost in microcents from pricing and token usage.
@@ -391,33 +457,46 @@ impl PricingConfig {
     /// Uses `i128` for intermediate calculations to prevent overflow with
     /// large token counts (billions of tokens) and high pricing values.
     /// Results are saturated to `i64::MAX` if they would overflow.
+    ///
+    /// All per-token components are accumulated at full `tokens * rate`
+    /// precision and divided (with rounding) exactly once at the end.
+    /// Flooring each component separately would lose up to 1 microcent per
+    /// component, always downward, systematically under-billing small
+    /// requests (e.g. a 13-in/2-out gpt-4o-mini call is 3.15 microcents,
+    /// which must round to 3, not truncate to 1 + 1 = 2).
     fn compute_cost(pricing: &ModelPricing, usage: &TokenUsage) -> i64 {
-        let mut total_microcents: i128 = 0;
+        // Accumulated in millionths of a microcent so the final division
+        // happens once, over the sum.
+        let mut total_scaled: i128 = 0;
 
         // Input tokens (subtract cached if applicable)
         let regular_input = usage
             .cached_tokens
             .map(|c| usage.input_tokens.saturating_sub(c))
             .unwrap_or(usage.input_tokens);
-        total_microcents +=
-            (regular_input as i128 * pricing.input_per_1m_tokens as i128) / 1_000_000;
+        total_scaled += regular_input as i128 * pricing.input_per_1m_tokens as i128;
 
-        // Output tokens
-        total_microcents +=
-            (usage.output_tokens as i128 * pricing.output_per_1m_tokens as i128) / 1_000_000;
+        // Output tokens. Reasoning tokens are included in output_tokens
+        // (OpenAI semantics); when a separate reasoning rate exists they are
+        // billed at that rate *instead of* the output rate, never on top.
+        let regular_output = match (usage.reasoning_tokens, pricing.reasoning_per_1m_tokens) {
+            (Some(reasoning), Some(_)) => usage.output_tokens.saturating_sub(reasoning),
+            _ => usage.output_tokens,
+        };
+        total_scaled += regular_output as i128 * pricing.output_per_1m_tokens as i128;
 
         // Cached input tokens (if pricing available)
         if let (Some(cached), Some(cached_price)) =
             (usage.cached_tokens, pricing.cached_input_per_1m_tokens)
         {
-            total_microcents += (cached as i128 * cached_price as i128) / 1_000_000;
+            total_scaled += cached as i128 * cached_price as i128;
         }
 
-        // Reasoning tokens
+        // Reasoning tokens (at their separate rate, when one is configured)
         if let (Some(reasoning), Some(reasoning_price)) =
             (usage.reasoning_tokens, pricing.reasoning_per_1m_tokens)
         {
-            total_microcents += (reasoning as i128 * reasoning_price as i128) / 1_000_000;
+            total_scaled += reasoning as i128 * reasoning_price as i128;
         }
 
         // Per-image cost (with size/quality-aware lookup)
@@ -425,33 +504,33 @@ impl PricingConfig {
             && let Some(image_price) = pricing
                 .resolve_image_price(usage.image_quality.as_deref(), usage.image_size.as_deref())
         {
-            total_microcents += images as i128 * image_price as i128;
+            total_scaled += images as i128 * image_price as i128 * 1_000_000;
         }
 
         // Per-second cost (audio transcription/translation)
         if let (Some(seconds), Some(second_price)) = (usage.audio_seconds, pricing.per_second) {
-            total_microcents += seconds as i128 * second_price as i128;
+            total_scaled += seconds as i128 * second_price as i128 * 1_000_000;
         }
 
         // Per-second cost (video generation). Reuses the model's `per_second`
         // rate; a video model never also reports `audio_seconds`.
         if let (Some(seconds), Some(second_price)) = (usage.video_seconds, pricing.per_second) {
-            total_microcents += seconds as i128 * second_price as i128;
+            total_scaled += seconds as i128 * second_price as i128 * 1_000_000;
         }
 
         // Per-character cost (TTS)
         if let (Some(chars), Some(char_price)) = (usage.character_count, pricing.per_1m_characters)
         {
-            total_microcents += (chars as i128 * char_price as i128) / 1_000_000;
+            total_scaled += chars as i128 * char_price as i128;
         }
 
         // Per-request cost
         if let Some(request_price) = pricing.per_request {
-            total_microcents += request_price as i128;
+            total_scaled += request_price as i128 * 1_000_000;
         }
 
-        // Saturate to i64::MAX if result would overflow
-        saturate_to_i64(total_microcents)
+        // Single rounded division; saturate to i64::MAX if it would overflow.
+        saturate_to_i64((total_scaled + 500_000) / 1_000_000)
     }
 
     /// Add or update pricing for a model with source tracking
@@ -562,10 +641,18 @@ impl PricingConfig {
     /// Create a pricing config with catalog fallback.
     ///
     /// Priority chain (highest to lowest):
-    /// 1. Per-provider `models` in provider config
-    /// 2. Explicit `[pricing]` section in config
-    /// 3. models.dev catalog pricing (pre-populated for `allowed_models`, runtime fallback for others)
-    /// 4. At runtime: provider-reported cost (via `CostSource::PreferProvider`)
+    /// 1. Admin `model_pricing` DB rows, when an overlay is attached via
+    ///    [`Self::set_overlay`] (org-scoped, then global)
+    /// 2. Per-provider `models` in provider config
+    /// 3. Explicit `[pricing]` section in config
+    /// 4. models.dev catalog pricing (pre-populated for `allowed_models`, runtime fallback for others)
+    /// 5. At runtime: provider-reported cost (via `CostSource::PreferProvider`)
+    ///
+    /// Note: `cost_source` resolution in [`Self::resolve_cost`] is applied on
+    /// top of this chain — with the default `PreferProvider`, a
+    /// provider-reported cost still wins over all calculated sources,
+    /// including admin rows. Use `cost_source = "calculated_only"` to make
+    /// admin pricing authoritative.
     pub fn from_config_with_catalog(
         config: &PricingConfig,
         providers: &crate::config::ProvidersConfig,
@@ -1021,7 +1108,7 @@ mod tests {
 
         // Large usage that would overflow if not protected
         let usage = TokenUsage {
-            input_tokens: 10_000_000_000,
+            input_tokens: 20_000_000_000,
             output_tokens: 10_000_000_000,
             reasoning_tokens: Some(10_000_000_000),
             cached_tokens: Some(5_000_000_000),
@@ -1542,5 +1629,211 @@ mod tests {
         // PricingConfig::default() has catalog: None — should behave as before
         let config = PricingConfig::default();
         assert_eq!(config.calculate_cost("openai", "gpt-4o", 1000, 1000), None);
+    }
+
+    fn admin_row(
+        owner: crate::models::PricingOwner,
+        provider: &str,
+        model: &str,
+        input_per_1m: i64,
+        output_per_1m: i64,
+    ) -> crate::models::DbModelPricing {
+        crate::models::DbModelPricing {
+            id: uuid::Uuid::new_v4(),
+            owner,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            input_per_1m_tokens: input_per_1m,
+            output_per_1m_tokens: output_per_1m,
+            per_image: None,
+            per_request: None,
+            cached_input_per_1m_tokens: None,
+            cache_write_per_1m_tokens: None,
+            reasoning_per_1m_tokens: None,
+            per_second: None,
+            per_1m_characters: None,
+            source: crate::models::PricingSource::Manual,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_admin_overlay_overrides_configured_pricing() {
+        use crate::models::PricingOwner;
+
+        // Provider-config pricing (normally the highest calculated priority)
+        let mut config = PricingConfig::default();
+        config.set_pricing_with_source(
+            "openai",
+            "gpt-4o",
+            ModelPricing {
+                input_per_1m_tokens: 1_000_000, // $1/1M
+                output_per_1m_tokens: 2_000_000,
+                ..Default::default()
+            },
+            CostPricingSource::ProviderConfig,
+        );
+
+        // Global admin row overrides it
+        let overlay = ModelPricingOverlay::new();
+        overlay.load_from_rows(&[admin_row(
+            PricingOwner::Global,
+            "openai",
+            "gpt-4o",
+            5_000_000, // $5/1M
+            10_000_000,
+        )]);
+        config.set_overlay(overlay.clone());
+
+        // 1M in + 1M out at admin rates: $5 + $10 = 15_000_000 microcents
+        let cost = config.calculate_cost("openai", "gpt-4o", 1_000_000, 1_000_000);
+        assert_eq!(cost, Some((15_000_000, CostPricingSource::Admin)));
+
+        // Clearing the overlay falls back to provider-config pricing
+        overlay.load_from_rows(&[]);
+        let cost = config.calculate_cost("openai", "gpt-4o", 1_000_000, 1_000_000);
+        assert_eq!(cost, Some((3_000_000, CostPricingSource::ProviderConfig)));
+    }
+
+    #[test]
+    fn test_admin_overlay_org_scoping() {
+        use crate::models::PricingOwner;
+
+        let org_a = uuid::Uuid::new_v4();
+        let org_b = uuid::Uuid::new_v4();
+
+        let mut config = PricingConfig::default();
+        let overlay = ModelPricingOverlay::new();
+        overlay.load_from_rows(&[
+            admin_row(PricingOwner::Global, "openai", "gpt-4o", 1_000_000, 0),
+            admin_row(
+                PricingOwner::Organization { org_id: org_a },
+                "openai",
+                "gpt-4o",
+                2_000_000,
+                0,
+            ),
+        ]);
+        config.set_overlay(overlay);
+
+        let usage = TokenUsage::new(1_000_000, 0);
+
+        // Org A: its own row beats the global admin row
+        let cost = config.calculate_cost_detailed_scoped("openai", "gpt-4o", &usage, Some(org_a));
+        assert_eq!(cost, Some((2_000_000, CostPricingSource::Admin)));
+
+        // Org B: global admin row, never org A's
+        let cost = config.calculate_cost_detailed_scoped("openai", "gpt-4o", &usage, Some(org_b));
+        assert_eq!(cost, Some((1_000_000, CostPricingSource::Admin)));
+
+        // No org context: global admin row
+        let cost = config.calculate_cost_detailed("openai", "gpt-4o", &usage);
+        assert_eq!(cost, Some((1_000_000, CostPricingSource::Admin)));
+    }
+
+    #[test]
+    fn test_admin_overlay_org_row_never_leaks_without_org() {
+        use crate::models::PricingOwner;
+
+        let org_a = uuid::Uuid::new_v4();
+
+        // Underlying config pricing exists
+        let mut config = PricingConfig::default();
+        config.set_pricing_with_source(
+            "openai",
+            "gpt-4o",
+            ModelPricing {
+                input_per_1m_tokens: 1_000_000,
+                output_per_1m_tokens: 0,
+                ..Default::default()
+            },
+            CostPricingSource::PricingConfig,
+        );
+
+        // Only an org-scoped admin row, no global row
+        let overlay = ModelPricingOverlay::new();
+        overlay.load_from_rows(&[admin_row(
+            PricingOwner::Organization { org_id: org_a },
+            "openai",
+            "gpt-4o",
+            9_000_000,
+            0,
+        )]);
+        config.set_overlay(overlay);
+
+        let usage = TokenUsage::new(1_000_000, 0);
+
+        // Without org context (or with a different org) the org row must not
+        // apply — falls through to configured pricing
+        let cost = config.calculate_cost_detailed("openai", "gpt-4o", &usage);
+        assert_eq!(cost, Some((1_000_000, CostPricingSource::PricingConfig)));
+        let cost = config.calculate_cost_detailed_scoped(
+            "openai",
+            "gpt-4o",
+            &usage,
+            Some(uuid::Uuid::new_v4()),
+        );
+        assert_eq!(cost, Some((1_000_000, CostPricingSource::PricingConfig)));
+
+        // With the owning org it applies
+        let cost = config.calculate_cost_detailed_scoped("openai", "gpt-4o", &usage, Some(org_a));
+        assert_eq!(cost, Some((9_000_000, CostPricingSource::Admin)));
+    }
+
+    #[test]
+    fn test_admin_overlay_beats_catalog_fallback() {
+        use crate::{catalog::ModelCatalogRegistry, config::ProvidersConfig, models::PricingOwner};
+
+        let catalog_json = r#"{
+            "openai": {
+                "id": "openai",
+                "name": "OpenAI",
+                "models": {
+                    "gpt-4o": {
+                        "id": "gpt-4o",
+                        "name": "GPT-4o",
+                        "cost": { "input": 2.5, "output": 10.0 }
+                    }
+                }
+            }
+        }"#;
+        let catalog = ModelCatalogRegistry::new();
+        catalog.load_from_json(catalog_json).unwrap();
+
+        // Passthrough provider: gpt-4o resolves via runtime catalog fallback
+        let providers_toml = r#"
+            [open_ai]
+            type = "open_ai"
+            api_key = "test-key"
+        "#;
+        let providers: ProvidersConfig = toml::from_str(providers_toml).unwrap();
+
+        let mut config = PricingConfig::from_config_with_catalog(
+            &PricingConfig::default(),
+            &providers,
+            Some(&catalog),
+        );
+
+        let overlay = ModelPricingOverlay::new();
+        overlay.load_from_rows(&[admin_row(
+            PricingOwner::Global,
+            "open_ai",
+            "gpt-4o",
+            1_000_000,
+            1_000_000,
+        )]);
+        config.set_overlay(overlay);
+
+        // Admin row wins over the catalog fallback
+        let cost = config.calculate_cost("open_ai", "gpt-4o", 1_000_000, 1_000_000);
+        assert_eq!(cost, Some((2_000_000, CostPricingSource::Admin)));
+    }
+
+    #[test]
+    fn test_cost_pricing_source_admin_roundtrip() {
+        assert_eq!(CostPricingSource::Admin.as_str(), "admin");
+        assert_eq!(CostPricingSource::parse("admin"), CostPricingSource::Admin);
+        assert_eq!(CostPricingSource::Admin.to_string(), "admin");
     }
 }

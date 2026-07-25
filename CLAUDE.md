@@ -137,7 +137,9 @@ See `agent_instructions/architecture.md` for details on RBAC, SSO, RAG, chat mod
 
 ## API Conventions
 
-- Admin endpoints: `/admin/v1/` — OpenAI-compatible endpoints: `/v1/`
+- Admin endpoints: `/admin/v1/` (at root, no `/api` prefix) — OpenAI-compatible endpoints: `/api/v1/`
+- The runtime OpenAPI spec is served at `/openapi.json` (root). Unregistered GET paths (including `/admin/v1/...`
+  typos) fall through to the embedded SPA and return 200 HTML, not a JSON 404 — check `Content-Type` when probing
 - OpenAI spec conformance with `**Hadrian Extension:**` doc comments; verify with `./scripts/openapi-conformance.py`
 - Spec generates client for the frontend with `./scripts/generate-openapi.sh`
 - Reference specs in `openapi/` directory
@@ -185,6 +187,22 @@ Never expose internal paths, UUIDs, infrastructure details, or secret manager re
 ### Credential handling
 
 Never return provider credentials in API responses. Never treat a secret reference as a literal value.
+
+### Usage row identity
+
+`usage_records.request_id` (UNIQUE, deduped with INSERT OR IGNORE) **must** stay
+server-generated. Client-supplied ids (`X-Request-Id` / `X-Client-Request-Id`) go only in
+the non-unique `client_request_id` correlation column — a client-controllable dedupe key
+lets clients suppress their own billing rows.
+
+### Streaming settlement
+
+Budget/token reservations for streaming responses settle via the one-shot
+`SettlementCell` handoff (`src/middleware/util/settlement.rs`), not from response
+headers. When touching the middleware settle path or `UsageLogger::log_usage`, preserve
+the exactly-one-side-settles invariant. Reasoning tokens are included in output tokens
+(OpenAI semantics): `compute_cost` bills them at a separate rate *instead of* the output
+rate, never both.
 
 ### Cursor pagination timestamps
 

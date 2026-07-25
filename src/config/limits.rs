@@ -1,4 +1,3 @@
-use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// Default limits configuration.
@@ -412,20 +411,14 @@ pub enum RateLimitWindowType {
 }
 
 /// Budget defaults.
+///
+/// Budgets themselves are per-API-key (`budget_limit_cents` +
+/// `budget_period` set at key creation); this section only tunes how
+/// enforcement behaves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BudgetDefaults {
-    /// Default monthly budget in USD. None means unlimited.
-    #[serde(default)]
-    #[cfg_attr(feature = "json-schema", schemars(with = "Option<String>"))]
-    pub monthly_budget_usd: Option<Decimal>,
-
-    /// Default daily budget in USD. None means unlimited.
-    #[serde(default)]
-    #[cfg_attr(feature = "json-schema", schemars(with = "Option<String>"))]
-    pub daily_budget_usd: Option<Decimal>,
-
     /// Warning threshold as a percentage (0.0-1.0).
     /// Notifications are sent when this threshold is reached.
     #[serde(default = "default_warning_threshold")]
@@ -434,7 +427,8 @@ pub struct BudgetDefaults {
     /// Estimated cost per request in cents for budget reservation.
     /// This is reserved before the request is processed to prevent race conditions.
     /// After the request completes, the actual cost replaces the estimate.
-    /// Default is 10 cents ($0.10) which is conservative for most models.
+    /// The reservation is capped at the key's own budget limit so small
+    /// budgets stay usable. Default is 10 cents ($0.10).
     #[serde(default = "default_estimated_cost_cents")]
     pub estimated_cost_cents: i64,
 }
@@ -442,8 +436,6 @@ pub struct BudgetDefaults {
 impl Default for BudgetDefaults {
     fn default() -> Self {
         Self {
-            monthly_budget_usd: None,
-            daily_budget_usd: None,
             warning_threshold: default_warning_threshold(),
             estimated_cost_cents: default_estimated_cost_cents(),
         }

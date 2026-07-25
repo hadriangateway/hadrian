@@ -324,6 +324,7 @@ mod buffer {
         fn make_test_entry() -> UsageLogEntry {
             UsageLogEntry {
                 request_id: Uuid::new_v4().to_string(),
+                client_request_id: None,
                 api_key_id: Some(Uuid::new_v4()),
                 user_id: None,
                 org_id: None,

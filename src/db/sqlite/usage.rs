@@ -11,7 +11,7 @@ use crate::{
         error::DbResult,
         repos::{
             Cursor, CursorDirection, DateRange, ListResult, PageCursors, SortOrder, UsageLogQuery,
-            UsageRepo, UsageStats, cursor_from_row,
+            UsageRepo, UsageStats, cursor_from_row, truncate_to_millis,
         },
     },
     models::{
@@ -27,6 +27,44 @@ const MEDIA_AGGREGATE_COLS: &str = "\
     COALESCE(SUM(image_count), 0) as image_count, \
     COALESCE(SUM(audio_seconds), 0) as audio_seconds, \
     COALESCE(SUM(character_count), 0) as character_count";
+
+/// SQL fragment applying the [`DateRange`] record-type filter, or `""` when the
+/// range has no filter. `prefix` is the query's table alias (e.g. `"u."`).
+/// Pair with [`BindRecordType::bind_record_type`] to bind the value.
+fn record_type_sql(range: &DateRange, prefix: &str) -> String {
+    if range.record_type.is_some() {
+        format!("AND {prefix}record_type = ?")
+    } else {
+        String::new()
+    }
+}
+
+/// Chain-friendly conditional bind for the [`record_type_sql`] placeholder.
+trait BindRecordType: Sized {
+    fn bind_record_type(self, range: &DateRange) -> Self;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'q> BindRecordType
+    for sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>
+{
+    fn bind_record_type(self, range: &DateRange) -> Self {
+        match &range.record_type {
+            Some(rt) => self.bind(rt.clone()),
+            None => self,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BindRecordType for crate::db::wasm_sqlite::WasmQuery {
+    fn bind_record_type(self, range: &DateRange) -> Self {
+        match &range.record_type {
+            Some(rt) => self.bind(rt.clone()),
+            None => self,
+        }
+    }
+}
 
 pub struct SqliteUsageRepo {
     pool: Pool,
@@ -53,11 +91,12 @@ impl UsageRepo for SqliteUsageRepo {
         let id = Uuid::new_v4();
         let total_tokens = entry.input_tokens + entry.output_tokens;
 
-        // Use INSERT OR IGNORE for idempotency - duplicate request_ids are silently skipped
+        // Use INSERT OR IGNORE for idempotency - duplicate (server-generated)
+        // request_ids from internal retries are silently skipped
         query(
             r#"
             INSERT OR IGNORE INTO usage_records (
-                id, request_id, api_key_id, user_id, org_id, project_id, team_id,
+                id, request_id, client_request_id, api_key_id, user_id, org_id, project_id, team_id,
                 service_account_id, model, provider, input_tokens, output_tokens,
                 total_tokens, cost_microcents, http_referer, recorded_at,
                 streamed, cached_tokens, reasoning_tokens, finish_reason,
@@ -67,11 +106,12 @@ impl UsageRepo for SqliteUsageRepo {
                 tool_bytes_fetched, tool_results_count, tool_runtime_seconds,
                 tool_exit_code
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(id.to_string())
         .bind(&entry.request_id)
+        .bind(&entry.client_request_id)
         .bind(entry.api_key_id.map(|id| id.to_string()))
         .bind(entry.user_id.map(|id| id.to_string()))
         .bind(entry.org_id.map(|id| id.to_string()))
@@ -85,7 +125,9 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(total_tokens)
         .bind(entry.cost_microcents.unwrap_or(0))
         .bind(&entry.http_referer)
-        .bind(entry.request_at)
+        // Millisecond truncation is required for SQLite TEXT-comparison
+        // cursor pagination (see db/repos/cursor.rs)
+        .bind(truncate_to_millis(entry.request_at))
         .bind(entry.streamed)
         .bind(entry.cached_tokens)
         .bind(entry.reasoning_tokens)
@@ -118,8 +160,8 @@ impl UsageRepo for SqliteUsageRepo {
         }
 
         // SQLite has a limit of 999 parameters per query (SQLITE_LIMIT_VARIABLE_NUMBER)
-        // Each entry uses 36 parameters. Use 27 entries (36*27=972) to stay under limit.
-        const MAX_ENTRIES_PER_BATCH: usize = 27;
+        // Each entry uses 37 parameters. Use 26 entries (37*26=962) to stay under limit.
+        const MAX_ENTRIES_PER_BATCH: usize = 26;
 
         let mut total_inserted = 0;
 
@@ -128,13 +170,13 @@ impl UsageRepo for SqliteUsageRepo {
         for chunk in entries.chunks(MAX_ENTRIES_PER_BATCH) {
             let placeholders: Vec<&str> = chunk
                 .iter()
-                .map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .collect();
 
             let sql = format!(
                 r#"
                 INSERT OR IGNORE INTO usage_records (
-                    id, request_id, api_key_id, user_id, org_id, project_id, team_id,
+                    id, request_id, client_request_id, api_key_id, user_id, org_id, project_id, team_id,
                     service_account_id, model, provider, input_tokens, output_tokens,
                     total_tokens, cost_microcents, http_referer, recorded_at,
                     streamed, cached_tokens, reasoning_tokens, finish_reason,
@@ -158,6 +200,7 @@ impl UsageRepo for SqliteUsageRepo {
                 query_builder = query_builder
                     .bind(id.to_string())
                     .bind(&entry.request_id)
+                    .bind(&entry.client_request_id)
                     .bind(entry.api_key_id.map(|id| id.to_string()))
                     .bind(entry.user_id.map(|id| id.to_string()))
                     .bind(entry.org_id.map(|id| id.to_string()))
@@ -171,7 +214,8 @@ impl UsageRepo for SqliteUsageRepo {
                     .bind(total_tokens)
                     .bind(entry.cost_microcents.unwrap_or(0))
                     .bind(&entry.http_referer)
-                    .bind(entry.request_at)
+                    // Millisecond truncation required for cursor pagination
+                    .bind(truncate_to_millis(entry.request_at))
                     .bind(entry.streamed)
                     .bind(entry.cached_tokens)
                     .bind(entry.reasoning_tokens)
@@ -205,6 +249,7 @@ impl UsageRepo for SqliteUsageRepo {
 
     async fn get_summary(&self, api_key_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
         // Use range query instead of date casting to allow index usage on recorded_at
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -220,11 +265,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -245,6 +292,7 @@ impl UsageRepo for SqliteUsageRepo {
 
     async fn get_by_date(&self, api_key_id: Uuid, range: DateRange) -> DbResult<Vec<DailySpend>> {
         // Use range query in WHERE for index usage; date cast only needed in SELECT/GROUP BY
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -259,6 +307,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) DESC
             "#,
@@ -266,6 +315,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -289,6 +339,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_by_model(&self, api_key_id: Uuid, range: DateRange) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -303,6 +354,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -310,6 +362,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -337,6 +390,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<RefererSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -351,6 +405,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY http_referer
             ORDER BY total_cost_microcents DESC
             "#,
@@ -358,6 +413,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -383,7 +439,8 @@ impl UsageRepo for SqliteUsageRepo {
     async fn get_usage_stats(&self, api_key_id: Uuid, range: DateRange) -> DbResult<UsageStats> {
         // Get daily totals first, then compute stats in Rust
         // This avoids SQLite's lack of native STDDEV function
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -391,12 +448,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -444,6 +503,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -458,6 +518,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
@@ -465,6 +526,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -492,6 +554,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -506,6 +569,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
@@ -513,6 +577,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -540,6 +605,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -554,6 +620,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
@@ -561,6 +628,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -588,6 +656,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -602,6 +671,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
@@ -609,6 +679,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -636,6 +707,7 @@ impl UsageRepo for SqliteUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -650,6 +722,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE provider = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
@@ -657,6 +730,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -684,6 +758,7 @@ impl UsageRepo for SqliteUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -699,11 +774,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE provider = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -727,6 +804,7 @@ impl UsageRepo for SqliteUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -741,6 +819,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE provider = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -748,6 +827,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -775,7 +855,8 @@ impl UsageRepo for SqliteUsageRepo {
         provider: &str,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -783,12 +864,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE provider = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(provider)
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -800,6 +883,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -814,6 +898,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -821,6 +906,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -848,6 +934,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -862,6 +949,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -869,6 +957,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -896,6 +985,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -910,6 +1000,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -917,6 +1008,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -944,6 +1036,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -958,6 +1051,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
@@ -965,6 +1059,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -992,6 +1087,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1006,6 +1102,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1013,6 +1110,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1040,6 +1138,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1054,6 +1153,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1061,6 +1161,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1084,6 +1185,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_summary_by_org(&self, org_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -1099,11 +1201,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1127,6 +1231,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -1142,11 +1247,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1166,6 +1273,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_summary_by_user(&self, user_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -1181,11 +1289,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1205,6 +1315,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_summary_by_team(&self, team_id: Uuid, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -1220,11 +1331,13 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1244,7 +1357,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_usage_stats_by_org(&self, org_id: Uuid, range: DateRange) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -1252,12 +1366,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1269,7 +1385,8 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -1277,12 +1394,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1294,7 +1413,8 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -1302,12 +1422,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1319,7 +1441,8 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
@@ -1327,12 +1450,14 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1344,6 +1469,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1358,6 +1484,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1365,6 +1492,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1392,6 +1520,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1406,6 +1535,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1413,6 +1543,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1440,6 +1571,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1454,6 +1586,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
@@ -1461,6 +1594,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1488,6 +1622,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1503,6 +1638,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1510,6 +1646,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1538,6 +1675,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1553,6 +1691,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1560,6 +1699,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1588,6 +1728,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1603,6 +1744,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1610,6 +1752,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1638,6 +1781,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1653,6 +1797,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1660,6 +1805,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1688,6 +1834,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1703,6 +1850,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1710,6 +1858,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1738,6 +1887,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1753,6 +1903,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1760,6 +1911,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1788,6 +1940,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1803,6 +1956,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1810,6 +1964,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1838,6 +1993,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1853,6 +2009,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1860,6 +2017,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1888,6 +2046,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1903,6 +2062,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1910,6 +2070,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1938,6 +2099,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -1953,6 +2115,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -1960,6 +2123,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1990,6 +2154,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2004,6 +2169,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2011,6 +2177,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2038,6 +2205,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2052,6 +2220,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2059,6 +2228,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2086,6 +2256,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2100,6 +2271,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2107,6 +2279,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2134,6 +2307,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2148,6 +2322,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2155,6 +2330,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2182,6 +2358,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2196,6 +2373,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
@@ -2203,6 +2381,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2230,6 +2409,7 @@ impl UsageRepo for SqliteUsageRepo {
         api_key_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2245,6 +2425,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE api_key_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -2252,6 +2433,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(api_key_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2280,6 +2462,7 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2295,6 +2478,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE org_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -2302,6 +2486,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2330,6 +2515,7 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2345,6 +2531,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE project_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -2352,6 +2539,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2380,6 +2568,7 @@ impl UsageRepo for SqliteUsageRepo {
         user_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2395,6 +2584,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE user_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -2402,6 +2592,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(user_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2430,6 +2621,7 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -2445,6 +2637,7 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE team_id = ?
                 AND recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
@@ -2452,6 +2645,7 @@ impl UsageRepo for SqliteUsageRepo {
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2484,7 +2678,8 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -2500,13 +2695,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.project_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2538,7 +2735,8 @@ impl UsageRepo for SqliteUsageRepo {
         project_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -2555,13 +2753,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.project_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.user_id, users.name, users.email
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(project_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2596,7 +2796,8 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -2612,13 +2813,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.team_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2650,7 +2853,8 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -2667,13 +2871,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.team_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.user_id, users.name, users.email
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2706,7 +2912,8 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -2722,13 +2929,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.team_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.project_id, projects.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2759,7 +2968,8 @@ impl UsageRepo for SqliteUsageRepo {
         team_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.project_id, projects.name as project_name,
@@ -2776,13 +2986,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.team_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.project_id, projects.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(team_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2816,7 +3028,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<UserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -2832,13 +3045,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2870,7 +3085,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -2887,13 +3103,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.user_id, users.name, users.email
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2926,7 +3144,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<ProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -2942,13 +3161,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.project_id, projects.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2979,7 +3200,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.project_id, projects.name as project_name,
@@ -2996,13 +3218,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.project_id, projects.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3034,7 +3258,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<TeamSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -3050,13 +3275,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.team_id, teams.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3087,7 +3314,8 @@ impl UsageRepo for SqliteUsageRepo {
         org_id: Uuid,
         range: DateRange,
     ) -> DbResult<Vec<DailyTeamSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.team_id, teams.name as team_name,
@@ -3104,13 +3332,15 @@ impl UsageRepo for SqliteUsageRepo {
             WHERE u.org_id = ?
                 AND u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.team_id, teams.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(org_id.to_string())
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3140,6 +3370,7 @@ impl UsageRepo for SqliteUsageRepo {
     // --- Global scope: base queries ---
 
     async fn get_summary_global(&self, range: DateRange) -> DbResult<UsageSummary> {
+        let record_type_filter = record_type_sql(&range, "");
         let row = query(&format!(
             r#"
             SELECT
@@ -3154,10 +3385,12 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_one(&self.pool)
         .await?;
 
@@ -3177,6 +3410,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_daily_usage_global(&self, range: DateRange) -> DbResult<Vec<DailySpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3190,12 +3424,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             ORDER BY date(recorded_at) ASC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3219,6 +3455,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_model_usage_global(&self, range: DateRange) -> DbResult<Vec<ModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3232,12 +3469,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY model
             ORDER BY total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3261,6 +3500,7 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_provider_usage_global(&self, range: DateRange) -> DbResult<Vec<ProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3274,12 +3514,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY provider
             ORDER BY total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3306,6 +3548,7 @@ impl UsageRepo for SqliteUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<PricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3319,12 +3562,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY pricing_source
             ORDER BY total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3351,6 +3596,7 @@ impl UsageRepo for SqliteUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyModelSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3365,12 +3611,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), model
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3398,6 +3646,7 @@ impl UsageRepo for SqliteUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyProviderSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3412,12 +3661,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), provider
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3445,6 +3696,7 @@ impl UsageRepo for SqliteUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyPricingSourceSpend>> {
+        let record_type_filter = record_type_sql(&range, "");
         let rows = query(&format!(
             r#"
             SELECT
@@ -3459,12 +3711,14 @@ impl UsageRepo for SqliteUsageRepo {
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at), pricing_source
             ORDER BY date(recorded_at) ASC, total_cost_microcents DESC
             "#,
         ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3489,18 +3743,21 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_usage_stats_global(&self, range: DateRange) -> DbResult<UsageStats> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "");
+        let rows = query(&format!(
             r#"
             SELECT
                 COALESCE(SUM(cost_microcents), 0) as daily_cost
             FROM usage_records
             WHERE recorded_at >= ?
                 AND recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(recorded_at)
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3510,7 +3767,8 @@ impl UsageRepo for SqliteUsageRepo {
     // --- Global scope: entity breakdowns ---
 
     async fn get_user_usage_global(&self, range: DateRange) -> DbResult<Vec<UserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.user_id, users.name as user_name, users.email as user_email,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -3525,12 +3783,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN users ON u.user_id = users.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.user_id, users.name, users.email
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3558,7 +3818,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_daily_user_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyUserSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.user_id, users.name as user_name, users.email as user_email,
@@ -3574,12 +3835,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN users ON u.user_id = users.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.user_id, users.name, users.email
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3608,7 +3871,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_project_usage_global(&self, range: DateRange) -> DbResult<Vec<ProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.project_id, projects.name as project_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -3623,12 +3887,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.project_id, projects.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3658,7 +3924,8 @@ impl UsageRepo for SqliteUsageRepo {
         &self,
         range: DateRange,
     ) -> DbResult<Vec<DailyProjectSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.project_id, projects.name as project_name,
@@ -3674,12 +3941,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN projects ON u.project_id = projects.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.project_id, projects.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3707,7 +3976,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_team_usage_global(&self, range: DateRange) -> DbResult<Vec<TeamSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.team_id, teams.name as team_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -3722,12 +3992,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.team_id, teams.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3754,7 +4026,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_daily_team_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyTeamSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.team_id, teams.name as team_name,
@@ -3770,12 +4043,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN teams ON u.team_id = teams.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.team_id, teams.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3803,7 +4078,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_org_usage_global(&self, range: DateRange) -> DbResult<Vec<OrgSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT u.org_id, organizations.name as org_name,
                 COALESCE(SUM(u.cost_microcents), 0) as total_cost_microcents,
@@ -3818,12 +4094,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN organizations ON u.org_id = organizations.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY u.org_id, organizations.name
             ORDER BY total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3850,7 +4128,8 @@ impl UsageRepo for SqliteUsageRepo {
     }
 
     async fn get_daily_org_usage_global(&self, range: DateRange) -> DbResult<Vec<DailyOrgSpend>> {
-        let rows = query(
+        let record_type_filter = record_type_sql(&range, "u.");
+        let rows = query(&format!(
             r#"
             SELECT date(u.recorded_at) as date,
                 u.org_id, organizations.name as org_name,
@@ -3866,12 +4145,14 @@ impl UsageRepo for SqliteUsageRepo {
             LEFT JOIN organizations ON u.org_id = organizations.id
             WHERE u.recorded_at >= ?
                 AND u.recorded_at < date(?, '+1 day')
+                {record_type_filter}
             GROUP BY date(u.recorded_at), u.org_id, organizations.name
             ORDER BY date(u.recorded_at) ASC, total_cost_microcents DESC
             "#,
-        )
+        ))
         .bind(range.start)
         .bind(range.end)
+        .bind_record_type(&range)
         .fetch_all(&self.pool)
         .await?;
 
@@ -3991,7 +4272,7 @@ impl UsageRepo for SqliteUsageRepo {
 
         let sql = format!(
             r#"
-            SELECT id, recorded_at, request_id, api_key_id, user_id, org_id,
+            SELECT id, recorded_at, request_id, client_request_id, api_key_id, user_id, org_id,
                    project_id, team_id, service_account_id, model, provider,
                    http_referer, input_tokens, output_tokens, cached_tokens,
                    reasoning_tokens, cost_microcents, streamed, finish_reason,
@@ -4036,6 +4317,7 @@ impl UsageRepo for SqliteUsageRepo {
                     id: parse_uuid(&id)?,
                     recorded_at: row.col("recorded_at"),
                     request_id: row.col("request_id"),
+                    client_request_id: row.col("client_request_id"),
                     api_key_id: api_key_id.map(|s| parse_uuid(&s)).transpose()?,
                     user_id: user_id.map(|s| parse_uuid(&s)).transpose()?,
                     org_id: org_id.map(|s| parse_uuid(&s)).transpose()?,

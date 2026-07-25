@@ -134,6 +134,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
 
         // Get usage statistics
@@ -239,6 +240,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
 
         // Get usage statistics
@@ -347,6 +349,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
 
         let stats = self
@@ -943,6 +946,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
 
         // Get usage statistics
@@ -1045,6 +1049,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
 
         // Get usage statistics
@@ -1123,6 +1128,7 @@ impl UsageService {
         let range = DateRange {
             start: start_date,
             end: today,
+            record_type: None,
         };
         let stats = self
             .db
@@ -1427,6 +1433,7 @@ mod tests {
     ) -> UsageLogEntry {
         UsageLogEntry {
             request_id: Uuid::new_v4().to_string(),
+            client_request_id: None,
             api_key_id: Some(api_key_id),
             user_id: None,
             org_id: None,
@@ -1473,6 +1480,7 @@ mod tests {
     ) -> UsageLogEntry {
         UsageLogEntry {
             request_id: Uuid::new_v4().to_string(),
+            client_request_id: None,
             api_key_id: Some(api_key_id),
             user_id: None,
             org_id: None,
@@ -1530,6 +1538,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let summary = service
             .get_summary(api_key_id, range)
@@ -1569,6 +1578,7 @@ mod tests {
         let range = DateRange {
             start: yesterday.date_naive(),
             end: today.date_naive(),
+            record_type: None,
         };
         let result = service.get_by_date(api_key_id, range).await.unwrap();
 
@@ -1602,6 +1612,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let result = service.get_by_model(api_key_id, range).await.unwrap();
 
@@ -1768,6 +1779,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let summary = service.get_summary_by_org(org_id, range).await.unwrap();
 
@@ -1795,6 +1807,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let result = service.get_by_model_by_org(org_id, range).await.unwrap();
 
@@ -1821,6 +1834,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let result = service.get_by_provider_by_org(org_id, range).await.unwrap();
 
@@ -1887,6 +1901,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let summary = service
             .get_summary_by_provider("openai", range)
@@ -1918,6 +1933,7 @@ mod tests {
         let range = DateRange {
             start: today,
             end: today,
+            record_type: None,
         };
         let result = service
             .get_by_model_by_provider("openai", range)

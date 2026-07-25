@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
-use rust_decimal::Decimal;
 
 /// Wizard errors.
 #[derive(Debug, thiserror::Error)]
@@ -221,13 +220,6 @@ struct RateLimitConfig {
     concurrent_requests: Option<u32>,
 }
 
-/// Budget configuration.
-#[derive(Debug, Default)]
-struct BudgetConfig {
-    monthly_budget_usd: Option<Decimal>,
-    daily_budget_usd: Option<Decimal>,
-}
-
 /// Complete wizard configuration collected from all steps.
 #[derive(Debug)]
 struct WizardConfig {
@@ -236,7 +228,6 @@ struct WizardConfig {
     providers: Vec<ProviderConfig>,
     auth: AuthModeConfig,
     rate_limits: RateLimitConfig,
-    budget: BudgetConfig,
 }
 
 /// Run the interactive configuration wizard.
@@ -328,7 +319,6 @@ fn configure_local_dev(theme: &ColorfulTheme) -> Result<WizardConfig, WizardErro
         providers,
         auth: AuthModeConfig::None,
         rate_limits: RateLimitConfig::default(),
-        budget: BudgetConfig::default(),
     })
 }
 
@@ -362,7 +352,6 @@ fn configure_single_node(theme: &ColorfulTheme) -> Result<WizardConfig, WizardEr
     let rate_limits = configure_rate_limits(theme)?;
 
     // Budget
-    let budget = configure_budget(theme)?;
 
     Ok(WizardConfig {
         database: DatabaseConfig::Sqlite {
@@ -372,7 +361,6 @@ fn configure_single_node(theme: &ColorfulTheme) -> Result<WizardConfig, WizardEr
         providers,
         auth: AuthModeConfig::ApiKey { key_prefix },
         rate_limits,
-        budget,
     })
 }
 
@@ -404,7 +392,6 @@ fn configure_multi_node(theme: &ColorfulTheme) -> Result<WizardConfig, WizardErr
     let rate_limits = configure_rate_limits(theme)?;
 
     // Budget
-    let budget = configure_budget(theme)?;
 
     Ok(WizardConfig {
         database: DatabaseConfig::Postgres { url: postgres_url },
@@ -412,7 +399,6 @@ fn configure_multi_node(theme: &ColorfulTheme) -> Result<WizardConfig, WizardErr
         providers,
         auth: AuthModeConfig::Idp(oidc),
         rate_limits,
-        budget,
     })
 }
 
@@ -437,7 +423,6 @@ fn configure_custom(theme: &ColorfulTheme) -> Result<WizardConfig, WizardError> 
     let rate_limits = configure_rate_limits(theme)?;
 
     // Budget
-    let budget = configure_budget(theme)?;
 
     Ok(WizardConfig {
         database,
@@ -445,7 +430,6 @@ fn configure_custom(theme: &ColorfulTheme) -> Result<WizardConfig, WizardError> 
         providers,
         auth,
         rate_limits,
-        budget,
     })
 }
 
@@ -634,50 +618,6 @@ fn configure_rate_limits(theme: &ColorfulTheme) -> Result<RateLimitConfig, Wizar
         requests_per_minute,
         tokens_per_minute,
         concurrent_requests,
-    })
-}
-
-fn configure_budget(theme: &ColorfulTheme) -> Result<BudgetConfig, WizardError> {
-    let configure = Confirm::with_theme(theme)
-        .with_prompt("Configure budget limits?")
-        .default(false)
-        .interact()?;
-
-    if !configure {
-        return Ok(BudgetConfig::default());
-    }
-
-    println!();
-    println!("Budget limits in USD (leave blank for unlimited):");
-    println!();
-
-    let monthly_str: String = Input::with_theme(theme)
-        .with_prompt("Default monthly budget per user (USD)")
-        .default("".to_string())
-        .allow_empty(true)
-        .interact_text()?;
-
-    let monthly_budget_usd = if monthly_str.is_empty() {
-        None
-    } else {
-        monthly_str.parse().ok()
-    };
-
-    let daily_str: String = Input::with_theme(theme)
-        .with_prompt("Default daily budget per user (USD)")
-        .default("".to_string())
-        .allow_empty(true)
-        .interact_text()?;
-
-    let daily_budget_usd = if daily_str.is_empty() {
-        None
-    } else {
-        daily_str.parse().ok()
-    };
-
-    Ok(BudgetConfig {
-        monthly_budget_usd,
-        daily_budget_usd,
     })
 }
 
@@ -1080,8 +1020,6 @@ fn generate_config(mode: DeploymentMode, wizard_config: &WizardConfig) -> String
     let has_rate_limits = wizard_config.rate_limits.requests_per_minute.is_some()
         || wizard_config.rate_limits.tokens_per_minute.is_some()
         || wizard_config.rate_limits.concurrent_requests.is_some();
-    let has_budget = wizard_config.budget.monthly_budget_usd.is_some()
-        || wizard_config.budget.daily_budget_usd.is_some();
 
     if has_rate_limits {
         config.push_str("[limits.rate_limits]\n");
@@ -1093,17 +1031,6 @@ fn generate_config(mode: DeploymentMode, wizard_config: &WizardConfig) -> String
         }
         if let Some(concurrent) = wizard_config.rate_limits.concurrent_requests {
             config.push_str(&format!("concurrent_requests = {}\n", concurrent));
-        }
-        config.push('\n');
-    }
-
-    if has_budget {
-        config.push_str("[limits.budgets]\n");
-        if let Some(monthly) = &wizard_config.budget.monthly_budget_usd {
-            config.push_str(&format!("monthly_budget_usd = \"{}\"\n", monthly));
-        }
-        if let Some(daily) = &wizard_config.budget.daily_budget_usd {
-            config.push_str(&format!("daily_budget_usd = \"{}\"\n", daily));
         }
         config.push('\n');
     }
@@ -1196,7 +1123,6 @@ mod tests {
             }],
             auth: AuthModeConfig::None,
             rate_limits: RateLimitConfig::default(),
-            budget: BudgetConfig::default(),
         };
 
         let config = generate_config(DeploymentMode::LocalDev, &wizard_config);
@@ -1238,10 +1164,6 @@ mod tests {
                 tokens_per_minute: Some(50000),
                 concurrent_requests: None,
             },
-            budget: BudgetConfig {
-                monthly_budget_usd: Some(Decimal::from(100)),
-                daily_budget_usd: None,
-            },
         };
 
         let config = generate_config(DeploymentMode::SingleNode, &wizard_config);
@@ -1254,8 +1176,6 @@ mod tests {
         assert!(config.contains("[limits.rate_limits]"));
         assert!(config.contains("requests_per_minute = 100"));
         assert!(config.contains("tokens_per_minute = 50000"));
-        assert!(config.contains("[limits.budgets]"));
-        assert!(config.contains("monthly_budget_usd = \"100\""));
     }
 
     #[test]
@@ -1282,7 +1202,6 @@ mod tests {
                 redirect_uri: "http://localhost:8080/auth/callback".to_string(),
             }),
             rate_limits: RateLimitConfig::default(),
-            budget: BudgetConfig::default(),
         };
 
         let config = generate_config(DeploymentMode::MultiNode, &wizard_config);

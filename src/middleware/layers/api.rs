@@ -11,7 +11,7 @@ use chrono::Utc;
 
 use super::rate_limit::{
     RateLimitError, TokenRateLimitCheckResult, TokenRateLimitResult, TokenReservation,
-    add_rate_limit_headers, add_token_rate_limit_headers, adjust_token_reservation,
+    add_rate_limit_headers, add_token_rate_limit_headers,
 };
 use crate::{
     AppState,
@@ -21,9 +21,12 @@ use crate::{
     middleware::{
         RequestId,
         util::{
-            budget::{BudgetCheckResult, BudgetError, adjust_budget_reservation},
+            budget::{BudgetCheckResult, BudgetError},
             scope::required_scope_for_path,
-            usage::{UsageTracker, extract_full_usage_from_response, tracker_from_headers},
+            usage::{
+                UsageTracker, client_request_id_from_headers, extract_full_usage_from_response,
+                tracker_from_headers,
+            },
         },
     },
     models::{AuditActorType, BudgetPeriod, CreateAuditLog, has_valid_prefix, hash_api_key},
@@ -51,8 +54,12 @@ pub struct UsageTrackingContext<'a> {
     pub tracker: UsageTracker,
     pub response: &'a Response,
     pub request_id: Option<String>,
-    pub budget_reservation: Option<BudgetCheckResult>,
-    pub token_reservation: Option<TokenRateLimitCheckResult>,
+    /// Client-supplied X-Request-Id (correlation only; never keys usage rows)
+    pub client_request_id: Option<String>,
+    /// Reservation handoff cell; `None` if no reservations were taken.
+    /// If a streaming handler claimed it, settlement happens in the
+    /// streaming usage logger instead of here.
+    pub settlement_cell: Option<crate::middleware::SettlementCell>,
     /// Project ID from the X-Hadrian-Project request header (validated)
     pub header_project_id: Option<uuid::Uuid>,
 }
@@ -167,8 +174,14 @@ async fn check_all_limits_batch(
         (api_key.key.budget_limit_cents, api_key.key.budget_period)
     {
         // Use saturating_mul to prevent overflow (cents * 10_000 = microcents)
-        let estimated_cost_microcents = estimated_cost_cents.saturating_mul(10_000);
         let limit_microcents = limit_cents.saturating_mul(10_000);
+        // Clamp the reservation to the key's own limit: a flat estimate above
+        // a small budget would otherwise reject every request forever with
+        // zero spend (budget_limit_cents < estimated_cost_cents made keys
+        // permanently unusable).
+        let estimated_cost_microcents = estimated_cost_cents
+            .saturating_mul(10_000)
+            .min(limit_microcents);
         let cache_key = CacheKeys::spend(api_key_id, period);
         // Use fixed full-period TTL to prevent race conditions with long-running requests
         let cache_ttl = CacheKeys::budget_ttl(period);
@@ -568,7 +581,14 @@ pub async fn api_middleware(
 ) -> Response {
     let headers = req.headers().clone();
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
+    // Prefer OriginalUri: this middleware runs inside the router nested at
+    // /api, where req.uri() is already stripped to /v1/... — audit entries
+    // and metrics should record the path the client actually requested.
+    let path = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
     let start_time = std::time::Instant::now();
 
     // Get request ID if available (set by request_id_middleware)
@@ -616,12 +636,10 @@ pub async fn api_middleware(
         try_authenticate(&headers, cookies.as_ref(), connecting_ip, &state).await
     };
 
-    // Budget reservation (if applicable)
-    let mut budget_reservation: Option<BudgetCheckResult> = None;
+    // Reservation handoff cell shared with streaming handlers (see settlement.rs)
+    let mut settlement_cell: Option<crate::middleware::SettlementCell> = None;
     // Budget warning (if threshold exceeded)
     let mut budget_warning: Option<BudgetWarning> = None;
-    // Token rate limit reservation (for atomic reservation pattern)
-    let mut token_reservation: Option<TokenRateLimitCheckResult> = None;
     // Token rate limit result for headers
     let mut token_rate_limit: Option<TokenRateLimitResult> = None;
     // Request rate limit result for headers
@@ -733,6 +751,10 @@ pub async fn api_middleware(
                 .map(|t| t as u32)
                 .unwrap_or(tpm_limit);
 
+            // Budget + token reservations (for the atomic reservation pattern)
+            let budget_reservation: Option<BudgetCheckResult>;
+            let mut token_reservation: Option<TokenRateLimitCheckResult> = None;
+
             match check_all_limits_batch(LimitsCheckInput {
                 cache,
                 api_key,
@@ -828,6 +850,21 @@ pub async fn api_middleware(
                     return e.into_response();
                 }
             }
+
+            // Park the reservations in a one-shot cell. Streaming handlers
+            // claim it (via request extensions) and settle with actual usage
+            // once the stream ends; otherwise it stays here and the
+            // post-response settle below uses it.
+            if budget_reservation.is_some() || token_reservation.is_some() {
+                let cell =
+                    crate::middleware::SettlementCell::new(crate::middleware::StreamSettlement {
+                        cache: cache.clone(),
+                        budget: budget_reservation.clone(),
+                        token: token_reservation.clone(),
+                    });
+                req.extensions_mut().insert(cell.clone());
+                settlement_cell = Some(cell);
+            }
         }
 
         (Some(auth.clone()), api_key_id)
@@ -878,6 +915,7 @@ pub async fn api_middleware(
     }
 
     // 6. Track usage (async, non-blocking) and adjust budget/token reservations
+    let client_request_id = client_request_id_from_headers(&headers);
     if let Some(auth) = auth_clone {
         // Extract project context from request header (for session-based users)
         let header_project_id = headers
@@ -891,8 +929,8 @@ pub async fn api_middleware(
             tracker,
             response: &response,
             request_id,
-            budget_reservation,
-            token_reservation,
+            client_request_id,
+            settlement_cell,
             header_project_id,
         });
     } else {
@@ -957,8 +995,15 @@ pub async fn api_middleware(
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| uuid::Uuid::parse_str(v).ok());
 
+                // Server-generated row key; see track_usage_async for rationale.
+                let usage_request_id = if client_request_id.is_some() {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                };
                 buffer.push(crate::models::UsageLogEntry {
-                    request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    request_id: usage_request_id,
+                    client_request_id,
                     api_key_id: None,
                     user_id: state.default_user_id,
                     org_id: state.default_org_id,
@@ -973,9 +1018,9 @@ pub async fn api_middleware(
                     http_referer: tracker.referer.clone(),
                     request_at: chrono::Utc::now(),
                     streamed: tracker.streamed,
-                    cached_tokens: 0,
-                    reasoning_tokens: 0,
-                    finish_reason: None,
+                    cached_tokens: usage.cached_tokens.unwrap_or(0),
+                    reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
+                    finish_reason: usage.finish_reason.clone(),
                     latency_ms: Some(latency_ms),
                     cancelled: false,
                     status_code: Some(response.status().as_u16() as i16),
@@ -1016,8 +1061,8 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         tracker,
         response,
         request_id,
-        budget_reservation,
-        token_reservation,
+        client_request_id,
+        settlement_cell,
         header_project_id,
     } = ctx;
 
@@ -1114,13 +1159,22 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
     // service_account_id: from SA-owned keys
     let service_account_id = api_key.and_then(|k| k.service_account_id);
 
-    // Generate request_id if not provided (should always be set by middleware)
-    let usage_request_id = request_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // Row key is server-generated: a client-supplied X-Request-Id previously
+    // keyed the UNIQUE request_id column, letting a client suppress its own
+    // billing rows via the INSERT OR IGNORE dedupe. Reuse the middleware
+    // request id for log correlation only when the client did not supply one;
+    // the client value is stored separately in client_request_id.
+    let usage_request_id = if client_request_id.is_some() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        request_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    };
 
     let entry = crate::models::UsageLogEntry {
         request_id: usage_request_id,
+        client_request_id,
         api_key_id,
         user_id,
         org_id,
@@ -1136,9 +1190,9 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         http_referer: tracker.referer,
         request_at: chrono::Utc::now(),
         streamed: tracker.streamed,
-        cached_tokens: 0,    // Populated by streaming parser from response body
-        reasoning_tokens: 0, // Populated by streaming parser from response body
-        finish_reason: None, // Populated by streaming parser from response body
+        cached_tokens: usage.cached_tokens.unwrap_or(0),
+        reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
+        finish_reason: usage.finish_reason.clone(),
         latency_ms: Some(latency_ms),
         cancelled: false,
         status_code: Some(response.status().as_u16() as i16),
@@ -1181,62 +1235,26 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         }
     }
 
-    // Budget and token adjustments remain API-key-scoped
-    // (session users have no API key budget configured)
-    if api_key.is_some() {
-        if let Some(cache) = state.cache {
-            // Use task_tracker to ensure this task completes during graceful shutdown
-            #[cfg(feature = "server")]
-            state.task_tracker.spawn(async move {
-                // Adjust budget reservation with actual cost (for successful responses)
-                // This replaces the estimated cost that was reserved before the request
-                if is_success {
-                    if let Some(reservation) = &budget_reservation {
-                        // Get actual cost (or 0 if not available) - in microcents
-                        let actual_cost = cost_microcents.unwrap_or(0);
-                        let succeeded =
-                            adjust_budget_reservation(&cache, reservation, actual_cost).await;
-                        metrics::record_cache_operation(
-                            "budget",
-                            "adjust",
-                            if succeeded { "success" } else { "error" },
-                        );
-                    }
-                } else if let Some(reservation) = &budget_reservation {
-                    // Request failed - refund the entire reservation
-                    // (we reserved estimated cost, now we're removing it since request didn't count)
-                    let succeeded = adjust_budget_reservation(&cache, reservation, 0).await;
-                    metrics::record_cache_operation(
-                        "budget",
-                        "refund",
-                        if succeeded { "success" } else { "error" },
-                    );
-                }
-
-                // Adjust token rate limit reservation with actual token count
-                if let Some(reservation) = &token_reservation {
-                    let (succeeded, operation) = if is_success {
-                        // Request succeeded - adjust with actual tokens
-                        let total_tokens = input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0);
-                        (
-                            adjust_token_reservation(&cache, reservation, total_tokens).await,
-                            "adjust",
-                        )
-                    } else {
-                        // Request failed - refund the entire reservation
-                        (
-                            adjust_token_reservation(&cache, reservation, 0).await,
-                            "refund",
-                        )
-                    };
-                    metrics::record_cache_operation(
-                        "token_rate_limit",
-                        operation,
-                        if succeeded { "success" } else { "error" },
-                    );
-                }
-            });
-        }
+    // Budget and token adjustments. If a streaming handler claimed the
+    // settlement cell, the streaming usage logger settles with actual usage
+    // once the stream finishes; `take()` then returns None and we skip.
+    if let Some(cell) = settlement_cell
+        && let Some(settlement) = cell.take()
+    {
+        // Use task_tracker to ensure this task completes during graceful shutdown
+        #[cfg(feature = "server")]
+        state.task_tracker.spawn(async move {
+            if is_success {
+                // Replace the estimated reservation with actual usage
+                let total_tokens = input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0);
+                settlement
+                    .settle(cost_microcents.unwrap_or(0), total_tokens)
+                    .await;
+            } else {
+                // Request failed - refund the entire reservation
+                settlement.settle(0, 0).await;
+            }
+        });
     }
 }
 

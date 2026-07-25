@@ -308,6 +308,7 @@ impl UserService {
         let all_time_range = DateRange {
             start: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
             end: NaiveDate::from_ymd_opt(2100, 12, 31).unwrap(),
+            record_type: None,
         };
         let usage_summary = self
             .db

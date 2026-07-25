@@ -623,8 +623,12 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_providers_owner ON dynamic_providers(owne
 -- Tracks request usage with principal-based attribution
 CREATE TABLE IF NOT EXISTS usage_records (
     id UUID PRIMARY KEY NOT NULL,
-    -- Unique request identifier for idempotency (prevents duplicate charges)
+    -- Unique request identifier for idempotency (prevents duplicate charges).
+    -- Always server-generated; client-supplied ids must never key this column.
     request_id TEXT NOT NULL UNIQUE,
+    -- Client-supplied correlation id (X-Request-Id / X-Client-Request-Id).
+    -- Correlation only; intentionally not unique.
+    client_request_id TEXT,
     -- Attribution context: nullable to support session-based users without API keys
     api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
     -- Principal-based attribution fields (all nullable, no FKs to avoid feature-gated table issues)
@@ -694,7 +698,12 @@ CREATE INDEX IF NOT EXISTS idx_usage_records_request_id ON usage_records(request
 -- ======================================================================
 
 -- Per-scope model pricing configuration.
--- Pricing is looked up in order: user -> project -> organization -> static config -> defaults.
+-- Runtime billing overlays these rows onto configured pricing:
+-- organization row -> global row -> provider config -> [pricing] config -> catalog.
+-- Team/project/user-scoped rows are stored and served via the admin API but do not
+-- affect runtime billing yet (the synchronous cost path only carries the org id);
+-- get_effective_pricing() still resolves user -> project -> organization -> global
+-- for async callers.
 
 DO $$ BEGIN
     CREATE TYPE model_pricing_owner_type AS ENUM ('organization', 'team', 'project', 'user');
@@ -891,7 +900,7 @@ END $$;
 -- Tracks admin operations for compliance and debugging
 
 DO $$ BEGIN
-    CREATE TYPE audit_actor_type AS ENUM ('user', 'api_key', 'system');
+    CREATE TYPE audit_actor_type AS ENUM ('user', 'api_key', 'service_account', 'external_user', 'system');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;

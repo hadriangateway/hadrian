@@ -19,7 +19,8 @@ use crate::{
     providers,
     providers::{
         CircuitBreakerRegistry, ModelsResponse, Provider, ProviderError,
-        circuit_breaker::CircuitBreaker, retry::with_circuit_breaker_and_retry,
+        circuit_breaker::CircuitBreaker, error::OpenAiErrorParser, response::error_response,
+        retry::with_circuit_breaker_and_retry,
     },
 };
 
@@ -212,28 +213,33 @@ impl Provider for OpenAICompatibleProvider {
         )
         .await?;
 
+        // Re-wrap upstream errors into the native envelope. Raw aggregator
+        // error bodies can carry operator-account fields (e.g. OpenRouter's
+        // `user_id`) that must not reach clients.
+        if !response.status().is_success() {
+            return error_response::<OpenAiErrorParser>(response).await;
+        }
+
         // For non-streaming responses, normalize to ensure OpenAI spec compliance
         // Some providers (e.g., Ollama) don't include all required fields
         if !stream {
             let status = response.status();
-            if status.is_success() {
-                let body_bytes = response.bytes().await?;
-                if let Ok(mut json) = serde_json::from_slice::<Value>(&body_bytes) {
-                    json = normalize_chat_completion_response(json);
-                    // Safe to unwrap: we just parsed valid JSON, re-serializing won't fail
-                    let normalized_body =
-                        serde_json::to_vec(&json).unwrap_or_else(|_| body_bytes.to_vec());
-                    return Ok(Response::builder()
-                        .status(status)
-                        .header(CONTENT_TYPE, "application/json")
-                        .body(Body::from(normalized_body))?);
-                }
-                // If JSON parsing fails, return original body
+            let body_bytes = response.bytes().await?;
+            if let Ok(mut json) = serde_json::from_slice::<Value>(&body_bytes) {
+                json = normalize_chat_completion_response(json);
+                // Safe to unwrap: we just parsed valid JSON, re-serializing won't fail
+                let normalized_body =
+                    serde_json::to_vec(&json).unwrap_or_else(|_| body_bytes.to_vec());
                 return Ok(Response::builder()
                     .status(status)
                     .header(CONTENT_TYPE, "application/json")
-                    .body(Body::from(body_bytes))?);
+                    .body(Body::from(normalized_body))?);
             }
+            // If JSON parsing fails, return original body
+            return Ok(Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(body_bytes))?);
         }
 
         providers::build_response(response, stream).await
@@ -281,6 +287,10 @@ impl Provider for OpenAICompatibleProvider {
         )
         .await?;
 
+        if !response.status().is_success() {
+            return error_response::<OpenAiErrorParser>(response).await;
+        }
+
         providers::build_response(response, stream).await
     }
 
@@ -316,6 +326,10 @@ impl Provider for OpenAICompatibleProvider {
             },
         )
         .await?;
+
+        if !response.status().is_success() {
+            return error_response::<OpenAiErrorParser>(response).await;
+        }
 
         providers::build_response(response, stream).await
     }
@@ -356,6 +370,10 @@ impl Provider for OpenAICompatibleProvider {
         )
         .await?;
 
+        if !response.status().is_success() {
+            return error_response::<OpenAiErrorParser>(response).await;
+        }
+
         providers::build_response(response, stream).await
     }
 
@@ -392,6 +410,10 @@ impl Provider for OpenAICompatibleProvider {
             },
         )
         .await?;
+
+        if !response.status().is_success() {
+            return error_response::<OpenAiErrorParser>(response).await;
+        }
 
         // Embeddings don't support streaming
         providers::build_response(response, false).await

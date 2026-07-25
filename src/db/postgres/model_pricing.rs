@@ -544,6 +544,23 @@ impl ModelPricingRepo for PostgresModelPricingRepo {
         Ok(row.get::<i64, _>("count"))
     }
 
+    async fn list_billing_overlay_rows(&self) -> DbResult<Vec<DbModelPricing>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, owner_type::TEXT, owner_id, provider, model,
+                   input_per_1m_tokens, output_per_1m_tokens, per_image, per_request,
+                   cached_input_per_1m_tokens, cache_write_per_1m_tokens, reasoning_per_1m_tokens,
+                   per_second, per_1m_characters, source::TEXT, created_at, updated_at
+            FROM model_pricing
+            WHERE owner_type IS NULL OR owner_type = 'organization'
+            "#,
+        )
+        .fetch_all(&self.read_pool)
+        .await?;
+
+        rows.iter().map(Self::row_to_pricing).collect()
+    }
+
     async fn update(&self, id: Uuid, input: UpdateModelPricing) -> DbResult<DbModelPricing> {
         let row = sqlx::query(
             r#"

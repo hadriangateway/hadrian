@@ -102,6 +102,40 @@ fn serve_embedded_file(path: &str) -> Response {
     }
 }
 
+/// Guard applied in front of the SPA fallback: unknown paths under the API
+/// namespaces must return a JSON 404, not 200 + index.html. Serving the SPA
+/// for an `/admin/v1/...` typo masks version skew and typos from API
+/// consumers (and a bare `POST /v1/...` previously got a bodyless 405).
+#[cfg(feature = "server")]
+async fn api_namespace_guard(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    let in_api_namespace = ["/api", "/admin", "/v1"]
+        .iter()
+        .any(|ns| path == *ns || path.starts_with(&format!("{ns}/")));
+    if in_api_namespace {
+        let message = if path == "/v1" || path.starts_with("/v1/") {
+            format!(
+                "Unknown API endpoint: {} {} (OpenAI-compatible endpoints are under /api/v1)",
+                req.method(),
+                path
+            )
+        } else {
+            format!("Unknown API endpoint: {} {}", req.method(), path)
+        };
+        let body = crate::openapi::ErrorResponse::with_type(
+            "invalid_request_error",
+            "unknown_endpoint",
+            message,
+        );
+        use axum::response::IntoResponse;
+        return (axum::http::StatusCode::NOT_FOUND, axum::Json(body)).into_response();
+    }
+    next.run(req).await
+}
+
 /// Add routes for serving static UI files
 #[cfg(feature = "server")]
 fn add_ui_routes(app: Router<AppState>, config: &config::GatewayConfig) -> Router<AppState> {
@@ -137,8 +171,13 @@ fn add_ui_routes(app: Router<AppState>, config: &config::GatewayConfig) -> Route
                 .service(serve_dir);
 
             if ui_path.is_empty() || ui_path == "/" {
-                // Serve at root - use fallback_service so other routes take precedence
-                app.fallback_service(serve_dir_with_headers)
+                // Serve at root - use fallback_service so other routes take
+                // precedence. Guard the API namespaces so typos get JSON 404s
+                // instead of the SPA.
+                let guarded = tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn(api_namespace_guard))
+                    .service(serve_dir_with_headers);
+                app.fallback_service(guarded)
             } else {
                 // Serve at a specific path
                 app.nest_service(ui_path, serve_dir_with_headers)
@@ -161,8 +200,13 @@ fn add_ui_routes(app: Router<AppState>, config: &config::GatewayConfig) -> Route
                 .route("/{*path}", get(serve_embedded_asset));
 
             if ui_path.is_empty() || ui_path == "/" {
-                // Serve at root - use fallback so other routes take precedence
-                app.fallback_service(embedded_routes)
+                // Serve at root - use fallback so other routes take
+                // precedence. Guard the API namespaces so typos get JSON 404s
+                // instead of the SPA.
+                let guarded = tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn(api_namespace_guard))
+                    .service(embedded_routes);
+                app.fallback_service(guarded)
             } else {
                 // Serve at a specific path - convert to service for nesting
                 app.nest_service(ui_path, embedded_routes)
@@ -754,11 +798,34 @@ impl AppState {
         }
 
         // Initialize pricing from defaults + config + provider configs + catalog
-        let pricing = Arc::new(pricing::PricingConfig::from_config_with_catalog(
+        let mut pricing = pricing::PricingConfig::from_config_with_catalog(
             &config.pricing,
             &config.providers,
             Some(&model_catalog),
-        ));
+        );
+
+        // Attach the admin pricing overlay (DB-backed `model_pricing` rows —
+        // the highest-priority calculated source) and load it at startup.
+        // Admin mutations refresh it in-process; a periodic job converges
+        // other replicas. Without a database the overlay stays empty and
+        // pricing falls through to config/catalog.
+        let pricing_overlay = pricing::ModelPricingOverlay::new();
+        if let Some(ref svc) = services {
+            match svc.model_pricing.refresh_overlay(&pricing_overlay).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(entry_count = count, "Loaded admin model pricing overlay");
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "Failed to load admin model pricing overlay at startup; \
+                     admin-managed pricing applies after the next refresh"
+                ),
+            }
+        }
+        pricing.set_overlay(pricing_overlay);
+        let pricing = Arc::new(pricing);
 
         // Initialize dead-letter queue if configured
         let dlq = dlq::create_dlq(&config.observability.dead_letter_queue, db.as_ref())

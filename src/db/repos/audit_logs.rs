@@ -17,11 +17,8 @@ pub trait AuditLogRepo: Send + Sync {
     /// Get an audit log entry by ID
     async fn get_by_id(&self, id: Uuid) -> DbResult<Option<AuditLog>>;
 
-    /// List audit logs with optional filtering and pagination
-    ///
-    /// Supports both offset-based and cursor-based pagination:
-    /// - Offset-based: Use `limit` and `offset` fields in query
-    /// - Cursor-based: Use `cursor` and `direction` fields in query
+    /// List audit logs with optional filtering and cursor-based pagination
+    /// (`cursor` and `direction` fields in the query)
     async fn list(&self, query: AuditLogQuery) -> DbResult<ListResult<AuditLog>>;
 
     /// Count audit logs matching the query (ignores pagination parameters)

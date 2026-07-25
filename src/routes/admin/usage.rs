@@ -30,21 +30,29 @@ pub struct UsageQuery {
     pub start_date: Option<String>,
     /// End date (YYYY-MM-DD)
     pub end_date: Option<String>,
+    /// **Hadrian Extension:** Filter by record type: "model" (LLM requests) or
+    /// "tool" (server-side tool invocations). Omit to include both.
+    pub record_type: Option<String>,
 }
 
 impl UsageQuery {
     fn parse_date_range(&self) -> Result<DateRange, AdminError> {
-        let start = self
-            .start_date
-            .as_ref()
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            .unwrap_or_else(|| chrono::Utc::now().date_naive());
+        // Unparseable dates are a 400, not a silent fallback: substituting
+        // "today" for a typo would return wrong data with a 200.
+        let parse = |field: &str, value: &Option<String>| -> Result<NaiveDate, AdminError> {
+            match value {
+                Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                    AdminError::BadRequest(format!(
+                        "Invalid {} '{}': expected YYYY-MM-DD",
+                        field, s
+                    ))
+                }),
+                None => Ok(chrono::Utc::now().date_naive()),
+            }
+        };
 
-        let end = self
-            .end_date
-            .as_ref()
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            .unwrap_or_else(|| chrono::Utc::now().date_naive());
+        let start = parse("start_date", &self.start_date)?;
+        let end = parse("end_date", &self.end_date)?;
 
         if end < start {
             return Err(AdminError::BadRequest(
@@ -52,7 +60,22 @@ impl UsageQuery {
             ));
         }
 
-        Ok(DateRange { start, end })
+        let record_type = match self.record_type.as_deref() {
+            None => None,
+            Some(rt @ ("model" | "tool")) => Some(rt.to_string()),
+            Some(other) => {
+                return Err(AdminError::BadRequest(format!(
+                    "Invalid record_type '{}': expected \"model\" or \"tool\"",
+                    other
+                )));
+            }
+        };
+
+        Ok(DateRange {
+            start,
+            end,
+            record_type,
+        })
     }
 }
 
@@ -354,7 +377,7 @@ impl From<DailyProviderSpend> for DailyProviderSpendResponse {
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct PricingSourceSpendResponse {
-    /// Pricing source (provider, provider_config, pricing_config, catalog, none)
+    /// Pricing source (provider, admin, provider_config, pricing_config, catalog, none)
     pub pricing_source: String,
     /// Total cost in dollars for this pricing source
     pub total_cost: f64,
@@ -3931,6 +3954,9 @@ pub struct UsageLogQueryParams {
     pub limit: Option<i64>,
     pub cursor: Option<String>,
     pub direction: Option<String>,
+    /// Filter by record type: "model" (LLM requests) or "tool" (server-side
+    /// tool invocations). Omit for both.
+    pub record_type: Option<String>,
 }
 
 impl UsageLogQueryParams {
@@ -3950,7 +3976,7 @@ impl UsageLogQueryParams {
             limit: self.limit,
             cursor: self.cursor,
             direction: self.direction,
-            record_type: None,
+            record_type: self.record_type,
         }
     }
 
@@ -3967,13 +3993,18 @@ impl UsageLogQueryParams {
             provider_source: self.provider_source,
             from: self.from,
             to: self.to,
-            limit: Some(10_000),
+            limit: Some(EXPORT_ROW_LIMIT),
             cursor: None,
             direction: None,
-            record_type: None,
+            record_type: self.record_type,
         }
     }
 }
+
+/// Hard cap on export rows. Exports past this length set the
+/// `X-Export-Truncated: true` response header; use the paginated
+/// `/admin/v1/usage/logs` endpoint for complete data.
+const EXPORT_ROW_LIMIT: i64 = 10_000;
 
 /// Individual usage log entry response
 #[derive(Debug, Serialize)]
@@ -3982,6 +4013,8 @@ pub struct UsageLogResponse {
     pub id: Uuid,
     pub recorded_at: String,
     pub request_id: String,
+    /// Client-supplied correlation id (X-Request-Id / X-Client-Request-Id)
+    pub client_request_id: Option<String>,
     pub api_key_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub org_id: Option<Uuid>,
@@ -4015,6 +4048,7 @@ impl From<UsageLogRecord> for UsageLogResponse {
             id: r.id,
             recorded_at: r.recorded_at.to_rfc3339(),
             request_id: r.request_id,
+            client_request_id: r.client_request_id,
             api_key_id: r.api_key_id,
             user_id: r.user_id,
             org_id: r.org_id,
@@ -4076,6 +4110,8 @@ pub struct UsageLogExportQuery {
     pub provider_source: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
+    /// Filter by record type: "model" or "tool". Omit for both.
+    pub record_type: Option<String>,
     #[serde(default)]
     pub format: UsageLogExportFormat,
 }
@@ -4099,6 +4135,7 @@ impl UsageLogExportQuery {
                 limit: None,
                 cursor: None,
                 direction: None,
+                record_type: self.record_type,
             },
             format,
         )
@@ -4124,7 +4161,10 @@ pub async fn list_logs(
     authz.require("usage", "list", None, None, None, None)?;
     let services = get_services(&state)?;
 
-    let limit = params.limit.unwrap_or(100).min(1000);
+    // Clamp to [1, 1000]: limit=0 previously returned an empty page with
+    // has_more=true (client infinite loop) and a negative limit became an
+    // unbounded SQLite scan (`LIMIT -n` means no limit).
+    let limit = params.limit.unwrap_or(100).clamp(1, 1000);
     if let Some(ref dir) = params.direction
         && dir != "forward"
         && dir != "backward"
@@ -4133,6 +4173,12 @@ pub async fn list_logs(
             "Invalid direction '{}': must be 'forward' or 'backward'",
             dir
         )));
+    }
+    // Reject garbage cursors here with a 400; the repo layer treats decode
+    // failures as internal database errors (500).
+    if let Some(ref c) = params.cursor {
+        crate::db::repos::Cursor::decode(c)
+            .map_err(|e| AdminError::BadRequest(format!("Invalid cursor: {}", e)))?;
     }
 
     let mut query = params.into_query();
@@ -4176,7 +4222,10 @@ pub async fn list_me_logs(
     let services = get_services(&state)?;
     usage_user_authz(services, &authz, user_id).await?;
 
-    let limit = params.limit.unwrap_or(100).min(1000);
+    // Clamp to [1, 1000]: limit=0 previously returned an empty page with
+    // has_more=true (client infinite loop) and a negative limit became an
+    // unbounded SQLite scan (`LIMIT -n` means no limit).
+    let limit = params.limit.unwrap_or(100).clamp(1, 1000);
     if let Some(ref dir) = params.direction
         && dir != "forward"
         && dir != "backward"
@@ -4185,6 +4234,12 @@ pub async fn list_me_logs(
             "Invalid direction '{}': must be 'forward' or 'backward'",
             dir
         )));
+    }
+    // Reject garbage cursors here with a 400; the repo layer treats decode
+    // failures as internal database errors (500).
+    if let Some(ref c) = params.cursor {
+        crate::db::repos::Cursor::decode(c)
+            .map_err(|e| AdminError::BadRequest(format!("Invalid cursor: {}", e)))?;
     }
 
     let mut query = params.into_query();
@@ -4214,6 +4269,7 @@ struct UsageLogCsvRow {
     id: String,
     recorded_at: String,
     request_id: String,
+    client_request_id: String,
     model: String,
     provider: String,
     provider_source: String,
@@ -4227,6 +4283,10 @@ struct UsageLogCsvRow {
     latency_ms: String,
     cancelled: bool,
     status_code: String,
+    image_count: String,
+    audio_seconds: String,
+    character_count: String,
+    http_referer: String,
     user_id: String,
     api_key_id: String,
     org_id: String,
@@ -4239,8 +4299,9 @@ struct UsageLogCsvRow {
 fn build_export_response(
     records: Vec<UsageLogRecord>,
     format: UsageLogExportFormat,
+    truncated: bool,
 ) -> Result<Response, AdminError> {
-    match format {
+    let result: Result<Response, AdminError> = match format {
         #[cfg(feature = "csv-export")]
         UsageLogExportFormat::Csv => {
             use super::csv_export::CsvResponse;
@@ -4252,6 +4313,7 @@ fn build_export_response(
                     id: resp.id.to_string(),
                     recorded_at: resp.recorded_at,
                     request_id: resp.request_id,
+                    client_request_id: resp.client_request_id.unwrap_or_default(),
                     model: resp.model,
                     provider: resp.provider,
                     provider_source: resp.provider_source.unwrap_or_default(),
@@ -4265,6 +4327,16 @@ fn build_export_response(
                     latency_ms: resp.latency_ms.map(|v| v.to_string()).unwrap_or_default(),
                     cancelled: resp.cancelled,
                     status_code: resp.status_code.map(|v| v.to_string()).unwrap_or_default(),
+                    image_count: resp.image_count.map(|v| v.to_string()).unwrap_or_default(),
+                    audio_seconds: resp
+                        .audio_seconds
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    character_count: resp
+                        .character_count
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    http_referer: resp.http_referer.unwrap_or_default(),
                     user_id: resp.user_id.map(|v| v.to_string()).unwrap_or_default(),
                     api_key_id: resp.api_key_id.map(|v| v.to_string()).unwrap_or_default(),
                     org_id: resp.org_id.map(|v| v.to_string()).unwrap_or_default(),
@@ -4316,7 +4388,18 @@ fn build_export_response(
             )
                 .into_response())
         }
+    };
+    let mut response = result?;
+    // The export is capped (EXPORT_ROW_LIMIT rows). Reconciliation callers
+    // must be able to tell a complete export from a truncated one; use the
+    // paginated JSON endpoints (/admin/v1/usage/logs) for complete data.
+    if truncated {
+        response.headers_mut().insert(
+            "X-Export-Truncated",
+            axum::http::HeaderValue::from_static("true"),
+        );
     }
+    Ok(response)
 }
 
 /// Export usage logs (admin global)
@@ -4343,7 +4426,7 @@ pub async fn export_logs(
     let result = services.usage.list_logs(params.into_export_query()).await?;
     tracing::debug!(count = result.items.len(), format = ?format, "exporting usage logs");
 
-    build_export_response(result.items, format)
+    build_export_response(result.items, format, result.has_more)
 }
 
 /// Export current user's usage logs
@@ -4377,5 +4460,5 @@ pub async fn export_me_logs(
     let result = services.usage.list_logs(query).await?;
     tracing::debug!(count = result.items.len(), %user_id, format = ?format, "exporting user usage logs");
 
-    build_export_response(result.items, format)
+    build_export_response(result.items, format, result.has_more)
 }

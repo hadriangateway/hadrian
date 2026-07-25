@@ -185,9 +185,13 @@ impl<T> ListResult<T> {
     }
 }
 
-/// Date range for queries
+/// Date range for usage queries
 #[derive(Debug, Clone)]
 pub struct DateRange {
     pub start: NaiveDate,
     pub end: NaiveDate,
+    /// Restrict usage aggregations to a single record type (`"model"` or
+    /// `"tool"`); `None` includes both. Honored by every [`usage::UsageRepo`]
+    /// aggregation method that takes a [`DateRange`].
+    pub record_type: Option<String>,
 }

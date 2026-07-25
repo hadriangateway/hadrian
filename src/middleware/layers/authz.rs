@@ -138,9 +138,18 @@ pub async fn permissive_authz_middleware(
         }
     };
 
-    // Insert ClientInfo for unprotected routes (no admin middleware to extract it).
-    req.extensions_mut()
-        .insert(crate::middleware::ClientInfo::default());
+    // Insert ClientInfo for unprotected routes (no admin middleware to
+    // extract it). Populate the real client IP / user agent so audit rows
+    // under auth.mode = none aren't blank.
+    let client_info = crate::middleware::ClientInfo {
+        ip_address: extract_client_ip(&req, &state.config.server.trusted_proxies),
+        user_agent: req
+            .headers()
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
+    };
+    req.extensions_mut().insert(client_info);
 
     // Insert a default AdminAuth with system identity for unprotected routes.
     // This allows handlers to extract AdminAuth for audit logging purposes.
