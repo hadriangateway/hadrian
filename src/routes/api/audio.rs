@@ -181,21 +181,18 @@ pub async fn api_v1_audio_speech(
         )
     })?;
 
-    // Log usage for TTS (character-based pricing)
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    // Compute TTS cost (character-based pricing); the API middleware
+    // writes the usage row from the response headers below.
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_tts_characters(character_count),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_tts_characters(character_count),
+    );
 
     // Add cost headers to audio response
     if let Some(cost) = cost_microcents
@@ -217,6 +214,10 @@ pub async fn api_v1_audio_speech(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }
@@ -547,21 +548,18 @@ pub async fn api_v1_audio_transcriptions(
         )
     })?;
 
-    // Log usage for audio transcription (per-second pricing)
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    // Compute transcription cost (per-second pricing); the API middleware
+    // writes the usage row from the response headers below.
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_audio_seconds(estimated_seconds),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_audio_seconds(estimated_seconds),
+    );
 
     // Add cost headers to response
     if let Some(cost) = cost_microcents
@@ -583,6 +581,10 @@ pub async fn api_v1_audio_transcriptions(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }
@@ -871,21 +873,18 @@ pub async fn api_v1_audio_translations(
         )
     })?;
 
-    // Log usage for audio translation (per-second pricing)
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    // Compute translation cost (per-second pricing); the API middleware
+    // writes the usage row from the response headers below.
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_audio_seconds(estimated_seconds),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_audio_seconds(estimated_seconds),
+    );
 
     // Add cost headers to response
     if let Some(cost) = cost_microcents
@@ -907,6 +906,10 @@ pub async fn api_v1_audio_translations(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }

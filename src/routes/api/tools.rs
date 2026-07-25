@@ -1,4 +1,4 @@
-use axum::{Extension, Json, extract::State};
+use axum::{Extension, Json, extract::State, http::HeaderMap};
 use axum_valid::Valid;
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -246,11 +246,12 @@ impl std::fmt::Display for WebSearchError {
     ),
     security(("api_key" = []))
 ))]
-#[tracing::instrument(name = "api.tools.web_search", skip(state, auth, authz))]
+#[tracing::instrument(name = "api.tools.web_search", skip(state, auth, authz, headers))]
 pub async fn web_search(
     State(state): State<AppState>,
     auth: Option<Extension<AuthenticatedRequest>>,
     authz: Option<Extension<AuthzContext>>,
+    #[cfg_attr(not(feature = "concurrency"), allow(unused_variables))] headers: HeaderMap,
     Valid(Json(payload)): Valid<Json<WebSearchRequest>>,
 ) -> Result<Json<WebSearchResponse>, ApiError> {
     // Authz check
@@ -312,17 +313,18 @@ pub async fn web_search(
     // Log tool usage with identity
     #[cfg(feature = "concurrency")]
     if let Some(ref usage_buffer) = state.usage_buffer {
-        let (api_key_id, user_id, org_id, project_id, team_id, service_account_id) =
-            extract_identity(&auth, &state);
-        usage_buffer.push(UsageLogEntry {
+        let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+            .or_defaults(state.default_identity())
+            .with_project_fallback(super::header_project_id(&headers));
+        let mut entry = UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
             client_request_id: None,
-            api_key_id,
-            user_id,
-            org_id,
-            project_id,
-            team_id,
-            service_account_id,
+            api_key_id: None,
+            user_id: None,
+            org_id: None,
+            project_id: None,
+            team_id: None,
+            service_account_id: None,
             model: "web-search".to_string(),
             provider: provider_name.to_string(),
             http_referer: None,
@@ -350,7 +352,9 @@ pub async fn web_search(
             tool_results_count: Some(results_count),
             tool_runtime_seconds: None,
             tool_exit_code: None,
-        });
+        };
+        principal.apply_to(&mut entry);
+        usage_buffer.push(entry);
     }
 
     Ok(Json(WebSearchResponse { results }))
@@ -395,11 +399,12 @@ pub struct WebFetchResponse {
     ),
     security(("api_key" = []))
 ))]
-#[tracing::instrument(name = "api.tools.web_fetch", skip(state, auth, authz))]
+#[tracing::instrument(name = "api.tools.web_fetch", skip(state, auth, authz, headers))]
 pub async fn web_fetch(
     State(state): State<AppState>,
     auth: Option<Extension<AuthenticatedRequest>>,
     authz: Option<Extension<AuthzContext>>,
+    #[cfg_attr(not(feature = "concurrency"), allow(unused_variables))] headers: HeaderMap,
     Valid(Json(payload)): Valid<Json<WebFetchRequest>>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
     // Authz check
@@ -606,17 +611,18 @@ pub async fn web_fetch(
     // Log tool usage with identity
     #[cfg(feature = "concurrency")]
     if let Some(ref usage_buffer) = state.usage_buffer {
-        let (api_key_id, user_id, org_id, project_id, team_id, service_account_id) =
-            extract_identity(&auth, &state);
-        usage_buffer.push(UsageLogEntry {
+        let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+            .or_defaults(state.default_identity())
+            .with_project_fallback(super::header_project_id(&headers));
+        let mut entry = UsageLogEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
             client_request_id: None,
-            api_key_id,
-            user_id,
-            org_id,
-            project_id,
-            team_id,
-            service_account_id,
+            api_key_id: None,
+            user_id: None,
+            org_id: None,
+            project_id: None,
+            team_id: None,
+            service_account_id: None,
             model: "web-fetch".to_string(),
             provider: "reqwest".to_string(),
             http_referer: None,
@@ -644,7 +650,9 @@ pub async fn web_fetch(
             tool_results_count: None,
             tool_runtime_seconds: None,
             tool_exit_code: None,
-        });
+        };
+        principal.apply_to(&mut entry);
+        usage_buffer.push(entry);
     }
 
     Ok(Json(WebFetchResponse {
@@ -653,45 +661,6 @@ pub async fn web_fetch(
         content,
         content_length,
     }))
-}
-
-/// Identity fields extracted from auth context for usage logging.
-type IdentityFields = (
-    Option<uuid::Uuid>, // api_key_id
-    Option<uuid::Uuid>, // user_id
-    Option<uuid::Uuid>, // org_id
-    Option<uuid::Uuid>, // project_id
-    Option<uuid::Uuid>, // team_id
-    Option<uuid::Uuid>, // service_account_id
-);
-
-/// Extract identity fields from the auth context for usage logging.
-fn extract_identity(
-    auth: &Option<Extension<AuthenticatedRequest>>,
-    state: &AppState,
-) -> IdentityFields {
-    if let Some(Extension(auth)) = auth {
-        let api_key = auth.api_key();
-        (
-            api_key.map(|k| k.key.id),
-            auth.user_id(),
-            api_key
-                .and_then(|k| k.org_id)
-                .or_else(|| auth.principal().org_id()),
-            api_key.and_then(|k| k.project_id),
-            api_key.and_then(|k| k.team_id),
-            api_key.and_then(|k| k.service_account_id),
-        )
-    } else {
-        (
-            None,
-            state.default_user_id,
-            state.default_org_id,
-            None,
-            None,
-            None,
-        )
-    }
 }
 
 /// Convert HTML to readable text.

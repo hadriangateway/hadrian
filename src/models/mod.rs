@@ -16,6 +16,7 @@ mod organization;
 mod prefixed_id;
 mod project;
 mod ranking_options;
+mod request_principal;
 #[cfg(feature = "sso")]
 mod scim;
 mod service_account;
@@ -47,6 +48,7 @@ pub use organization::*;
 pub use prefixed_id::*;
 pub use project::*;
 pub use ranking_options::*;
+pub use request_principal::*;
 #[cfg(feature = "sso")]
 pub use scim::*;
 pub use service_account::*;

@@ -292,6 +292,9 @@ pub async fn api_v1_embeddings(
             pricing: &state.pricing,
             db: state.db.as_ref(),
             usage_entry: None,
+            pricing_org_id: crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+                .or_defaults(state.default_identity())
+                .org_id,
             #[cfg(feature = "server")]
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]

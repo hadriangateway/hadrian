@@ -54,6 +54,19 @@ pub use models::*;
 pub use tools::*;
 pub use vector_stores::*;
 
+/// Parse the `X-Hadrian-Project` request header into a project id.
+///
+/// Session-based callers use this header to attribute usage to a project;
+/// it only ever fills a missing project scope (see
+/// [`crate::models::RequestPrincipal::with_project_fallback`]), so a
+/// project-scoped API key always wins over it.
+pub(crate) fn header_project_id(headers: &HeaderMap) -> Option<Uuid> {
+    headers
+        .get("X-Hadrian-Project")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| Uuid::parse_str(v).ok())
+}
+
 /// Check if cache should be bypassed based on request headers.
 ///
 /// Respects:
@@ -7738,6 +7751,369 @@ model_name = "test-model"
 
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"].is_array());
+    }
+
+    // ============================================================================
+    // Media Usage Accounting Tests
+    // ============================================================================
+    //
+    // Media handlers only compute cost and surface it via response headers;
+    // the API middleware is the single writer of the usage row. These tests
+    // pin that invariant: a media request must produce EXACTLY ONE row (the
+    // old handler-side `log_media_usage` write double-counted spend) with
+    // the pricing source flowing through the `X-Pricing-Source` header.
+
+    /// Like `test_app` but with per-unit `[pricing]` for the test model, a
+    /// fast usage-buffer flush interval, and the buffer flush worker started
+    /// with a database sink (production wiring lives in `cli/server.rs`, so
+    /// plain `test_app` never drains the buffer). Returns the `AppState` so
+    /// tests can query usage rows and read the default identity.
+    #[cfg(feature = "concurrency")]
+    async fn test_app_with_usage_worker() -> (axum::Router, crate::AppState) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let db_id = COUNTER.fetch_add(1, Ordering::SeqCst);
+
+        #[cfg(feature = "sso")]
+        let session_section = r#"
+[auth.session]
+secret = "test-session-secret-must-be-long-enough-for-hmac-pepper-32b"
+"#;
+        #[cfg(not(feature = "sso"))]
+        let session_section = "";
+
+        let config_str = format!(
+            r#"
+[database]
+type = "sqlite"
+path = "file:api_test_media_usage_db_{db_id}?mode=memory&cache=shared"
+create_if_missing = true
+run_migrations = true
+wal_mode = false
+busy_timeout_ms = 5000
+{session_section}
+[providers]
+default_provider = "test"
+
+[providers.test]
+type = "test"
+model_name = "test-model"
+
+[pricing.pricing.test.test-model]
+per_image = 40000
+per_1m_characters = 15000000
+
+[observability.usage.buffer]
+flush_interval_ms = 25
+"#
+        );
+
+        let config =
+            crate::config::GatewayConfig::parse(&config_str).expect("Failed to parse test config");
+        let state = crate::AppState::new(config.clone())
+            .await
+            .expect("Failed to create AppState");
+        let buffer = state.usage_buffer.clone().expect("usage buffer");
+        let sink: std::sync::Arc<dyn crate::usage_sink::UsageSink> = std::sync::Arc::new(
+            crate::usage_sink::DatabaseSink::new(state.db.clone().expect("db"), None),
+        );
+        buffer.start_worker(sink);
+        (crate::build_app(&config, state.clone()), state)
+    }
+
+    /// POST JSON and return status + response headers + JSON body.
+    #[cfg(feature = "concurrency")]
+    async fn post_json_full(
+        app: &axum::Router,
+        uri: &str,
+        body: Value,
+        headers: Vec<(&str, &str)>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        for (key, value) in headers {
+            builder = builder.header(key, value);
+        }
+        let request = builder
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        (status, headers, json)
+    }
+
+    /// Date range covering "now" for usage aggregation queries.
+    #[cfg(feature = "concurrency")]
+    fn usage_range() -> crate::db::repos::DateRange {
+        let today = chrono::Utc::now().date_naive();
+        crate::db::repos::DateRange {
+            start: today - chrono::Days::new(1),
+            end: today + chrono::Days::new(1),
+            record_type: None,
+        }
+    }
+
+    /// Poll until the usage buffer has flushed at least one row for the
+    /// given fetch, then wait a few more flush intervals so a duplicate
+    /// write (the regression under test) would also have landed.
+    #[cfg(feature = "concurrency")]
+    async fn settled_usage_summary<F, Fut>(fetch: F) -> crate::models::UsageSummary
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = crate::models::UsageSummary>,
+    {
+        for _ in 0..100 {
+            if fetch().await.request_count > 0 {
+                // Give a hypothetical second writer time to flush too.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                return fetch().await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("usage row was never flushed to the database");
+    }
+
+    /// Create an org and an org-owned API key; returns (org_id, key_id, key).
+    #[cfg(feature = "concurrency")]
+    async fn create_org_and_api_key(
+        app: &axum::Router,
+        slug: &str,
+    ) -> (String, uuid::Uuid, String) {
+        let (status, org) = post_json(
+            app,
+            "/admin/v1/organizations",
+            json!({ "slug": slug, "name": format!("Org {slug}") }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let org_id = org["id"].as_str().unwrap().to_string();
+
+        let (status, key_response) = post_json(
+            app,
+            "/admin/v1/api-keys",
+            json!({
+                "name": format!("{slug}-key"),
+                "owner": {"type": "organization", "org_id": org_id}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let key_id = uuid::Uuid::parse_str(key_response["id"].as_str().unwrap()).unwrap();
+        let key = key_response["key"].as_str().unwrap().to_string();
+        (org_id, key_id, key)
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[tokio::test]
+    async fn test_media_usage_single_row_with_api_key() {
+        let (app, state) = test_app_with_usage_worker().await;
+        let (_org_id, key_id, key) = create_org_and_api_key(&app, "media-usage-org").await;
+
+        let (status, headers, body) = post_json_full(
+            &app,
+            "/api/v1/images/generations",
+            json!({
+                "prompt": "A cute baby sea otter",
+                "model": "test/test-model"
+            }),
+            vec![("Authorization", &format!("Bearer {key}"))],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        // The pricing source must flow to the middleware via this header;
+        // without it media rows would regress to pricing_source "none".
+        assert_eq!(
+            headers.get("X-Pricing-Source").unwrap().to_str().unwrap(),
+            "pricing_config"
+        );
+        assert_eq!(
+            headers.get("X-Cost-Microcents").unwrap().to_str().unwrap(),
+            "40000"
+        );
+
+        let db = state.db.as_ref().expect("db").clone();
+        let summary = settled_usage_summary(|| {
+            let db = db.clone();
+            async move {
+                db.usage()
+                    .get_summary(key_id, usage_range())
+                    .await
+                    .expect("usage summary")
+            }
+        })
+        .await;
+        assert_eq!(
+            summary.request_count, 1,
+            "a media request must produce exactly one usage row (keyed by api_key_id)"
+        );
+        assert_eq!(summary.image_count, 1);
+        assert_eq!(summary.total_cost_microcents, 40000);
+
+        let sources = db
+            .usage()
+            .get_pricing_source_usage(key_id, usage_range())
+            .await
+            .expect("pricing source usage");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].pricing_source, "pricing_config");
+        assert_eq!(sources[0].request_count, 1);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[tokio::test]
+    async fn test_media_usage_anonymous_attributes_default_org() {
+        let (app, state) = test_app_with_usage_worker().await;
+        let default_org = state.default_org_id.expect("default org");
+
+        let (status, headers, _body) = post_json_full(
+            &app,
+            "/api/v1/images/generations",
+            json!({
+                "prompt": "A cute baby sea otter",
+                "model": "test/test-model"
+            }),
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers.get("X-Pricing-Source").unwrap().to_str().unwrap(),
+            "pricing_config"
+        );
+
+        let db = state.db.as_ref().expect("db").clone();
+        let summary = settled_usage_summary(|| {
+            let db = db.clone();
+            async move {
+                db.usage()
+                    .get_summary_by_org(default_org, usage_range())
+                    .await
+                    .expect("usage summary")
+            }
+        })
+        .await;
+        assert_eq!(
+            summary.request_count, 1,
+            "anonymous media spend must land as exactly one default-org row"
+        );
+        assert_eq!(summary.image_count, 1);
+        assert_eq!(summary.total_cost_microcents, 40000);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[tokio::test]
+    async fn test_media_usage_org_admin_pricing() {
+        let (app, state) = test_app_with_usage_worker().await;
+        let (org_id, key_id, key) = create_org_and_api_key(&app, "media-admin-pricing-org").await;
+
+        // Seed an org-scoped admin pricing row; the admin route refreshes
+        // the in-memory overlay, which out-ranks the `[pricing]` config.
+        let (status, _pricing) = post_json(
+            &app,
+            "/admin/v1/model-pricing",
+            json!({
+                "owner": {"type": "organization", "org_id": org_id},
+                "provider": "test",
+                "model": "test-model",
+                "per_image": 123456
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, headers, _body) = post_json_full(
+            &app,
+            "/api/v1/images/generations",
+            json!({
+                "prompt": "A cute baby sea otter",
+                "model": "test/test-model"
+            }),
+            vec![("Authorization", &format!("Bearer {key}"))],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers.get("X-Pricing-Source").unwrap().to_str().unwrap(),
+            "admin",
+            "org-scoped admin pricing must apply to media requests"
+        );
+
+        let db = state.db.as_ref().expect("db").clone();
+        let summary = settled_usage_summary(|| {
+            let db = db.clone();
+            async move {
+                db.usage()
+                    .get_summary(key_id, usage_range())
+                    .await
+                    .expect("usage summary")
+            }
+        })
+        .await;
+        assert_eq!(summary.request_count, 1);
+        assert_eq!(summary.total_cost_microcents, 123456);
+
+        let sources = db
+            .usage()
+            .get_pricing_source_usage(key_id, usage_range())
+            .await
+            .expect("pricing source usage");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].pricing_source, "admin");
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[tokio::test]
+    async fn test_media_usage_tts_character_count() {
+        let (app, state) = test_app_with_usage_worker().await;
+        let (_org_id, key_id, key) = create_org_and_api_key(&app, "media-tts-org").await;
+
+        let (status, headers, _body) = post_json_full(
+            &app,
+            "/api/v1/audio/speech",
+            json!({
+                "model": "test/test-model",
+                "input": "Hello world",
+                "voice": "alloy"
+            }),
+            vec![("Authorization", &format!("Bearer {key}"))],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers.get("X-Pricing-Source").unwrap().to_str().unwrap(),
+            "pricing_config"
+        );
+
+        let db = state.db.as_ref().expect("db").clone();
+        let summary = settled_usage_summary(|| {
+            let db = db.clone();
+            async move {
+                db.usage()
+                    .get_summary(key_id, usage_range())
+                    .await
+                    .expect("usage summary")
+            }
+        })
+        .await;
+        assert_eq!(
+            summary.request_count, 1,
+            "a TTS request must produce exactly one usage row"
+        );
+        // "Hello world" is 11 characters at 15_000_000 microcents per 1M.
+        assert_eq!(summary.character_count, 11);
+        assert_eq!(summary.total_cost_microcents, 165);
     }
 
     #[tokio::test]

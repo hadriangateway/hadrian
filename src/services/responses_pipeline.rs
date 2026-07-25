@@ -23,7 +23,8 @@ use crate::{
     config::ProviderConfig,
     db::repos::ResponseOwner,
     models::{
-        ApiKeyOwner, SKILL_MAIN_FILE, SkillId, SkillRef, VersionSelector, validate_skill_name,
+        ApiKeyOwner, RequestPrincipal, SKILL_MAIN_FILE, SkillId, SkillRef, VersionSelector,
+        validate_skill_name,
     },
     routes::{
         api::wrap_streaming_with_guardrails,
@@ -40,91 +41,6 @@ use crate::{
         web_search_tool::WebSearchExecutor,
     },
 };
-
-/// Identity fields used by the shell tool's usage attribution.
-///
-/// Foreground builds this from the `AuthenticatedRequest`; background
-/// builds it from the persisted `ResponseRecord`. Either way the
-/// downstream wrap code looks the same.
-#[derive(Debug, Clone, Default)]
-pub struct PipelinePrincipal {
-    pub api_key_id: Option<Uuid>,
-    pub user_id: Option<Uuid>,
-    pub org_id: Option<Uuid>,
-    pub project_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub service_account_id: Option<Uuid>,
-}
-
-impl PipelinePrincipal {
-    /// Build from an HTTP auth context with sensible fallbacks to the
-    /// gateway's default user/org for unauthenticated requests.
-    pub fn from_auth(state: &AppState, auth: Option<&AuthenticatedRequest>) -> Self {
-        let api_key = auth.and_then(|a| a.api_key());
-        Self {
-            api_key_id: api_key.map(|k| k.key.id),
-            user_id: auth.and_then(|a| a.user_id()).or(state.default_user_id),
-            org_id: resolve_request_org(auth, state.default_org_id),
-            project_id: api_key.and_then(|k| k.project_id),
-            team_id: api_key.and_then(|k| k.team_id),
-            service_account_id: api_key.and_then(|k| k.service_account_id),
-        }
-    }
-}
-
-/// Resolve the org a request operates in: the API key's bound org, else
-/// the authenticated principal's org, else the deployment `default_org_id`
-/// (no-auth / anonymous dev mode).
-///
-/// This is the single source of truth for request → org scoping, and
-/// every code path that *writes* an org-scoped row and a later path that
-/// *reads* it back must agree on it. In particular the MCP approval gate:
-/// park (`PipelinePrincipal::from_auth` → `McpExecutor` `org_id`) and
-/// resume (`routes::api::chat`) both call this, so a parked approval and
-/// its `mcp_approval_response` land in the same partition. Dropping the
-/// `default_org_id` fallback on either side made anonymous deployments
-/// park under the default org but resume under `None`, so the claim never
-/// hit and every approval re-prompted forever.
-pub fn resolve_request_org(
-    auth: Option<&AuthenticatedRequest>,
-    default_org_id: Option<Uuid>,
-) -> Option<Uuid> {
-    auth.and_then(|a| {
-        a.api_key()
-            .and_then(|k| k.org_id)
-            .or_else(|| a.principal().org_id())
-    })
-    .or(default_org_id)
-}
-
-#[cfg(test)]
-mod org_resolution_tests {
-    use super::*;
-
-    #[test]
-    fn anonymous_request_falls_back_to_default_org() {
-        // The MCP approval loop bug: park resolved org via this helper
-        // (with the `default_org_id` fallback) while resume omitted the
-        // fallback, so an anonymous resume looked under `None` and never
-        // claimed the parked row. Both paths now share this resolver, so an
-        // anonymous request must land on the deployment default on BOTH.
-        let default_org = Uuid::new_v4();
-        assert_eq!(
-            resolve_request_org(None, Some(default_org)),
-            Some(default_org),
-            "anonymous request must fall back to default_org_id"
-        );
-    }
-
-    #[test]
-    fn anonymous_request_without_default_resolves_none() {
-        // No auth and no configured default → no org. Park then fails
-        // closed (it can't persist a parked approval without an org) rather
-        // than parking, so there is nothing for resume to claim — the two
-        // paths stay symmetric in this case too.
-        assert_eq!(resolve_request_org(None, None), None);
-    }
-}
 
 /// Derive the canonical owner for a persisted response from the
 /// calling principal. Mirrors the ownership semantics used by other
@@ -158,19 +74,6 @@ pub fn derive_response_owner(
         }
     }
     state.default_org_id.map(ResponseOwner::Organization)
-}
-
-impl From<PipelinePrincipal> for crate::services::shell_tool::ShellPrincipal {
-    fn from(p: PipelinePrincipal) -> Self {
-        Self {
-            api_key_id: p.api_key_id,
-            user_id: p.user_id,
-            org_id: p.org_id,
-            project_id: p.project_id,
-            team_id: p.team_id,
-            service_account_id: p.service_account_id,
-        }
-    }
 }
 
 /// Errors from resolving the `skills` field on a Responses-API request.
@@ -474,7 +377,7 @@ pub fn apply_streaming_pipeline(
     provider_name: String,
     provider_config: ProviderConfig,
     model_name: String,
-    principal: PipelinePrincipal,
+    principal: RequestPrincipal,
     mounted_skills: Vec<SkillMount>,
     staged_input_files: Vec<StagedFile>,
     response_owner: Option<ResponseOwner>,
@@ -615,7 +518,7 @@ pub fn apply_streaming_pipeline(
                 shell_runtime.clone(),
                 rate,
                 label,
-                principal.clone().into(),
+                principal,
                 mounted_skills,
                 state.config.features.server_tools.shell_limits.clone(),
                 resolved_shell_env.clone(),

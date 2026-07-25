@@ -198,26 +198,20 @@ pub async fn api_v1_images_generations(
         )
     })?;
 
-    // Count images and log usage
+    // Count images and compute cost. The usage row is written by the API
+    // middleware from the response headers below; the handler only prices
+    // the request (org-scoped so admin pricing rows apply).
     let image_count = images_response.data.as_ref().map(|d| d.len()).unwrap_or(0) as i64;
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_images(
-                image_count,
-                pricing_size,
-                pricing_quality,
-            ),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_images(image_count, pricing_size, pricing_quality),
+    );
 
     // Build response with cost headers
     let mut response = Json(&images_response).into_response();
@@ -241,6 +235,10 @@ pub async fn api_v1_images_generations(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }
@@ -540,26 +538,23 @@ pub async fn api_v1_images_edits(
         )
     })?;
 
-    // Count images and log usage
+    // Count images and compute cost; the API middleware writes the usage
+    // row from the response headers below.
     let image_count = images_response.data.as_ref().map(|d| d.len()).unwrap_or(0) as i64;
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_images(
-                image_count,
-                pricing_size,
-                None, // edits don't have a quality parameter
-            ),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_images(
+            image_count,
+            pricing_size,
+            None, // edits don't have a quality parameter
+        ),
+    );
 
     // Build response with cost headers
     let mut response = Json(&images_response).into_response();
@@ -583,6 +578,10 @@ pub async fn api_v1_images_edits(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }
@@ -842,26 +841,23 @@ pub async fn api_v1_images_variations(
         )
     })?;
 
-    // Count images and log usage
+    // Count images and compute cost; the API middleware writes the usage
+    // row from the response headers below.
     let image_count = images_response.data.as_ref().map(|d| d.len()).unwrap_or(0) as i64;
-    let api_key_id = auth.as_ref().and_then(|a| a.api_key().map(|k| k.key.id));
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
-    let (cost_microcents, _) =
-        crate::providers::log_media_usage(crate::providers::MediaUsageParams {
-            provider: &provider_name,
-            model: &model_name,
-            pricing: &state.pricing,
-            db: state.db.as_ref(),
-            api_key_id,
-            #[cfg(feature = "server")]
-            task_tracker: &state.task_tracker,
-            usage: crate::pricing::TokenUsage::for_images(
-                image_count,
-                pricing_size,
-                None, // variations don't have a quality parameter
-            ),
-        })
-        .await;
+    let (cost_microcents, pricing_source) = crate::providers::compute_media_cost(
+        &provider_name,
+        &model_name,
+        &state.pricing,
+        principal.org_id,
+        &crate::pricing::TokenUsage::for_images(
+            image_count,
+            pricing_size,
+            None, // variations don't have a quality parameter
+        ),
+    );
 
     // Build response with cost headers
     let mut response = Json(&images_response).into_response();
@@ -885,6 +881,10 @@ pub async fn api_v1_images_variations(
     if let Ok(value) = model_name.parse() {
         response.headers_mut().insert("X-Model", value);
     }
+    response.headers_mut().insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
 
     Ok(response)
 }

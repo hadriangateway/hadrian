@@ -459,12 +459,6 @@ fn modify_response_content(body: &[u8], new_content: &str) -> Option<Vec<u8>> {
     serde_json::to_vec(&json).ok()
 }
 
-/// Build a [`UsageLogEntry`] for streaming cost tracking.
-///
-/// When authenticated, attributes usage to the principal (user, org, project, etc.).
-/// When anonymous (no auth configured), attributes to the default anonymous user/org
-/// so that streaming requests are tracked the same way the middleware tracks
-/// non-streaming anonymous requests.
 /// Rough input-token estimate (~4 chars/token) over a serialized payload
 /// fragment (messages / prompt / input). Used only as the streaming usage
 /// fallback when the provider never reports official token counts.
@@ -485,6 +479,14 @@ fn client_request_id(headers: &HeaderMap) -> Option<String> {
         .map(String::from)
 }
 
+/// Build a [`UsageLogEntry`] for streaming cost tracking.
+///
+/// Attribution follows the canonical [`crate::models::RequestPrincipal`]
+/// derivation: the caller's principal when authenticated, the deployment
+/// default user/org when anonymous (matching how the middleware tracks
+/// non-streaming anonymous requests). When neither exists the entry is
+/// still built with all-None attribution so streamed spend is recorded
+/// rather than silently dropped.
 pub(super) fn build_streaming_usage_entry(
     auth: &Option<Extension<AuthenticatedRequest>>,
     state: &AppState,
@@ -492,96 +494,52 @@ pub(super) fn build_streaming_usage_entry(
     model: &str,
     provider: &str,
     header_project_id: Option<uuid::Uuid>,
-) -> Option<UsageLogEntry> {
-    let client_request_id = client_request_id(headers);
-    let http_referer = headers
-        .get("referer")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-    if let Some(Extension(auth)) = auth {
-        let api_key = auth.api_key();
-        Some(UsageLogEntry {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            client_request_id,
-            api_key_id: api_key.map(|k| k.key.id),
-            user_id: auth.user_id(),
-            org_id: api_key
-                .and_then(|k| k.org_id)
-                .or_else(|| auth.principal().org_id()),
-            project_id: api_key.and_then(|k| k.project_id).or(header_project_id),
-            team_id: api_key.and_then(|k| k.team_id),
-            service_account_id: api_key.and_then(|k| k.service_account_id),
-            model: model.to_string(),
-            provider: provider.to_string(),
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_microcents: None,
-            http_referer,
-            request_at: Utc::now(),
-            streamed: true,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-            finish_reason: None,
-            latency_ms: None,
-            cancelled: false,
-            status_code: None,
-            pricing_source: crate::pricing::CostPricingSource::None,
-            image_count: None,
-            audio_seconds: None,
-            character_count: None,
-            provider_source: None,
-            record_type: "model".to_string(),
-            tool_name: None,
-            tool_query: None,
-            tool_url: None,
-            tool_bytes_fetched: None,
-            tool_results_count: None,
-            tool_runtime_seconds: None,
-            tool_exit_code: None,
-        })
-    } else if state.default_user_id.is_some() || state.default_org_id.is_some() {
-        // Anonymous mode: attribute to the default user/org so streaming usage
-        // is tracked the same way middleware tracks non-streaming anonymous usage.
-        Some(UsageLogEntry {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            client_request_id,
-            api_key_id: None,
-            user_id: state.default_user_id,
-            org_id: state.default_org_id,
-            project_id: header_project_id,
-            team_id: None,
-            service_account_id: None,
-            model: model.to_string(),
-            provider: provider.to_string(),
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_microcents: None,
-            http_referer,
-            request_at: Utc::now(),
-            streamed: true,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-            finish_reason: None,
-            latency_ms: None,
-            cancelled: false,
-            status_code: None,
-            pricing_source: crate::pricing::CostPricingSource::None,
-            image_count: None,
-            audio_seconds: None,
-            character_count: None,
-            provider_source: None,
-            record_type: "model".to_string(),
-            tool_name: None,
-            tool_query: None,
-            tool_url: None,
-            tool_bytes_fetched: None,
-            tool_results_count: None,
-            tool_runtime_seconds: None,
-            tool_exit_code: None,
-        })
-    } else {
-        None
-    }
+) -> UsageLogEntry {
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity())
+        .with_project_fallback(header_project_id);
+    let mut entry = UsageLogEntry {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        client_request_id: client_request_id(headers),
+        api_key_id: None,
+        user_id: None,
+        org_id: None,
+        project_id: None,
+        team_id: None,
+        service_account_id: None,
+        model: model.to_string(),
+        provider: provider.to_string(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_microcents: None,
+        http_referer: headers
+            .get("referer")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
+        request_at: Utc::now(),
+        streamed: true,
+        cached_tokens: 0,
+        reasoning_tokens: 0,
+        finish_reason: None,
+        latency_ms: None,
+        cancelled: false,
+        status_code: None,
+        pricing_source: crate::pricing::CostPricingSource::None,
+        image_count: None,
+        audio_seconds: None,
+        character_count: None,
+        provider_source: None,
+        record_type: "model".to_string(),
+        tool_name: None,
+        tool_query: None,
+        tool_url: None,
+        tool_bytes_fetched: None,
+        tool_results_count: None,
+        tool_runtime_seconds: None,
+        tool_exit_code: None,
+    };
+    principal.apply_to(&mut entry);
+    entry
 }
 
 /// Wraps a streaming response with guardrails filtering.
@@ -1317,16 +1275,16 @@ pub async fn api_v1_chat_completions(
     };
 
     // Create usage entry for streaming cost tracking
-    let usage_entry = if is_streaming {
-        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
-            headers
-                .get("X-Hadrian-Project")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| uuid::Uuid::parse_str(v).ok())
-        })
-    } else {
-        None
-    };
+    let usage_entry = is_streaming.then(|| {
+        build_streaming_usage_entry(
+            &auth,
+            &state,
+            &headers,
+            &model_name,
+            &provider_name,
+            super::header_project_id(&headers),
+        )
+    });
 
     // Inject cost calculation into the response
     let mut final_response =
@@ -1337,6 +1295,9 @@ pub async fn api_v1_chat_completions(
             pricing: &state.pricing,
             db: state.db.as_ref(),
             usage_entry,
+            pricing_org_id: crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+                .or_defaults(state.default_identity())
+                .org_id,
             #[cfg(feature = "server")]
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
@@ -1558,7 +1519,7 @@ pub async fn api_v1_responses(
     // mode with a resolved org scope.
     //
     // `org_id` MUST be resolved through the same `resolve_request_org`
-    // the park path uses (`PipelinePrincipal::from_auth` →
+    // the park path uses (`RequestPrincipal::from_auth` →
     // `McpExecutor` `org_id`). Parked approvals are keyed by org and
     // resume claims them by `(approval_request_id, org_id)`; a different
     // resolution here sends resume looking in the wrong partition, the
@@ -1570,10 +1531,7 @@ pub async fn api_v1_responses(
     if let (Some(mcp_cfg), Some(mcp_service), Some(org_id)) = (
         state.config.features.mcp.as_ref(),
         state.mcp_service.as_ref(),
-        crate::services::responses_pipeline::resolve_request_org(
-            auth.as_ref().map(|e| &e.0),
-            state.default_org_id,
-        ),
+        crate::models::resolve_request_org(auth.as_ref().map(|e| &e.0), state.default_org_id),
     ) && mcp_cfg.is_hadrian_hosted()
         && let Err(e) = crate::services::mcp::resume_mcp_approvals(
             &mut payload,
@@ -1893,10 +1851,8 @@ pub async fn api_v1_responses(
     // the persisted `request_payload` keeps the user's original input
     // (not the rewritten instructions).
     #[cfg(feature = "server")]
-    let principal = crate::services::responses_pipeline::PipelinePrincipal::from_auth(
-        &state,
-        auth.as_ref().map(|e| &e.0),
-    );
+    let principal = crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+        .or_defaults(state.default_identity());
 
     // Merge `shell.environment.container_auto.skills` (spec:
     // ContainerAutoParam.skills) into `payload.skills` so the existing
@@ -2700,16 +2656,16 @@ pub async fn api_v1_responses(
     // caller's original intent: when the non-streaming bridge has
     // folded the SSE transcript back to JSON, cost injection runs in
     // its blocking, body-parsing mode.
-    let usage_entry = if caller_wants_streaming {
-        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
-            headers
-                .get("X-Hadrian-Project")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| uuid::Uuid::parse_str(v).ok())
-        })
-    } else {
-        None
-    };
+    let usage_entry = caller_wants_streaming.then(|| {
+        build_streaming_usage_entry(
+            &auth,
+            &state,
+            &headers,
+            &model_name,
+            &provider_name,
+            super::header_project_id(&headers),
+        )
+    });
 
     // Inject cost calculation into the response
     let mut final_response =
@@ -2720,6 +2676,9 @@ pub async fn api_v1_responses(
             pricing: &state.pricing,
             db: state.db.as_ref(),
             usage_entry,
+            pricing_org_id: crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+                .or_defaults(state.default_identity())
+                .org_id,
             #[cfg(feature = "server")]
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
@@ -3442,16 +3401,16 @@ pub async fn api_v1_completions(
     };
 
     // Create usage entry for streaming cost tracking
-    let usage_entry = if is_streaming {
-        build_streaming_usage_entry(&auth, &state, &headers, &model_name, &provider_name, {
-            headers
-                .get("X-Hadrian-Project")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| uuid::Uuid::parse_str(v).ok())
-        })
-    } else {
-        None
-    };
+    let usage_entry = is_streaming.then(|| {
+        build_streaming_usage_entry(
+            &auth,
+            &state,
+            &headers,
+            &model_name,
+            &provider_name,
+            super::header_project_id(&headers),
+        )
+    });
 
     // Inject cost calculation into the response
     let mut final_response =
@@ -3462,6 +3421,9 @@ pub async fn api_v1_completions(
             pricing: &state.pricing,
             db: state.db.as_ref(),
             usage_entry,
+            pricing_org_id: crate::models::RequestPrincipal::from_auth(auth.as_ref().map(|e| &e.0))
+                .or_defaults(state.default_identity())
+                .org_id,
             #[cfg(feature = "server")]
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]
@@ -3626,6 +3588,61 @@ fn modify_completion_content(body: &[u8], new_content: &str) -> Option<Vec<u8>> 
     }
 
     serde_json::to_vec(&json).ok()
+}
+
+#[cfg(test)]
+mod streaming_usage_entry_tests {
+    use super::*;
+
+    /// Anonymous streamed spend must always produce a usage entry: with no
+    /// auth and no deployment defaults the entry carries all-None
+    /// attribution instead of being dropped (the builder previously
+    /// returned `None` here and streamed spend went unrecorded).
+    #[tokio::test]
+    async fn anonymous_without_defaults_builds_unattributed_entry() {
+        #[cfg(feature = "sso")]
+        let session_section = r#"
+[auth.session]
+secret = "test-session-secret-must-be-long-enough-for-hmac-pepper-32b"
+"#;
+        #[cfg(not(feature = "sso"))]
+        let session_section = "";
+
+        // Stateless config: no database, so no default user/org exists.
+        let config = crate::config::GatewayConfig::parse(&format!(
+            r#"
+{session_section}
+[providers]
+default_provider = "test"
+
+[providers.test]
+type = "test"
+model_name = "test-model"
+"#
+        ))
+        .expect("Failed to parse test config");
+        let state = crate::AppState::new(config)
+            .await
+            .expect("Failed to create AppState");
+        assert!(state.default_user_id.is_none());
+        assert!(state.default_org_id.is_none());
+
+        let entry = build_streaming_usage_entry(
+            &None,
+            &state,
+            &HeaderMap::new(),
+            "test-model",
+            "test",
+            None,
+        );
+        assert!(entry.streamed);
+        assert_eq!(entry.api_key_id, None);
+        assert_eq!(entry.user_id, None);
+        assert_eq!(entry.org_id, None);
+        assert_eq!(entry.project_id, None);
+        assert_eq!(entry.team_id, None);
+        assert_eq!(entry.service_account_id, None);
+    }
 }
 
 #[cfg(all(test, feature = "mcp"))]

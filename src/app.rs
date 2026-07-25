@@ -485,6 +485,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Deployment-default identity for anonymous requests (no-auth mode).
+    pub fn default_identity(&self) -> models::DefaultIdentity {
+        models::DefaultIdentity {
+            user_id: self.default_user_id,
+            org_id: self.default_org_id,
+        }
+    }
+
     pub async fn new(config: config::GatewayConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Build a single shared HTTP client for all outbound provider requests.
         // This is efficient because reqwest maintains per-host connection pools internally,

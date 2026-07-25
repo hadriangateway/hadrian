@@ -28,13 +28,11 @@ use crate::{
         NewVideo, NewVideoCharacter, ResponseOwner, VideoListOrder, VideoPatch, VideoRecord,
     },
     middleware::AuthzContext,
-    pricing::TokenUsage,
-    providers::{MediaUsageParams, ProviderError, log_media_usage},
+    models::RequestPrincipal,
+    pricing::{CostPricingSource, TokenUsage},
+    providers::{ProviderError, compute_media_cost},
     routing::{resolver, route_model_extended},
-    services::{
-        VideoStore,
-        responses_pipeline::{derive_response_owner, resolve_request_org},
-    },
+    services::{VideoStore, responses_pipeline::derive_response_owner},
 };
 
 // ============================================================================
@@ -51,21 +49,21 @@ fn get_video_store(state: &AppState) -> Result<&std::sync::Arc<VideoStore>, ApiE
     })
 }
 
-/// Calling principal resolved into the columns a `videos` row needs.
+/// Calling principal resolved into the columns a `videos` row needs:
+/// the mandatory org partition, the canonical resource owner, and the
+/// shared [`RequestPrincipal`] attribution fields.
 struct VideoPrincipal {
     org_id: Uuid,
     owner: ResponseOwner,
-    user_id: Option<Uuid>,
-    api_key_id: Option<Uuid>,
-    project_id: Option<Uuid>,
-    service_account_id: Option<Uuid>,
+    attribution: RequestPrincipal,
 }
 
 fn video_principal(
     state: &AppState,
     auth: Option<&AuthenticatedRequest>,
 ) -> Result<VideoPrincipal, ApiError> {
-    let org_id = resolve_request_org(auth, state.default_org_id).ok_or_else(|| {
+    let attribution = RequestPrincipal::from_auth(auth).or_defaults(state.default_identity());
+    let org_id = attribution.org_id.ok_or_else(|| {
         ApiError::new(
             StatusCode::UNAUTHORIZED,
             "org_required",
@@ -82,10 +80,7 @@ fn video_principal(
     Ok(VideoPrincipal {
         org_id,
         owner,
-        user_id: auth.and_then(|a| a.user_id()).or(state.default_user_id),
-        api_key_id: auth.and_then(|a| a.api_key().map(|k| k.key.id)),
-        project_id: auth.and_then(|a| a.api_key().and_then(|k| k.project_id)),
-        service_account_id: auth.and_then(|a| a.api_key().and_then(|k| k.service_account_id)),
+        attribution,
     })
 }
 
@@ -171,10 +166,10 @@ fn new_video_row(
         org_id: principal.org_id,
         owner_type: principal.owner.owner_type(),
         owner_id: principal.owner.owner_id(),
-        project_id: principal.project_id,
-        user_id: principal.user_id,
-        api_key_id: principal.api_key_id,
-        service_account_id: principal.service_account_id,
+        project_id: principal.attribution.project_id,
+        user_id: principal.attribution.user_id,
+        api_key_id: principal.attribution.api_key_id,
+        service_account_id: principal.attribution.service_account_id,
         status: video.status.as_str().to_string(),
         model: model_name.to_string(),
         provider: Some(provider_name.to_string()),
@@ -209,6 +204,7 @@ fn record_to_video(record: &VideoRecord) -> Result<api_types::Video, ApiError> {
 fn with_video_headers(
     mut response: Response,
     cost_microcents: Option<i64>,
+    pricing_source: CostPricingSource,
     seconds: i64,
     provider_name: &str,
     source: &str,
@@ -220,6 +216,10 @@ fn with_video_headers(
     {
         headers.insert("X-Cost-Microcents", value);
     }
+    headers.insert(
+        "X-Pricing-Source",
+        http::HeaderValue::from_static(pricing_source.as_str()),
+    );
     if let Ok(value) = seconds.to_string().parse() {
         headers.insert("X-Video-Seconds", value);
     }
@@ -376,22 +376,23 @@ async fn persist_and_respond(
         )
     })?;
 
-    let (cost_microcents, _) = log_media_usage(MediaUsageParams {
-        provider: &resolved.provider_name,
-        model: &resolved.model,
-        pricing: &state.pricing,
-        db: state.db.as_ref(),
-        api_key_id: principal.api_key_id,
-        #[cfg(feature = "server")]
-        task_tracker: &state.task_tracker,
-        usage: TokenUsage::for_video_seconds(seconds),
-    })
-    .await;
+    // Compute cost only; the API middleware writes the usage row from the
+    // response headers below. That row's team_id follows ApiKeyAuth.team_id
+    // like every other endpoint (previously the handler-side row derived it
+    // from a team ResponseOwner), the consistent choice.
+    let (cost_microcents, pricing_source) = compute_media_cost(
+        &resolved.provider_name,
+        &resolved.model,
+        &state.pricing,
+        Some(principal.org_id),
+        &TokenUsage::for_video_seconds(seconds),
+    );
 
     let response = Json(&video).into_response();
     Ok(with_video_headers(
         response,
         cost_microcents,
+        pricing_source,
         seconds,
         &resolved.provider_name,
         resolved.source,
@@ -906,10 +907,10 @@ pub async fn api_v1_videos_characters_create(
             org_id: principal.org_id,
             owner_type: principal.owner.owner_type(),
             owner_id: principal.owner.owner_id(),
-            project_id: principal.project_id,
-            user_id: principal.user_id,
-            api_key_id: principal.api_key_id,
-            service_account_id: principal.service_account_id,
+            project_id: principal.attribution.project_id,
+            user_id: principal.attribution.user_id,
+            api_key_id: principal.attribution.api_key_id,
+            service_account_id: principal.attribution.service_account_id,
             provider: Some(resolved.provider_name.clone()),
             model: Some(resolved.model.clone()),
             name: character.name.clone(),

@@ -21,13 +21,12 @@ use crate::{
     AppState,
     api_types::CreateResponsesPayload,
     db::repos::{ResponseCompletion, ResponseRecord, ResponseStatus},
+    models::RequestPrincipal,
     routes::execution::{ExecutionResult, ResponsesExecutor, execute_with_fallback},
     routing::{resolver, route_models_extended},
     services::{
         ResponsesStore,
-        responses_pipeline::{
-            PipelinePrincipal, apply_streaming_pipeline, resolve_and_inject_skills,
-        },
+        responses_pipeline::{apply_streaming_pipeline, resolve_and_inject_skills},
     },
 };
 
@@ -383,12 +382,16 @@ pub async fn execute_persisted_response(
     // Reconstruct principal from the persisted row so the shared
     // pipeline applies guardrails / file_search ACLs / shell usage
     // attribution using the same identity that submitted the request.
-    let principal = PipelinePrincipal {
+    let principal = RequestPrincipal {
         api_key_id: record.api_key_id,
         user_id: record.user_id,
         org_id: Some(record.org_id),
         project_id: record.project_id,
-        team_id: None, // teams aren't currently stored on the row
+        // teams aren't currently stored on the row
+        // TODO: attribute team-scoped background runs once the responses
+        // table persists a team column; until then background usage rows
+        // carry team_id = None even for team-scoped API keys.
+        team_id: None,
         service_account_id: record.service_account_id,
     };
 
@@ -479,15 +482,15 @@ pub async fn execute_persisted_response(
     // workloads. Mirrors what `build_streaming_usage_entry` does for
     // the foreground path, but sources principal fields from the
     // persisted row instead of the live auth extension.
-    let usage_entry = crate::models::UsageLogEntry {
+    let mut usage_entry = crate::models::UsageLogEntry {
         request_id: uuid::Uuid::new_v4().to_string(),
         client_request_id: None,
-        api_key_id: record.api_key_id,
-        user_id: record.user_id,
-        org_id: Some(record.org_id),
-        project_id: record.project_id,
+        api_key_id: None,
+        user_id: None,
+        org_id: None,
+        project_id: None,
         team_id: None,
-        service_account_id: record.service_account_id,
+        service_account_id: None,
         model: model_name.clone(),
         provider: provider_name.clone(),
         input_tokens: 0,
@@ -516,6 +519,7 @@ pub async fn execute_persisted_response(
         tool_runtime_seconds: None,
         tool_exit_code: None,
     };
+    principal.apply_to(&mut usage_entry);
 
     let provider_name_clone = provider_name.clone();
     let model_name_clone = model_name.clone();
@@ -571,6 +575,7 @@ pub async fn execute_persisted_response(
             pricing: &state.pricing,
             db: state.db.as_ref(),
             usage_entry: Some(usage_entry),
+            pricing_org_id: Some(record.org_id),
             #[cfg(feature = "server")]
             task_tracker: Some(&state.task_tracker),
             #[cfg(feature = "server")]

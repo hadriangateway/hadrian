@@ -37,7 +37,7 @@ use crate::{
         ShellDomainSecret, ShellEnvironment, ShellNetworkPolicyType,
     },
     config::{ContainersConfig, ShellLimitsConfig},
-    models::UsageLogEntry,
+    models::{RequestPrincipal, UsageLogEntry},
     pricing::CostPricingSource,
     runtimes::{
         EgressPolicy, ExecEvent, ExecRequest, RuntimeError, SecretMount, SessionSpec, ShellRuntime,
@@ -343,18 +343,6 @@ fn host_matches(host: &str, pattern: &str) -> bool {
             && host.as_bytes()[host.len() - suffix.len() - 1] == b'.';
     }
     host.eq_ignore_ascii_case(pattern.trim_end_matches('.'))
-}
-
-/// Identity fields captured at request time for shell-tool usage
-/// attribution. Mirrors the tuple `extract_identity` returns elsewhere.
-#[derive(Debug, Clone, Default)]
-pub struct ShellPrincipal {
-    pub api_key_id: Option<Uuid>,
-    pub user_id: Option<Uuid>,
-    pub org_id: Option<Uuid>,
-    pub project_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub service_account_id: Option<Uuid>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1712,7 +1700,7 @@ pub struct ShellExecutor {
     runtime_label: &'static str,
     /// Identity context attached to the per-shell-call usage record so
     /// runtime time is attributed to the right principal.
-    principal: ShellPrincipal,
+    principal: RequestPrincipal,
     /// Skill bundles to mount into the session started by this
     /// executor. Resolved upstream from the request's `skills` field;
     /// empty when the request didn't ask for any. Cloned into the
@@ -1771,7 +1759,7 @@ impl ShellExecutor {
         runtime: Arc<dyn ShellRuntime>,
         cost_microcents_per_second: u64,
         runtime_label: &'static str,
-        principal: ShellPrincipal,
+        principal: RequestPrincipal,
         mounted_skills: Vec<SkillMount>,
         limits: crate::config::ShellLimitsConfig,
         resolved_env: ResolvedShellEnvironment,
@@ -1917,7 +1905,7 @@ impl ServerExecutedTool for ShellExecutor {
         let runtime = self.runtime.clone();
         let cost_per_sec = self.cost_microcents_per_second;
         let runtime_label = self.runtime_label;
-        let principal = self.principal.clone();
+        let principal = self.principal;
         let mounted_skills = self.mounted_skills.clone();
         let containers_config = self.containers_config.clone();
         let session_handle_slot = self.session_handle.clone();

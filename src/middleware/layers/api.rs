@@ -918,10 +918,7 @@ pub async fn api_middleware(
     let client_request_id = client_request_id_from_headers(&headers);
     if let Some(auth) = auth_clone {
         // Extract project context from request header (for session-based users)
-        let header_project_id = headers
-            .get("X-Hadrian-Project")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| uuid::Uuid::parse_str(v).ok());
+        let header_project_id = crate::routes::api::header_project_id(&headers);
 
         track_usage_async(UsageTrackingContext {
             state,
@@ -990,10 +987,11 @@ pub async fn api_middleware(
                     cost_microcents: usage.cost_microcents,
                 });
 
-                let header_project_id = headers
-                    .get("X-Hadrian-Project")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| uuid::Uuid::parse_str(v).ok());
+                // Anonymous attribution: deployment defaults plus the
+                // X-Hadrian-Project header for project scope.
+                let principal = crate::models::RequestPrincipal::default()
+                    .or_defaults(state.default_identity())
+                    .with_project_fallback(crate::routes::api::header_project_id(&headers));
 
                 // Server-generated row key; see track_usage_async for rationale.
                 let usage_request_id = if client_request_id.is_some() {
@@ -1001,13 +999,13 @@ pub async fn api_middleware(
                 } else {
                     request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
                 };
-                buffer.push(crate::models::UsageLogEntry {
+                let mut entry = crate::models::UsageLogEntry {
                     request_id: usage_request_id,
                     client_request_id,
                     api_key_id: None,
-                    user_id: state.default_user_id,
-                    org_id: state.default_org_id,
-                    project_id: header_project_id,
+                    user_id: None,
+                    org_id: None,
+                    project_id: None,
                     team_id: None,
                     service_account_id: None,
                     model,
@@ -1037,7 +1035,9 @@ pub async fn api_middleware(
                     tool_results_count: None,
                     tool_runtime_seconds: None,
                     tool_exit_code: None,
-                });
+                };
+                principal.apply_to(&mut entry);
+                buffer.push(entry);
             }
         }
     }
@@ -1066,7 +1066,6 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         header_project_id,
     } = ctx;
 
-    let api_key = auth.api_key();
     let elapsed = tracker.start_time.elapsed();
     // Saturate latency to i32::MAX to prevent overflow on very long requests
     let latency_ms = elapsed.as_millis().min(i32::MAX as u128) as i32;
@@ -1138,26 +1137,13 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         });
     }
 
-    // Derive principal-based attribution context
-    // org_id: from API key's resolved org, or from principal's org (user's single org)
-    let org_id = api_key
-        .and_then(|k| k.org_id)
-        .or_else(|| auth.principal().org_id());
-
-    // user_id: from identity (session) or user-owned API key
-    let user_id = auth.user_id();
-
-    // project_id: from API key scope, or from X-Hadrian-Project header
-    let project_id = api_key.and_then(|k| k.project_id).or(header_project_id);
-
-    // team_id: from team-scoped API key only (not a session selection)
-    let team_id = api_key.and_then(|k| k.team_id);
-
-    // api_key_id: present only for API key auth
-    let api_key_id = api_key.map(|k| k.key.id);
-
-    // service_account_id: from SA-owned keys
-    let service_account_id = api_key.and_then(|k| k.service_account_id);
+    // Derive principal-based attribution via the canonical constructor:
+    // API-key scope first, then the authenticated principal, then the
+    // deployment defaults (no-auth mode); the X-Hadrian-Project header
+    // fills project scope only when the credential carries none.
+    let principal = crate::models::RequestPrincipal::from_auth(Some(&auth))
+        .or_defaults(state.default_identity())
+        .with_project_fallback(header_project_id);
 
     // Row key is server-generated: a client-supplied X-Request-Id previously
     // keyed the UNIQUE request_id column, letting a client suppress its own
@@ -1172,15 +1158,15 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     };
 
-    let entry = crate::models::UsageLogEntry {
+    let mut entry = crate::models::UsageLogEntry {
         request_id: usage_request_id,
         client_request_id,
-        api_key_id,
-        user_id,
-        org_id,
-        project_id,
-        team_id,
-        service_account_id,
+        api_key_id: None,
+        user_id: None,
+        org_id: None,
+        project_id: None,
+        team_id: None,
+        service_account_id: None,
         model,
         provider,
         // Saturate tokens to i32::MAX to prevent overflow with extremely large values
@@ -1210,6 +1196,7 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
         tool_runtime_seconds: None,
         tool_exit_code: None,
     };
+    principal.apply_to(&mut entry);
 
     let is_success = response.status().is_success();
 
@@ -1220,9 +1207,9 @@ fn track_usage_async(ctx: UsageTrackingContext<'_>) {
     if has_model && !is_streaming {
         if let Some(buffer) = &state.usage_buffer {
             tracing::debug!(
-                api_key_id = ?api_key_id,
-                user_id = ?user_id,
-                org_id = ?org_id,
+                api_key_id = ?principal.api_key_id,
+                user_id = ?principal.user_id,
+                org_id = ?principal.org_id,
                 model = %entry.model,
                 input_tokens = entry.input_tokens,
                 output_tokens = entry.output_tokens,
