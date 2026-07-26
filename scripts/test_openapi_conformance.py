@@ -283,6 +283,35 @@ def test_conformance_flags_missing_endpoint_as_violation():
     )
 
 
+def test_conformance_skips_beta_query_path_keys():
+    # OpenAI publishes beta endpoint variants as path keys with a literal query
+    # string (e.g. "/responses?beta=true"); these must not count as missing.
+    openai_spec = _minimal_spec(
+        {
+            "/responses?beta=true": {
+                "post": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"type": "object"}
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    )
+    hadrian_spec = _minimal_spec({})  # nothing implemented
+
+    report = ConformanceChecker(openai_spec, hadrian_spec).check_conformance()
+
+    assert report.endpoints_checked == 0
+    assert not report.violations
+    assert "/responses?beta=true" in report.out_of_scope_endpoints
+
+
 def test_conformance_passes_for_matching_endpoint():
     schema = {
         "type": "object",

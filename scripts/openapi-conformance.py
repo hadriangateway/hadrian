@@ -50,6 +50,7 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/chat/completions", "POST", "request", "prompt_cache_key"): "OpenAI-specific prompt caching key",
     ("/chat/completions", "POST", "request", "service_tier"): "OpenAI service tier selection (auto/default)",
     ("/chat/completions", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
+    ("/chat/completions", "POST", "request", "prompt_cache_options"): "OpenAI-specific prompt cache configuration",
     ("/chat/completions", "POST", "request", "modalities"): "OpenAI multimodal output selection",
     ("/chat/completions", "POST", "request", "verbosity"): "OpenAI-specific verbosity control",
     ("/chat/completions", "POST", "request", "reasoning_effort"): "OpenAI o1/o3 reasoning - Hadrian uses 'reasoning' object instead",
@@ -76,6 +77,10 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/responses", "POST", "request", "moderation"): "OpenAI hosted moderation pass (omni-moderation) - Hadrian has separate guardrails feature",
     ("/responses", "POST", "request", "top_logprobs"): "Log probabilities not implemented",
     ("/responses", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
+    ("/responses", "POST", "request", "prompt_cache_options"): "OpenAI-specific prompt cache configuration",
+    ("/responses", "POST", "request", "mode"): "Allowed-tools tool_choice mode (auto/required) - not implemented",
+    ("/responses", "POST", "request", "output_schema"): "Typed function tool output schemas - not implemented",
+    ("/responses", "POST", "request", "allowed_callers"): "Programmatic tool calling caller restrictions - not implemented",
     ("/responses", "POST", "request", "max_tool_calls"): "Tool call limits not implemented",
     ("/responses", "POST", "request", "stream_options"): "Stream options not implemented",
     ("/responses", "POST", "request", "conversation"): "OpenAI conversation context feature",
@@ -98,11 +103,13 @@ DOCUMENTED_MISSING_FIELDS: dict[tuple[str, str, str, str], str] = {
     ("/responses", "POST", "request", "tools[image_generation]"): "OpenAI hosted image generation",
     ("/responses", "POST", "request", "tools[local_shell]"): "OpenAI hosted local shell — Hadrian uses the `shell` variant",
     ("/responses", "POST", "request", "tools[namespace]"): "OpenAI namespace tool",
+    ("/responses", "POST", "request", "tools[programmatic_tool_calling]"): "OpenAI programmatic tool calling (model-written code invokes tools) - not implemented",
     ("/responses", "POST", "request", "tools[tool_search]"): "OpenAI tool-search feature",
     # /responses tools[mcp] field - OpenAI-hosted MCP feature
     ("/responses", "POST", "request", "tunnel_id"): "OpenAI Secure MCP Tunnel ID for tools[mcp] - hosted MCP feature not relevant to a gateway",
     # /responses/compact - OpenAI-specific fields
     ("/responses/compact", "POST", "request", "prompt_cache_retention"): "OpenAI-specific cache retention",
+    ("/responses/compact", "POST", "request", "prompt_cache_options"): "OpenAI-specific prompt cache configuration",
     ("/responses/compact", "POST", "request", "service_tier"): "OpenAI service tier selection (auto/default)",
     # /responses/{response_id} - OpenAI-specific stored-response features
     ("/responses/{response_id}", "GET", "param", "include"): "OpenAI stored-response include filters",
@@ -557,6 +564,12 @@ class ConformanceChecker:
 
     def _is_out_of_scope(self, path: str) -> bool:
         """Check if an OpenAI path is out of scope for Hadrian."""
+        # OpenAI publishes beta variants of some endpoints as separate path keys
+        # carrying a literal query string (e.g. "/responses?beta=true"). Query
+        # strings are not valid in OpenAPI path keys; treat these beta duplicates
+        # as out of scope rather than as missing endpoints.
+        if "?" in path:
+            return True
         # Check explicit paths first
         if path in self.OUT_OF_SCOPE_PATHS:
             return True

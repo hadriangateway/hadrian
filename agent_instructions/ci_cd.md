@@ -12,6 +12,21 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs:
 - Documentation build
 - WASM build (compile to `wasm32-unknown-unknown` via `wasm-pack`, build frontend with `VITE_WASM_MODE=true`)
 
+### CI can break without code changes
+
+Several jobs track live external state, so a red run on an untouched branch (or main) may be
+environmental drift rather than a regression — compare against main's latest run first:
+
+- The Rust toolchain is unpinned `stable`: a new Rust release ships new clippy lints that fail
+  `-D warnings` feature checks.
+- The OpenAPI conformance job downloads the *latest* OpenAI spec (`fetch-openapi-specs.sh`), so
+  new OpenAI endpoints/fields fail conformance until documented in `DOCUMENTED_MISSING_FIELDS`
+  (or, for beta `?beta=true` path keys, skipped as out of scope).
+- `cargo audit` / `cargo-deny` / `pnpm audit` pull fresh advisory databases. Fix by updating the
+  dependency when a patched version is in range; otherwise add a scoped override
+  (`ui/pnpm-workspace.yaml`) or a documented ignore (`deny.toml`, `auditConfig.ignoreGhsas`).
+  Note `cargo-deny` treats `unsound` advisories as errors while `cargo audit` only warns.
+
 ## Release Pipeline
 
 GitHub Actions workflow (`.github/workflows/release.yml`) triggers on version tags (`v*`) or manual dispatch (with dry-run option):

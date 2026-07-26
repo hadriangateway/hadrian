@@ -571,7 +571,7 @@ impl<S> BedrockToResponsesStream<S> {
         // Generate reasoning ID from response ID (similar to Anthropic pattern)
         let reasoning_id = format!(
             "rs_{}",
-            &response_id[5..].chars().take(24).collect::<String>()
+            response_id[5..].chars().take(24).collect::<String>()
         );
 
         Self {
@@ -754,7 +754,7 @@ impl<S> BedrockToResponsesStream<S> {
                         let output_index = self.tool_output_index(tool_index);
 
                         // Emit output_item.added for the function call
-                        let fc_id = format!("fc_{}", &tool_use.tool_use_id);
+                        let fc_id = format!("fc_{}", tool_use.tool_use_id);
                         self.emit_event(
                             "response.output_item.added",
                             serde_json::json!({
@@ -883,7 +883,7 @@ impl<S> BedrockToResponsesStream<S> {
                             let output_index = self.tool_output_index(tool_index);
 
                             // Emit function call arguments delta
-                            let fc_id = format!("fc_{}", &tool_id);
+                            let fc_id = format!("fc_{}", tool_id);
                             self.emit_event(
                                 "response.function_call_arguments.delta",
                                 serde_json::json!({
@@ -1012,7 +1012,7 @@ impl<S> BedrockToResponsesStream<S> {
 
                     for (i, tool_id, tool_name, arguments) in tool_calls {
                         let output_index = self.tool_output_index(i);
-                        let fc_id = format!("fc_{}", &tool_id);
+                        let fc_id = format!("fc_{}", tool_id);
 
                         self.emit_event(
                             "response.function_call_arguments.done",

@@ -447,7 +447,7 @@ uuid = { version = "1.18.1", features = ["v4", "v5", "serde", "js"] }
 
 [dev-dependencies]
 rstest = "0.24"
-serial_test = "3.2"
+serial_test = "4"
 temp-env = "0.3"
 tempfile = "3.23.0"
 testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }

@@ -4,6 +4,7 @@
 //! JavaScript (wa-sqlite + OPFS). All queries are dispatched via `wasm_bindgen`
 //! extern functions and results are deserialized back into Rust types.
 
+use sha2::Digest;
 use wasm_bindgen::prelude::*;
 
 use super::types::{WasmDbError, WasmParam, WasmQueryResult, WasmRow, WasmValue};
@@ -143,32 +144,55 @@ impl WasmSqlitePool {
     }
 
     /// Run the embedded SQLite migration SQL.
+    ///
+    /// The browser database persists across deploys while the embedded migration
+    /// can change under it (pre-1.0, the initial migration is edited in place).
+    /// We record a checksum of the applied SQL and rebuild the database from
+    /// scratch when it no longer matches: browser data is a local cache, and
+    /// losing it beats silently keeping a stale schema that newer queries assume
+    /// has moved on.
     pub async fn run_migrations(&self) -> Result<(), WasmDbError> {
-        let migration_sql =
-            include_str!("../../../migrations_sqlx/sqlite/20250101000000_initial.sql");
-
-        // Create migrations tracking table
-        self.execute_statement(
-            "CREATE TABLE IF NOT EXISTS _wasm_migrations (
+        const MIGRATION_NAME: &str = "20250101000000_initial";
+        const CREATE_TRACKING_TABLE: &str = "CREATE TABLE IF NOT EXISTS _wasm_migrations (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
+                checksum TEXT,
                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-            &[],
-        )
-        .await?;
+            )";
 
-        // Check if migration already applied
-        let rows = self
+        let migration_sql =
+            include_str!("../../../migrations_sqlx/sqlite/20250101000000_initial.sql");
+        let checksum = hex::encode(sha2::Sha256::digest(migration_sql.as_bytes()));
+
+        self.execute_statement(CREATE_TRACKING_TABLE, &[]).await?;
+
+        // `Some(checksum_of_applied_sql)` if the migration ran before. A legacy
+        // tracking table has no `checksum` column, so the query itself erroring
+        // is treated like a mismatch below.
+        let applied: Option<Option<String>> = match self
             .execute_query(
-                "SELECT id FROM _wasm_migrations WHERE name = ?",
-                &[WasmParam::Text("20250101000000_initial".to_string())],
+                "SELECT checksum FROM _wasm_migrations WHERE name = ?",
+                &[WasmParam::Text(MIGRATION_NAME.to_string())],
             )
-            .await?;
+            .await
+        {
+            Ok(rows) => rows
+                .first()
+                .map(|row| row.try_get::<Option<String>>("checksum").ok().flatten()),
+            Err(_) => Some(None),
+        };
 
-        if !rows.is_empty() {
-            tracing::debug!("WASM SQLite migrations already applied");
-            return Ok(());
+        match applied {
+            Some(Some(existing)) if existing == checksum => {
+                tracing::debug!("WASM SQLite migrations already applied");
+                return Ok(());
+            }
+            Some(_) => {
+                tracing::warn!("WASM SQLite schema is stale; rebuilding the browser database");
+                self.drop_all_objects().await?;
+                self.execute_statement(CREATE_TRACKING_TABLE, &[]).await?;
+            }
+            None => {}
         }
 
         // Use execute_script to run the entire migration as one batch.
@@ -180,12 +204,42 @@ impl WasmSqlitePool {
 
         // Record migration
         self.execute_statement(
-            "INSERT INTO _wasm_migrations (name) VALUES (?)",
-            &[WasmParam::Text("20250101000000_initial".to_string())],
+            "INSERT INTO _wasm_migrations (name, checksum) VALUES (?, ?)",
+            &[
+                WasmParam::Text(MIGRATION_NAME.to_string()),
+                WasmParam::Text(checksum),
+            ],
         )
         .await?;
 
         tracing::info!("WASM SQLite migrations applied successfully");
+        Ok(())
+    }
+
+    /// Drop every user table and view so the migration can run on a clean slate.
+    /// Indexes and triggers go down with their tables.
+    async fn drop_all_objects(&self) -> Result<(), WasmDbError> {
+        let objects = self
+            .execute_query(
+                "SELECT type, name FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%' AND type IN ('view', 'table')
+                 ORDER BY CASE type WHEN 'view' THEN 0 ELSE 1 END",
+                &[],
+            )
+            .await?;
+
+        self.execute_statement("PRAGMA foreign_keys=OFF", &[])
+            .await?;
+        for row in &objects {
+            let ty: String = row.get("type");
+            let name: String = row.get("name");
+            let kind = if ty == "view" { "VIEW" } else { "TABLE" };
+            let quoted = name.replace('"', "\"\"");
+            self.execute_statement(&format!("DROP {kind} IF EXISTS \"{quoted}\""), &[])
+                .await?;
+        }
+        self.execute_statement("PRAGMA foreign_keys=ON", &[])
+            .await?;
         Ok(())
     }
 }

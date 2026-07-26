@@ -642,8 +642,7 @@ impl<S> VertexToResponsesStream<S> {
                     output_index += self.state.function_calls.len();
 
                     // Emit output_item.added for the function call
-                    let fc_id =
-                        format!("fc_{}", &call_id[5..].chars().take(24).collect::<String>());
+                    let fc_id = format!("fc_{}", call_id[5..].chars().take(24).collect::<String>());
                     self.emit_event(
                         "response.output_item.added",
                         serde_json::json!({
@@ -885,7 +884,7 @@ impl<S> VertexToResponsesStream<S> {
                 output_index += 1;
             }
 
-            let fc_id = format!("fc_{}", &call_id[5..].chars().take(24).collect::<String>());
+            let fc_id = format!("fc_{}", call_id[5..].chars().take(24).collect::<String>());
 
             self.emit_event(
                 "response.function_call_arguments.done",
@@ -946,7 +945,7 @@ impl<S> VertexToResponsesStream<S> {
 
         // Function calls last
         for (call_id, name, arguments) in &self.state.function_calls {
-            let fc_id = format!("fc_{}", &call_id[5..].chars().take(24).collect::<String>());
+            let fc_id = format!("fc_{}", call_id[5..].chars().take(24).collect::<String>());
             output.push(serde_json::json!({
                 "type": "function_call",
                 "id": fc_id,
